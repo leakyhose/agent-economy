@@ -22,19 +22,25 @@ import { MAX_AGENTS, MAX_GOODS } from './goods.ts';
 
 /** `cash: u64` + `goods: [u32; 8]`. */
 export const SLOT_BYTES = 8 + 4 * MAX_GOODS;
-/** `authority` + `last_price` + `num_agents` + `round` + `num_goods` + `sealed` + pad. */
-export const HEADER_BYTES = 32 + 8 * MAX_GOODS + 4 + 4 + 1 + 1 + 6;
-/** Discriminator + header + slots = 12,920 bytes. */
+/**
+ * `authority` + `last_price` + `distress_threshold` + `num_agents` + `round`
+ * + `relief_pool` + `num_goods` + `sealed` + 4 bytes of tail padding.
+ */
+export const HEADER_BYTES = 32 + 8 * MAX_GOODS + 8 + 4 + 4 + 2 + 1 + 1 + 4;
+/** Discriminator + header + slots = 12,928 bytes. */
 export const LEDGER_BYTES = 8 + HEADER_BYTES + MAX_AGENTS * SLOT_BYTES;
 
 /** Byte offsets into the account data, discriminator included. */
+const H = 8 + 32 + 8 * MAX_GOODS; // past the discriminator, authority and prices
 export const OFF = {
   authority: 8,
   lastPrice: 8 + 32,
-  numAgents: 8 + 32 + 8 * MAX_GOODS,
-  round: 8 + 32 + 8 * MAX_GOODS + 4,
-  numGoods: 8 + 32 + 8 * MAX_GOODS + 8,
-  sealed: 8 + 32 + 8 * MAX_GOODS + 9,
+  distressThreshold: H,
+  numAgents: H + 8,
+  round: H + 12,
+  reliefPool: H + 16,
+  numGoods: H + 18,
+  sealed: H + 19,
   slots: 8 + HEADER_BYTES,
 } as const;
 
@@ -74,6 +80,7 @@ export function discriminator(name: string): Buffer {
 
 export const DISC = {
   initialize: discriminator('initialize'),
+  liquidate: discriminator('liquidate'),
   endow: discriminator('endow'),
   seal: discriminator('seal'),
   settle: discriminator('settle'),
@@ -116,6 +123,10 @@ export interface LedgerState {
   numGoods: number;
   round: number;
   sealed: boolean;
+  /** Cash below which anyone may liquidate an agent. */
+  distressThreshold: bigint;
+  /** The slot that buys liquidated goods. */
+  reliefPool: number;
   lastPrice: bigint[];
   slots: LedgerSlot[];
   /** Sum of every live agent's cash. The world's money supply. */
@@ -146,6 +157,8 @@ export function decodeLedger(data: Buffer): LedgerState {
     numGoods,
     round: data.readUInt32LE(OFF.round),
     sealed: data.readUInt8(OFF.sealed) === 1,
+    distressThreshold: data.readBigUInt64LE(OFF.distressThreshold),
+    reliefPool: data.readUInt16LE(OFF.reliefPool),
     lastPrice: Array.from({ length: numGoods }, (_, g) =>
       data.readBigUInt64LE(OFF.lastPrice + g * 8),
     ),
@@ -199,13 +212,23 @@ export function createLedgerAccountIx(args: {
   });
 }
 
-/** `initialize(num_agents: u32, num_goods: u8, start_cash: u64, start_goods: [u32; 8])`. */
+/**
+ * `initialize(num_agents, num_goods, start_cash, start_goods, distress_threshold,
+ * relief_pool)`.
+ */
 export function initializeIx(
   programId: PublicKey,
   accounts: LedgerAccounts,
-  args: { numAgents: number; numGoods: number; startCash: number | bigint; startGoods: number[] },
+  args: {
+    numAgents: number;
+    numGoods: number;
+    startCash: number | bigint;
+    startGoods: number[];
+    distressThreshold: number | bigint;
+    reliefPool: number;
+  },
 ): TransactionInstruction {
-  const data = Buffer.alloc(8 + 4 + 1 + 8 + 4 * MAX_GOODS);
+  const data = Buffer.alloc(8 + 4 + 1 + 8 + 4 * MAX_GOODS + 8 + 2);
   DISC.initialize.copy(data, 0);
   data.writeUInt32LE(args.numAgents, 8);
   data.writeUInt8(args.numGoods, 12);
@@ -214,12 +237,39 @@ export function initializeIx(
     // Fixed-size array: no length prefix. `start_goods[0]` is ignored by the program.
     data.writeUInt32LE(args.startGoods[g] ?? 0, 21 + g * 4);
   }
+  data.writeBigUInt64LE(BigInt(args.distressThreshold), 21 + 4 * MAX_GOODS);
+  data.writeUInt16LE(args.reliefPool, 29 + 4 * MAX_GOODS);
   return new TransactionInstruction({
     programId,
     data,
     keys: [
       { pubkey: accounts.authority, isSigner: true, isWritable: true },
       { pubkey: accounts.ledger, isSigner: false, isWritable: true },
+    ],
+  });
+}
+
+/**
+ * `liquidate(agent: u16, good: u8)` — the permissionless one.
+ *
+ * `caller` is any signer at all. It is in the account list because a transaction
+ * needs a fee payer, not because the program checks it: there is no authority here
+ * and deliberately so. Anyone who can see a distressed agent can act on it.
+ */
+export function liquidateIx(
+  programId: PublicKey,
+  args: { ledger: PublicKey; caller: PublicKey; agent: number; good: number },
+): TransactionInstruction {
+  const data = Buffer.alloc(8 + 2 + 1);
+  DISC.liquidate.copy(data, 0);
+  data.writeUInt16LE(args.agent, 8);
+  data.writeUInt8(args.good, 10);
+  return new TransactionInstruction({
+    programId,
+    data,
+    keys: [
+      { pubkey: args.ledger, isSigner: false, isWritable: true },
+      { pubkey: args.caller, isSigner: true, isWritable: false },
     ],
   });
 }

@@ -15,14 +15,19 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PublicKey, Transaction } from '@solana/web3.js';
+import { Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction } from '@solana/web3.js';
 import type { SettlementIntent, WorldDefinition } from '@aw/types';
 import { clearAuction, sortAsks, sortBids, type Order } from '../src/auction.ts';
-import { WorldLedger } from '../src/client.ts';
-import { BlockhashCache, clusterFromEnv, connect } from '../src/config.ts';
-import { MAX_ORDERS_PER_BOOK, clearAuctionIx, loadIdl } from '../src/ix.ts';
-import { TxSender } from '../src/sender.ts';
-import { NullSettlementQueue, SolanaSettlementQueue } from '../src/settlement.ts';
+import { bootstrapWorld } from '../src/client.ts';
+import {
+  BlockhashCache,
+  chainOf,
+  clusterFromEnv,
+  connect,
+  resolveProgramId,
+} from '../src/config.ts';
+import { MAX_ORDERS_PER_BOOK, clearAuctionIx } from '../src/ix.ts';
+import { NullSettlementQueue } from '../src/settlement.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const WORLDS = ['economic-sandbox.json', 'medieval-kingdom.json'];
@@ -57,31 +62,68 @@ async function runWorld(file: string): Promise<{ world: string; signatures: stri
   const cluster = clusterFromEnv();
   const connection = connect(cluster);
   const blockhash = new BlockhashCache(connection);
-  const { programId } = loadIdl(join(ROOT, 'target/idl/world.json'));
+  const programId = resolveProgramId();
 
   bar(`${world.name}  ·  ${file}`);
 
-  const ledger = await WorldLedger.create({
+  const built = await bootstrapWorld({
     world,
     connection,
     cluster,
     programId,
     blockhash,
     masterSeed: Buffer.alloc(32, world.seed % 251),
-    onStep: (step, sig) => console.log(`  ${step.padEnd(11)} ${sig}`),
+    onStep: (step, sig) => console.log(`  ${step.padEnd(14)} ${sig}`),
   });
-  const signatures: string[] = [];
+  const { ledger, tokens, genesis, queue } = built;
+  const signatures: string[] = [...(genesis?.signatures ?? [])];
 
   console.log(`\n  ledger      ${ledger.address.toBase58()}`);
   console.log(`  authority   ${ledger.wallet.authorityAddress()}`);
   console.log(`  goods       ${ledger.map.goods.map((g, i) => `${i}:${g}`).join('  ')}`);
   console.log(`  currency    ${ledger.map.currency}   (derived from the world's markets)`);
-  console.log(`  agents      ${ledger.roster.count}`);
+  console.log(`  agents      ${ledger.roster.count} (+1 relief pool at slot ${ledger.reliefPool})`);
 
-  const genesis = await ledger.read();
-  console.log(`  sealed      ${genesis.sealed}`);
-  console.log(`  money       ${money(genesis.moneySupply)} ${ledger.map.currency}`);
+  const opening = await ledger.read();
+  console.log(`  sealed      ${opening.sealed}`);
+  console.log(`  money       ${money(opening.moneySupply)} ${ledger.map.currency}`);
+  console.log(`  distress    < ${money(opening.distressThreshold)} ${ledger.map.currency}`);
   console.log(`  explorer    ${ledger.explorer('address', ledger.address.toBase58())}`);
+
+  // ---- real SPL mints ------------------------------------------------------
+  if (tokens) {
+    bar(`  SPL mints — ${world.name}`);
+    for (const mint of tokens.mints()) {
+      const live = await tokens.verifyFixedSupply(mint.resource);
+      const supply = Number(live.supply) / 10 ** live.decimals;
+      console.log(`  ${mint.symbol.padEnd(6)} ${mint.resource.padEnd(6)} ${live.mint}`);
+      console.log(
+        `         supply ${money(supply)}  decimals ${live.decimals}  ` +
+          `mintAuthority ${live.mintAuthority ?? 'null  <- NOBODY CAN MINT THIS'}`,
+      );
+      console.log(`         ${ledger.explorer('address', live.mint)}`);
+    }
+
+    // The claim, tested rather than asserted: try to mint more of a fixed-supply
+    // token and watch the chain refuse, because the authority no longer exists.
+    for (const resource of genesis?.revoked ?? []) {
+      let refused = 'the mint ACCEPTED it — fixed supply is not fixed';
+      try {
+        await tokens.mintTo(resource, ledger.roster.ids[0]!, 1);
+      } catch (err) {
+        refused = `refused — ${(err as Error).message}`;
+      }
+      console.log(`\n  mint more ${resource}: ${refused}`);
+    }
+
+    const sample = ledger.roster.ids[0]!;
+    const wallet = ledger.wallet.walletFor(sample);
+    console.log(`\n  ${sample} keypair ${wallet.address}`);
+    for (const [resource, ata] of Object.entries(wallet.tokenAccounts)) {
+      const bal = await tokens.balanceOf(resource, sample);
+      console.log(`         ${resource.padEnd(6)} ${bal} in ${ata}`);
+    }
+  }
 
   // ---- a tick of production ------------------------------------------------
   // Signed goods deltas, exactly as the engine's `increment`/`decrement` effects
@@ -211,41 +253,147 @@ async function runWorld(file: string): Promise<{ world: string; signatures: stri
   // ---- the settlement queue ------------------------------------------------
   // What the world DSL's `settle` effect produces. Enqueue is synchronous; the sim
   // would have moved on several ticks by the time these land.
-  const queue = new SolanaSettlementQueue({
-    sender: new TxSender(connection, blockhash),
-    wallet: ledger.wallet,
-    programId,
-    accounts: ledger.accounts,
-    map: ledger.map,
-    resolveAgent: (e) => ledger.roster.indexOf(e),
-  });
-
   const before = await ledger.read();
   const payers = before.slots
     .map((s, agent) => ({ agent, cash: s.cash }))
     .filter((s) => s.cash > 500n)
     .slice(0, 6);
-  const intents: SettlementIntent[] = payers.map((p, k) => ({
+  // With mints registered these settle as REAL SPL TRANSFERS between the agents' own
+  // token accounts, signed by the sending agent — not as ledger bookkeeping.
+  const goodResource = ledger.map.tradable[0]!.resource;
+  const asset = tokens?.mintOf(goodResource) ? goodResource : ledger.map.currency;
+  const intents: SettlementIntent[] = payers.slice(0, 4).map((p, k) => ({
     tick: 1,
-    asset: ledger.map.currency,
+    asset,
     from: ledger.roster.ids[p.agent]!,
     to: ledger.roster.ids[(p.agent + 1) % ledger.roster.count]!,
-    amount: 100 + k,
+    amount: 1 + (k % 2),
   }));
   for (const intent of intents) queue.enqueue(intent);
-  console.log(`\n  queue       ${queue.pending()} intents buffered, sim did not wait`);
+  console.log(
+    `\n  queue       ${queue.pending()} intents of ${asset} buffered` +
+      `${tokens?.mintOf(asset) ? ' (settling as real SPL transfers)' : ''}, sim did not wait`,
+  );
   const queueSigs = await queue.flush();
   signatures.push(...queueSigs);
   for (const s of queueSigs) console.log(`              ${s}`);
+  if (tokens?.mintOf(asset)) {
+    const recipient = intents[0]!.to;
+    console.log(
+      `              ${recipient} now holds ${await tokens.balanceOf(asset, recipient)} ${asset}` +
+        ` in ${ledger.wallet.tokenAccountFor(recipient, asset).toBase58()}`,
+    );
+  }
+
+  // ---- a stranger acts on the world ----------------------------------------
+  // This is the part no off-chain simulation can offer. `stranger` is a keypair
+  // generated seconds ago with no relationship to this world, its authority or its
+  // agents. It is not on any allowlist. The only thing that lets it succeed is that
+  // the chain agrees the target is distressed.
+  {
+    const stranger = Keypair.generate();
+    const airdrop = await connection.requestAirdrop(stranger.publicKey, LAMPORTS_PER_SOL);
+    await connection.confirmTransaction(airdrop, 'confirmed');
+    console.log(`\n  stranger    ${stranger.publicKey.toBase58()} (unrelated keypair, just funded)`);
+
+    const state = await ledger.read();
+    // Push one agent under the threshold the honest way, by having it spend: a
+    // transfer to the relief pool, which the authority can do and which conserves cash.
+    const victim = 0;
+    const excess = state.slots[victim]!.cash - state.distressThreshold / 2n;
+    if (excess > 0n) {
+      signatures.push(await ledger.transfer(victim, ledger.reliefPool, Number(excess)));
+    }
+
+    const distressed = await ledger.distressed();
+    console.log(`  distressed  ${distressed.length} agent(s) below ${money(state.distressThreshold)}`);
+
+    const target = distressed.find((d) => d.goods.some((q, g) => g > 0 && q > 0));
+    if (!target) {
+      console.log('  liquidate   nobody distressed is holding anything; nothing to do');
+    } else {
+      const good = target.goods.findIndex((q, g) => g > 0 && q > 0);
+      const beforeCash = target.cash;
+      const sig = await ledger.liquidate(stranger, target.agent, good);
+      signatures.push(sig);
+      const after = await ledger.read();
+      console.log(
+        `  liquidate   agent ${target.agent} (${ledger.roster.ids[target.agent]}) ` +
+          `good ${good} (${ledger.map.goods[good]})`,
+      );
+      console.log(
+        `              cash ${money(beforeCash)} -> ${money(after.slots[target.agent]!.cash)}, ` +
+          `stock ${target.goods[good]} -> ${after.slots[target.agent]!.goods[good]}`,
+      );
+      console.log(`              signed by the stranger, NOT the authority`);
+      console.log(`              ${sig}`);
+      console.log(`              ${ledger.explorer('tx', sig)}`);
+
+      // And it is genuinely conditional, not a formality. The same stranger, the
+      // same instruction, against an agent the chain considers solvent:
+      const solvent = after.slots.findIndex(
+        (sl, i) => i !== ledger.reliefPool && sl.cash > after.distressThreshold * 2n,
+      );
+      if (solvent >= 0) {
+        let refused = 'the chain ALLOWED it — the health condition is not enforced';
+        try {
+          await ledger.liquidate(stranger, solvent, 1);
+        } catch (err) {
+          refused = (err as Error).message;
+        }
+        console.log(
+          `\n  same call against agent ${solvent} (${ledger.roster.ids[solvent]}), ` +
+            `cash ${money(after.slots[solvent]!.cash)}:`,
+        );
+        console.log(`              ${refused}`);
+      }
+    }
+  }
+
+  // ---- the chain as the source of truth ------------------------------------
+  // `chain.chainAuthoritative` inverts the usual direction: the engine's numbers are
+  // checked against the account and corrected from it, so the ledger stops being a
+  // log of what we decided and starts being what is true.
+  if (chainOf(world)?.chainAuthoritative) {
+    const state = await ledger.read();
+    // Stand in for the engine's view, then corrupt two balances the way a real
+    // divergence would look: a dropped settlement and a double-counted harvest.
+    const engineView: Record<string, Record<string, number>> = {};
+    for (let i = 0; i < ledger.roster.count; i++) {
+      const entity = ledger.roster.ids[i]!;
+      const slot = state.slots[i]!;
+      engineView[entity] = { [ledger.map.currency]: Number(slot.cash) };
+      for (const { index, resource } of ledger.map.tradable) {
+        engineView[entity]![resource] = slot.goods[index] ?? 0;
+      }
+    }
+    const a = ledger.roster.ids[1]!;
+    const b = ledger.roster.ids[2]!;
+    engineView[a]![ledger.map.currency] = Number(state.slots[1]!.cash) + 777;
+    engineView[b]![ledger.map.tradable[0]!.resource] = 999;
+
+    const report = await ledger.reconcile(engineView);
+    console.log(`\n  reconcile   round ${report.round}, ${report.checked} balances checked`);
+    for (const d of report.divergences) {
+      console.log(
+        `              ${d.entity} ${d.resource}: engine ${money(d.engine)} ` +
+          `!= chain ${money(d.chain)} -> corrected to chain`,
+      );
+    }
+    console.log(
+      `              engine now reads ${engineView[a]![ledger.map.currency]} for ${a} ` +
+        `(the chain's number)`,
+    );
+  }
 
   // ---- the claim worth making ---------------------------------------------
   const final = await ledger.read();
   console.log(`\n  round       ${final.round}`);
   console.log(`  money       ${money(final.moneySupply)} ${ledger.map.currency}`);
-  const conserved = final.moneySupply === genesis.moneySupply;
+  const conserved = final.moneySupply === opening.moneySupply;
   console.log(
     `  conserved   ${conserved ? 'yes' : 'NO'}  ` +
-      `(genesis ${money(genesis.moneySupply)}, now ${money(final.moneySupply)})`,
+      `(genesis ${money(opening.moneySupply)}, now ${money(final.moneySupply)})`,
   );
   if (!conserved) throw new Error('the money supply moved; the program is broken');
 

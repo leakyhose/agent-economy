@@ -38,6 +38,19 @@
 //! a coin, and `sealed` is a byte anyone can read off the account. That is the claim
 //! worth making, and it is checkable on a block explorer rather than asserted in
 //! slides.
+//!
+//! # One instruction the server does not control
+//!
+//! Every instruction above is gated on the authority's signature, which makes them
+//! all, ultimately, the server's opinion. [`liquidate`](world::liquidate) is not. It
+//! checks an on-chain health condition — an agent's cash below the world's declared
+//! `distress_threshold` — and if that holds, **anyone** may call it and force one unit
+//! of that agent's goods to be sold to the relief pool at the last clearing price. No
+//! authority check, no discretion, no way for the server to forbear.
+//!
+//! This is the part no off-chain simulation can offer. A judge with a terminal and a
+//! funded keypair can reach into a running world and change it, and the rules are what
+//! decide whether they may — not us.
 
 use anchor_lang::prelude::*;
 
@@ -48,7 +61,7 @@ pub const MAX_AGENTS: usize = 320;
 /// Good-index capacity, including the currency at index 0. `num_goods` is runtime.
 pub const MAX_GOODS: usize = 8;
 
-/// `8` discriminator + [`Ledger`]. 12,920 bytes — deliberately over Anchor's 10,240
+/// `8` discriminator + [`Ledger`]. 12,928 bytes — deliberately over Anchor's 10,240
 /// `init` ceiling, so the client allocates the account with `SystemProgram.createAccount`
 /// and `initialize` takes it via the `zero` constraint. See [`Initialize`].
 pub const LEDGER_SIZE: usize = 8 + core::mem::size_of::<Ledger>();
@@ -66,15 +79,20 @@ pub mod world {
         num_goods: u8,
         start_cash: u64,
         start_goods: [u32; MAX_GOODS],
+        distress_threshold: u64,
+        relief_pool: u16,
     ) -> Result<()> {
         require!(num_agents as usize <= MAX_AGENTS, WorldErr::TooManyAgents);
         require!(num_goods as usize <= MAX_GOODS, WorldErr::TooManyGoods);
         require!(num_goods >= 1, WorldErr::TooManyGoods);
+        require!((relief_pool as u32) < num_agents, WorldErr::BadAgent);
 
         let mut l = ctx.accounts.ledger.load_init()?;
         l.authority = ctx.accounts.authority.key();
         l.num_agents = num_agents;
         l.num_goods = num_goods;
+        l.distress_threshold = distress_threshold;
+        l.relief_pool = relief_pool;
         l.round = 0;
         l.last_price = [0u64; MAX_GOODS];
         for i in 0..num_agents as usize {
@@ -133,6 +151,32 @@ pub mod world {
         require!(l.sealed == 1, WorldErr::GenesisOpen);
         apply_transfer(&mut l, from, to, amount)?;
         emit!(Transferred { from, to, amount });
+        Ok(())
+    }
+
+    /// Force one unit of a distressed agent's goods to market. **Permissionless.**
+    ///
+    /// Callable by any signer, with no relationship to the ledger's authority, when
+    /// and only when the agent's cash has fallen below the world's declared
+    /// `distress_threshold`. One unit of `good` moves to the relief pool and the pool
+    /// pays the last clearing price for it, so the distressed agent ends the call with
+    /// more cash and less stock. Cash and goods are both conserved; the pool is finite
+    /// and can run dry, which is a real constraint and not a safety valve.
+    ///
+    /// The caller is recorded in the event and is otherwise unprivileged: it signs
+    /// because a Solana transaction needs a fee payer, not because the program cares
+    /// who it is.
+    pub fn liquidate(ctx: Context<Liquidate>, agent: u16, good: u8) -> Result<()> {
+        let mut l = ctx.accounts.ledger.load_mut()?;
+        require!(l.sealed == 1, WorldErr::GenesisOpen);
+        let out = apply_liquidation(&mut l, agent, good)?;
+        emit!(Liquidated {
+            agent,
+            good,
+            price: out,
+            caller: ctx.accounts.caller.key(),
+            round: l.round,
+        });
         Ok(())
     }
 
@@ -235,6 +279,42 @@ pub fn apply_endowments(l: &mut Ledger, entries: &[Endowment]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The forced sale behind [`liquidate`](world::liquidate). Returns the price paid.
+///
+/// Deliberately has no `authority` parameter: there is no one this could check.
+pub fn apply_liquidation(l: &mut Ledger, agent: u16, good: u8) -> Result<u64> {
+    let n = l.num_agents;
+    let pool = l.relief_pool;
+    require!((agent as u32) < n, WorldErr::BadAgent);
+    require!(agent != pool, WorldErr::BadAgent);
+    let g = good as usize;
+    require!(g < l.num_goods as usize, WorldErr::BadGood);
+    require!(g != 0, WorldErr::CurrencyNotTradeable);
+
+    // The health condition. This is the whole of the permission system.
+    require!(
+        l.slots[agent as usize].cash < l.distress_threshold,
+        WorldErr::NotDistressed
+    );
+    require!(l.slots[agent as usize].goods[g] > 0, WorldErr::NothingToLiquidate);
+
+    let price = l.last_price[g].max(1);
+    require!(l.slots[pool as usize].cash >= price, WorldErr::ReliefPoolEmpty);
+    let pool_holding = (l.slots[pool as usize].goods[g] as u64)
+        .checked_add(1)
+        .ok_or(WorldErr::Overflow)?;
+    require!(pool_holding <= u32::MAX as u64, WorldErr::Overflow);
+
+    l.slots[agent as usize].goods[g] -= 1;
+    l.slots[pool as usize].goods[g] = pool_holding as u32;
+    l.slots[pool as usize].cash -= price;
+    l.slots[agent as usize].cash = l.slots[agent as usize]
+        .cash
+        .checked_add(price)
+        .ok_or(WorldErr::Overflow)?;
+    Ok(price)
 }
 
 /// Zero-sum cash movement between two live agents.
@@ -390,13 +470,17 @@ pub struct Ledger {
     pub authority: Pubkey,
     /// Last clearing price per good index. Index 0 unused.
     pub last_price: [u64; MAX_GOODS],
+    /// Cash below which an agent is distressed and anyone may [`liquidate`] it.
+    pub distress_threshold: u64,
     pub num_agents: u32,
     pub round: u32,
+    /// The slot that buys liquidated goods. An ordinary slot, funded at genesis.
+    pub relief_pool: u16,
     /// Live good count, including the currency at index 0.
     pub num_goods: u8,
     /// `0` while genesis is open, `1` once closed. One-way.
     pub sealed: u8,
-    pub _pad: [u8; 6],
+    pub _pad: [u8; 4],
     pub slots: [AgentSlot; MAX_AGENTS],
 }
 
@@ -456,6 +540,16 @@ pub struct Cleared {
 }
 
 #[event]
+pub struct Liquidated {
+    pub agent: u16,
+    pub good: u8,
+    pub price: u64,
+    /// Whoever called it. Unprivileged, and recorded so the world can show who acted.
+    pub caller: Pubkey,
+    pub round: u32,
+}
+
+#[event]
 pub struct Transferred {
     pub from: u16,
     pub to: u16,
@@ -474,7 +568,17 @@ pub struct Initialize<'info> {
     pub ledger: AccountLoader<'info, Ledger>,
 }
 
-/// Every write to the ledger must be signed by the ledger's authority.
+/// The permissionless path. `caller` signs the transaction — someone has to pay the
+/// fee — but the program never compares that key to anything. That absence is the
+/// feature; do not add an authority here.
+#[derive(Accounts)]
+pub struct Liquidate<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    pub caller: Signer<'info>,
+}
+
+/// Every other write to the ledger must be signed by the ledger's authority.
 #[derive(Accounts)]
 pub struct Write<'info> {
     #[account(mut)]
@@ -524,6 +628,12 @@ pub enum WorldErr {
     GenesisSealed,
     #[msg("genesis is still open; seal the ledger before running the world")]
     GenesisOpen,
+    #[msg("this agent is not distressed; the health condition does not hold")]
+    NotDistressed,
+    #[msg("this agent holds none of that good")]
+    NothingToLiquidate,
+    #[msg("the relief pool cannot afford this liquidation")]
+    ReliefPoolEmpty,
 }
 
 // -------------------------------------------------------------------- tests
@@ -536,6 +646,8 @@ mod tests {
         let mut l: Box<Ledger> = Box::new(unsafe { std::mem::zeroed() });
         l.num_agents = num_agents;
         l.num_goods = num_goods;
+        // The last slot is the relief pool by convention; the client does the same.
+        l.relief_pool = (num_agents - 1) as u16;
         for i in 0..num_agents as usize {
             l.slots[i].cash = cash;
             for g in 1..num_goods as usize {
@@ -565,8 +677,8 @@ mod tests {
     #[test]
     fn layout_is_what_the_client_decodes() {
         assert_eq!(core::mem::size_of::<AgentSlot>(), 40);
-        assert_eq!(core::mem::size_of::<Ledger>(), 112 + 320 * 40);
-        assert_eq!(LEDGER_SIZE, 12_920);
+        assert_eq!(core::mem::size_of::<Ledger>(), 120 + 320 * 40);
+        assert_eq!(LEDGER_SIZE, 12_928);
         // Past Anchor's `init` ceiling on purpose; the client allocates it.
         assert!(LEDGER_SIZE > 10_240);
     }
@@ -898,6 +1010,86 @@ mod tests {
         assert!(apply_deltas(&mut l, &[Delta { agent: 0, good: 0, delta: i32::MAX }]).is_err());
         apply_transfer(&mut l, 0, 1, 1_000).unwrap();
         apply_auction(&mut l, 1, &[order(2, 3, 90)], &[order(3, 3, 50)]).unwrap();
+        assert_eq!(total_cash(&l), supply);
+    }
+
+    // --- the permissionless path --------------------------------------------
+
+    #[test]
+    fn anyone_may_liquidate_a_distressed_agent() {
+        let mut l = ledger(8, 3, 50, 4); // everyone broke, everyone holding stock
+        l.distress_threshold = 100;
+        l.last_price[1] = 30;
+        let pool = l.relief_pool as usize;
+        l.slots[pool].cash = 10_000;
+        let supply = total_cash(&l);
+
+        // No authority is passed, because there is nothing for one to authorise.
+        let price = apply_liquidation(&mut l, 2, 1).unwrap();
+        assert_eq!(price, 30);
+        assert_eq!(l.slots[2].cash, 80, "the distressed agent is paid");
+        assert_eq!(l.slots[2].goods[1], 3, "and gives up one unit");
+        assert_eq!(l.slots[pool].goods[1], 5, "which the pool now holds");
+        assert_eq!(total_cash(&l), supply, "cash is still conserved");
+    }
+
+    #[test]
+    fn a_solvent_agent_cannot_be_touched() {
+        let mut l = ledger(8, 3, 5_000, 4);
+        l.distress_threshold = 100;
+        l.last_price[1] = 30;
+        l.slots[l.relief_pool as usize].cash = 10_000;
+        let e = apply_liquidation(&mut l, 2, 1).unwrap_err();
+        assert_eq!(err_of(e), code(WorldErr::NotDistressed));
+        assert_eq!(l.slots[2].goods[1], 4, "nothing moved");
+    }
+
+    #[test]
+    fn a_distressed_agent_with_nothing_left_is_left_alone() {
+        let mut l = ledger(8, 3, 50, 0);
+        l.distress_threshold = 100;
+        l.last_price[1] = 30;
+        l.slots[l.relief_pool as usize].cash = 10_000;
+        let e = apply_liquidation(&mut l, 2, 1).unwrap_err();
+        assert_eq!(err_of(e), code(WorldErr::NothingToLiquidate));
+    }
+
+    #[test]
+    fn the_relief_pool_is_finite() {
+        let mut l = ledger(8, 3, 50, 4);
+        l.distress_threshold = 100;
+        l.last_price[1] = 30;
+        let pool = l.relief_pool as usize;
+        l.slots[pool].cash = 40; // enough for one, not two
+        apply_liquidation(&mut l, 2, 1).unwrap();
+        let e = apply_liquidation(&mut l, 3, 1).unwrap_err();
+        assert_eq!(err_of(e), code(WorldErr::ReliefPoolEmpty));
+    }
+
+    #[test]
+    fn the_pool_cannot_liquidate_itself() {
+        let mut l = ledger(8, 3, 50, 4);
+        l.distress_threshold = 100;
+        l.last_price[1] = 30;
+        let pool = l.relief_pool;
+        let e = apply_liquidation(&mut l, pool, 1).unwrap_err();
+        assert_eq!(err_of(e), code(WorldErr::BadAgent));
+    }
+
+    #[test]
+    fn liquidation_never_moves_the_money_supply() {
+        let mut l = ledger(16, 4, 20, 9);
+        l.distress_threshold = 1_000;
+        l.last_price[1] = 7;
+        l.last_price[2] = 11;
+        let pool = l.relief_pool as usize;
+        l.slots[pool].cash = 1_000_000;
+        let supply = total_cash(&l);
+        for agent in 0..15u16 {
+            for good in 1..3u8 {
+                let _ = apply_liquidation(&mut l, agent, good);
+            }
+        }
         assert_eq!(total_cash(&l), supply);
     }
 

@@ -6,21 +6,24 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
   Transaction,
-  type Signer,
+  type TransactionInstruction,
 } from '@solana/web3.js';
-import type { EntityId, WalletService } from '@aw/types';
+import type { AgentWallet, EntityId, WalletService } from '@aw/types';
 import type { AgentRoster, GoodMap } from './goods.ts';
 import { decodeLedger, type LedgerState } from './ix.ts';
+import type { Signing } from './sender.ts';
 
 /**
  * The only module in the system that holds a private key.
  *
- * Nothing here returns key material, and nothing here logs it. `addressFor` gives out
- * public keys; signing happens inside {@link SolanaWalletService.sign} and the
- * `Keypair`s never leave the closure. The instances deliberately redact themselves
- * under `console.log` and `JSON.stringify`, because the way secrets escape is not a
- * deliberate `return secretKey` — it is an object that got printed in a debug session.
+ * Nothing here returns key material and nothing here logs it. `addressFor` gives out
+ * public keys; signing happens through {@link SolanaWalletService.signing}, which
+ * hands back a closure that can sign a transaction but cannot be asked what it signs
+ * with. The instances deliberately redact themselves under `console.log` and
+ * `JSON.stringify`, because the way secrets escape is not a deliberate
+ * `return secretKey` — it is an object that got printed in a debug session.
  *
  * `@aw/agents` must never import this. The brief makes that a structural rule rather
  * than a convention, and the package boundary is what enforces it.
@@ -36,6 +39,11 @@ export class SolanaWalletService implements WalletService {
   readonly #ledger: PublicKey;
   readonly #map: GoodMap;
   readonly #roster: AgentRoster;
+
+  /** resource -> mint, once a {@link TokenService} has created them. */
+  readonly #mints = new Map<string, PublicKey>();
+  /** `${entity}:${resource}` -> associated token account. Derivation is pure but slow. */
+  readonly #ataCache = new Map<string, PublicKey>();
 
   /** Balance reads are cached briefly: a tick asks for hundreds of them at once. */
   #cache: { at: number; state: LedgerState } | null = null;
@@ -66,9 +74,15 @@ export class SolanaWalletService implements WalletService {
     this.#cacheMs = opts.cacheMs ?? 400;
   }
 
+  // ------------------------------------------------------------- addresses
+
   /** The public key that signs ledger writes. */
   authorityAddress(): string {
     return this.#authority.publicKey.toBase58();
+  }
+
+  get authorityKey(): PublicKey {
+    return this.#authority.publicKey;
   }
 
   /**
@@ -79,8 +93,44 @@ export class SolanaWalletService implements WalletService {
    * in the UI mean anything.
    */
   async addressFor(entity: EntityId): Promise<string> {
-    return this.#keyFor(entity).publicKey.toBase58();
+    return this.keyFor(entity).toBase58();
   }
+
+  /** Synchronous form, for building instructions. Public key only. */
+  keyFor(entity: EntityId): PublicKey {
+    return this.#keypairFor(entity).publicKey;
+  }
+
+  // ------------------------------------------------------------- signing
+
+  /**
+   * A {@link Signing} that pays with the authority and signs as the authority plus,
+   * optionally, some agents — needed when an agent's own token account is the source
+   * of a transfer and must authorise it.
+   *
+   * Returns a closure, not keys. That is the whole point.
+   */
+  signing(...as: EntityId[]): Signing {
+    const extra = as.map((e) => this.#keypairFor(e));
+    return {
+      feePayer: this.#authority.publicKey,
+      sign: (tx: Transaction) => {
+        tx.partialSign(this.#authority, ...extra);
+      },
+    };
+  }
+
+  /** As {@link signing}, but also signs with ephemeral keypairs the caller made. */
+  signingWithEphemeral(...ephemeral: Keypair[]): Signing {
+    return {
+      feePayer: this.#authority.publicKey,
+      sign: (tx: Transaction) => {
+        tx.partialSign(this.#authority, ...ephemeral);
+      },
+    };
+  }
+
+  // ------------------------------------------------------------- balances
 
   /** The entity's balance in the world's currency: `SOL` here, `gold` there. */
   async getBalance(entity: EntityId): Promise<number> {
@@ -98,26 +148,91 @@ export class SolanaWalletService implements WalletService {
     return out;
   }
 
-  /**
-   * Sign a transaction with the ledger authority.
-   *
-   * The caller builds and sends; the key stays here. Returns the same transaction so
-   * this reads as a pipeline step, not because anything secret comes back.
-   */
-  sign(tx: Transaction, extra: readonly Signer[] = []): Transaction {
-    tx.sign(this.#authority, ...extra);
-    return tx;
-  }
-
-  /** Signers for a transaction, for the send path. Public keys only in, keys stay in. */
-  signers(extra: readonly Signer[] = []): Signer[] {
-    return [this.#authority, ...extra];
-  }
-
   /** Drop the cached ledger snapshot; the next read hits RPC. */
   invalidate(): void {
     this.#cache = null;
   }
+
+  // ------------------------------------------------------------- SPL wiring
+
+  /**
+   * Tell the wallet which mint backs which resource.
+   *
+   * Called by the {@link TokenService} once the mints exist. The wallet needs it to
+   * derive associated token accounts, and keeping the mapping here rather than in the
+   * token service means an {@link AgentWallet} can be produced without a round trip.
+   */
+  registerMint(resource: string, mint: PublicKey): void {
+    this.#mints.set(resource, mint);
+  }
+
+  mintFor(resource: string): PublicKey | undefined {
+    return this.#mints.get(resource);
+  }
+
+  get resourcesWithMints(): string[] {
+    return [...this.#mints.keys()];
+  }
+
+  /**
+   * The associated token account for one entity and resource.
+   *
+   * Derived, not fetched — a PDA off the owner, the token program and the mint — so
+   * this is arithmetic and it is cached because the arithmetic is a SHA-256 grind and
+   * a world of 27 agents across 4 tokens asks for it constantly.
+   */
+  tokenAccountFor(entity: EntityId, resource: string): PublicKey {
+    const key = `${entity}:${resource}`;
+    const hit = this.#ataCache.get(key);
+    if (hit) return hit;
+    const mint = this.#mints.get(resource);
+    if (!mint) throw new Error(`resource "${resource}" has no mint registered`);
+    const ata = associatedTokenAddress(mint, this.keyFor(entity));
+    this.#ataCache.set(key, ata);
+    return ata;
+  }
+
+  /** The authority's own token account — the world reserve, and the mint destination. */
+  treasuryTokenAccount(resource: string): PublicKey {
+    const mint = this.#mints.get(resource);
+    if (!mint) throw new Error(`resource "${resource}" has no mint registered`);
+    return associatedTokenAddress(mint, this.#authority.publicKey);
+  }
+
+  /** The `AgentWallet` record for an entity: addresses only, by construction. */
+  walletFor(entity: EntityId): AgentWallet {
+    const tokenAccounts: Record<string, string> = {};
+    for (const resource of this.#mints.keys()) {
+      tokenAccounts[resource] = this.tokenAccountFor(entity, resource).toBase58();
+    }
+    return { entity, address: this.keyFor(entity).toBase58(), tokenAccounts };
+  }
+
+  /** Every agent's wallet, in ledger slot order. */
+  allWallets(): AgentWallet[] {
+    return this.#roster.ids.map((id) => this.walletFor(id));
+  }
+
+  /**
+   * Instructions that move a little real SOL to each agent.
+   *
+   * Agents do not strictly need lamports — the authority pays every fee and an
+   * associated token account's owner needs no balance — but an account with zero
+   * lamports does not exist as far as an explorer is concerned, and "click the agent,
+   * see a real account" is most of why per-agent keypairs are worth having. Batched by
+   * the caller; this only builds them.
+   */
+  fundingInstructions(lamportsEach: number): TransactionInstruction[] {
+    return this.#roster.ids.map((id) =>
+      SystemProgram.transfer({
+        fromPubkey: this.#authority.publicKey,
+        toPubkey: this.keyFor(id),
+        lamports: lamportsEach,
+      }),
+    );
+  }
+
+  // ------------------------------------------------------------- internals
 
   async #state(): Promise<LedgerState> {
     if (this.#cache && Date.now() - this.#cache.at < this.#cacheMs) return this.#cache.state;
@@ -137,7 +252,7 @@ export class SolanaWalletService implements WalletService {
     return slot;
   }
 
-  #keyFor(entity: EntityId): Keypair {
+  #keypairFor(entity: EntityId): Keypair {
     let kp = this.#derived.get(entity);
     if (!kp) {
       // HMAC over the master seed: deterministic, and the entity id cannot be worked
@@ -157,6 +272,27 @@ export class SolanaWalletService implements WalletService {
   toJSON(): Record<string, string> {
     return { authority: this.authorityAddress(), keys: '<redacted>' };
   }
+}
+
+/** The SPL token program. */
+export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+/** The associated-token-account program. */
+export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
+  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+);
+
+/**
+ * Derive an associated token account address.
+ *
+ * `[owner, token program, mint]` under the ATA program — the same derivation
+ * `@solana/spl-token` does, done here so the wallet has no runtime dependency on it
+ * and so the result can be cached behind our own key.
+ */
+export function associatedTokenAddress(mint: PublicKey, owner: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  )[0];
 }
 
 /** Load a Solana CLI keypair file. Used for the authority; never re-exported. */

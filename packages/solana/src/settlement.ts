@@ -11,6 +11,7 @@ import {
   type LedgerAccounts,
 } from './ix.ts';
 import type { TxSender } from './sender.ts';
+import type { SolanaTokenService } from './tokens.ts';
 import type { SolanaWalletService } from './wallet.ts';
 
 /**
@@ -23,6 +24,14 @@ import type { SolanaWalletService } from './wallet.ts';
 export interface SettlementFailure {
   intents: SettlementIntent[];
   error: Error;
+}
+
+/** One transaction's worth of plan: what to send, and who has to sign it. */
+interface PlannedTx {
+  instructions: TransactionInstruction[];
+  intents: SettlementIntent[];
+  /** Agents whose keys must authorise this, for SPL transfers out of their accounts. */
+  signAs?: EntityId[];
 }
 
 export interface QueueOptions {
@@ -45,11 +54,17 @@ export interface QueueOptions {
  * settlement down without slowing the world down. `flush` is the one place a caller
  * chooses to wait, and it is for the end of a run or a demo checkpoint, not the tick.
  *
- * Intents are grouped by what they move. A transfer of the world's currency becomes a
- * `transfer` instruction; a transfer of a good becomes a pair of signed deltas in a
- * `settle` instruction, which conserves the good for the same reason `transfer`
- * conserves cash. Several of either are packed into one transaction, up to the
- * per-transaction caps in `program.ts`.
+ * Intents are grouped by what they move. With no {@link SolanaTokenService} attached
+ * they settle against the world ledger: the currency becomes a `transfer`
+ * instruction, a good becomes a pair of signed deltas in a `settle` instruction, and
+ * both conserve what they move by construction.
+ *
+ * With a token service attached, any resource that has a real SPL mint settles as a
+ * real SPL transfer between the two agents' associated token accounts instead —
+ * signed by the sending agent, because SPL will not let the server move someone
+ * else's tokens. Resources with no mint (Medieval Kingdom's `land` is one; it is a
+ * `pda_record` asset, not a fungible token) keep using the ledger. Either way several
+ * intents are packed into one transaction, up to the caps in `ix.ts`.
  */
 export class SolanaSettlementQueue implements SettlementQueue {
   readonly #buffer: SettlementIntent[] = [];
@@ -62,6 +77,7 @@ export class SolanaSettlementQueue implements SettlementQueue {
   readonly #programId: PublicKey;
   readonly #map: GoodMap;
   readonly #resolve: (entity: EntityId) => number | undefined;
+  readonly #tokens: SolanaTokenService | undefined;
 
   readonly #batchSize: number;
   readonly #lingerMs: number;
@@ -81,6 +97,8 @@ export class SolanaSettlementQueue implements SettlementQueue {
     map: GoodMap;
     /** Entity id to ledger slot. Usually `roster.indexOf`. */
     resolveAgent: (entity: EntityId) => number | undefined;
+    /** Attach to settle minted resources as real SPL transfers. */
+    tokens?: SolanaTokenService;
     options?: QueueOptions;
   }) {
     this.#sender = opts.sender;
@@ -89,6 +107,7 @@ export class SolanaSettlementQueue implements SettlementQueue {
     this.#accounts = opts.accounts;
     this.#map = opts.map;
     this.#resolve = opts.resolveAgent;
+    this.#tokens = opts.tokens;
     this.#batchSize = opts.options?.batchSize ?? 48;
     this.#lingerMs = opts.options?.lingerMs ?? 0;
     this.#onError = opts.options?.onError;
@@ -176,7 +195,7 @@ export class SolanaSettlementQueue implements SettlementQueue {
         for (const group of this.#plan(batch)) {
           const signature = await this.#sender.send(
             group.instructions,
-            this.#wallet.signers(),
+            this.#wallet.signing(...(group.signAs ?? [])),
           );
           this.#signatures.push(signature);
           this.#onSignature?.(signature, group.intents);
@@ -194,12 +213,26 @@ export class SolanaSettlementQueue implements SettlementQueue {
     }
   }
 
-  /** Turn intents into transactions: cash moves one way, goods the other. */
-  #plan(batch: SettlementIntent[]): { instructions: TransactionInstruction[]; intents: SettlementIntent[] }[] {
+  /** Turn intents into transactions: SPL where there is a mint, ledger where not. */
+  #plan(batch: SettlementIntent[]): PlannedTx[] {
     const cash: { intent: SettlementIntent; from: number; to: number }[] = [];
     const goods: { intent: SettlementIntent; deltas: Delta[] }[] = [];
+    const spl: { intent: SettlementIntent; instructions: TransactionInstruction[]; signAs: EntityId[] }[] = [];
 
     for (const intent of batch) {
+      const amount0 = Math.trunc(intent.amount);
+      if (amount0 <= 0 || intent.from === intent.to) continue;
+
+      // A resource with a real mint settles as a real token transfer. This is the
+      // path a judge can verify in any wallet, so prefer it wherever it exists.
+      if (this.#tokens?.mintOf(intent.asset)) {
+        spl.push({
+          intent,
+          ...this.#tokens.transferInstructions(intent.asset, intent.from, intent.to, amount0),
+        });
+        continue;
+      }
+
       const from = this.#resolve(intent.from);
       const to = this.#resolve(intent.to);
       if (from === undefined || to === undefined) {
@@ -212,8 +245,8 @@ export class SolanaSettlementQueue implements SettlementQueue {
       if (good === undefined) {
         throw new Error(`asset "${intent.asset}" does not settle on chain in this world`);
       }
-      const amount = Math.trunc(intent.amount);
-      if (amount <= 0 || from === to) continue; // nothing to settle
+      const amount = amount0;
+      if (from === to) continue; // nothing to settle
       if (good === 0) cash.push({ intent, from, to });
       else {
         goods.push({
@@ -226,7 +259,17 @@ export class SolanaSettlementQueue implements SettlementQueue {
       }
     }
 
-    const out: { instructions: TransactionInstruction[]; intents: SettlementIntent[] }[] = [];
+    const out: PlannedTx[] = [];
+
+    // Two instructions and four fresh accounts per SPL transfer, so the account list
+    // is the binding constraint, not the data. Six keeps a legacy transaction honest.
+    for (const part of chunk(spl, 6)) {
+      out.push({
+        intents: part.map((p) => p.intent),
+        instructions: part.flatMap((p) => p.instructions),
+        signAs: part.flatMap((p) => p.signAs),
+      });
+    }
 
     for (const part of chunk(cash, MAX_TRANSFERS_PER_TX)) {
       out.push({
