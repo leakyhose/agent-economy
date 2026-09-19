@@ -146,8 +146,11 @@ after a wave of defaults, `borrow` refusals for "lending cap" rise.
   transaction involving it references (program checks it), so each agent's own history shows in
   the explorer. Needs address lookup tables so a 30-agent auction still fits in a transaction.
   Optional: per-agent keypairs that sign their own loans (custodial; say so).
-- **Coins as an SPL token (≈4–6h)** whose only minter is the program's rules — the money supply
-  becomes checkable in the explorer.
+- ~~**Coins as an SPL token**~~ — **done.** SETTLERS: the mint is a PDA that is its own
+  authority, `borrow` mints and `repay`/foreclosure burn by CPI, and the supply is checked
+  against the books in the same instruction. See CONTEXT.md §3. What's left is Metaplex
+  metadata so explorers show the name, which needs the metadata program (on devnet it's
+  already there; a local validator must clone it).
 - **Transaction V1 (4,096 bytes)** if auctions exceed ~96 orders per good (≈100 agents).
 
 ## 7. 100-agent demo (≈1–2h + one paid run)
@@ -168,6 +171,10 @@ for surplus) into hoarding — use half the firewood, rot-free storage up to N u
 Another on-chain good: MAX_AGENTS drops (≈135).
 
 ## Done since this plan was written
+
+- **SETTLERS, the coin as a real SPL token** (item 6). Verified by
+  `backend/scripts/check-settlers.sh`: 30 checks over minting, repayment, collection,
+  foreclosure, a fire sale that burns bad debt, and a dividend.
 
 - Item 1 (fixes & true information) and item 3 (balance-sheet bank) — checkpoint 1, commit
   `00cfef2` on `ys-version`. Boats exist on-chain as a good but can't be built yet.

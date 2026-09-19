@@ -44,7 +44,8 @@ agent-economy/
 **The split is deliberate:**
 - **Off-chain:** the clock, agent reasoning (LLM calls), the dashboard.
 - **On-chain:** every agent's cash and goods, the market that sets prices, and the bank.
-  This is real Solana program state, not a log of what happened elsewhere.
+  This is real Solana program state, not a log of what happened elsewhere. The money is a
+  real SPL token, **SETTLERS**, that the program alone can mint (§3).
 
 *"The policy is off-chain, the settlement is on-chain. The chain enforces what can't be
 faked."*
@@ -97,7 +98,9 @@ Agents start with 30 coins, 6 food and 4 wood.
 ### The bank
 
 **Money is created by lending.** Starting money is `AGENTS × START_CASH`; the only way
-new coins appear is `borrow`, which mints them against pledged goods (not food).
+new coins appear is `borrow`, which mints them against pledged goods (not food). Those are
+SETTLERS, a real SPL token: `borrow` mints and `repay` burns them by CPI, and the mint's
+supply is checked against the books inside the same instruction (§3).
 Repaying pays interest to the bank and burns the principal. Pledged goods don't rot and
 stay usable (you fish with a pledged net, live in a pledged house) but can't be sold.
 
@@ -150,11 +153,13 @@ One Anchor program (`chain/programs/chain/src/lib.rs`), 5 goods, `MAX_AGENTS` 13
 most that fits under the 10 KiB create limit). The instructions:
 
 ```
-initialize   ledger, purses, opening prices, bank equity + terms (LTV 0 = no credit)
+initialize   ledger, purses, opening prices, bank equity + terms (LTV 0 = no credit),
+             and the SETTLERS mint + vault (both PDAs), with the opening money minted
 settle       signed goods deltas: catches, meals, fires, crafting, houses, spoilage
 clear_auction  uniform-price batch auction for one good (the bank may sell)
-borrow       lock goods, MINT coins, borrower's term; capped by collateral AND bank capital
-repay        accrued interest to equity, principal BURNED; unlock when paid off
+borrow       lock goods, MINT coins (real SPL mint_to), borrower's term; capped by
+             collateral AND bank capital
+repay        accrued interest to equity, principal BURNED (real SPL burn); unlock when paid off
 liquidate    PERMISSIONLESS: overdue → collect from cash, or foreclose; margin call →
              foreclose. Partial seizure at fire-sale value, excess refunded
 pay_dividend PERMISSIONLESS: equity above requirement, to all agents
@@ -200,11 +205,44 @@ after it. Auctions and the dividend go out in parallel (~1.2s per round at 30 ag
 Compute is not the constraint; transaction **size** is. At 100 agents a `clear_auction`
 transaction was 1220 of 1232 legacy-transaction bytes.
 
+### SETTLERS, the coin
+
+The money is an SPL token. The mint is a PDA at `["settlers", ledger]` and **is its own
+mint and freeze authority**, so no key that could mint or freeze a SETTLER exists
+anywhere. It has 2 decimals, so one token base unit is one cent — the unit `cash` is
+already held in, with no conversion anywhere. Every coin sits in one vault, a PDA at
+`["vault", ledger]` owned by the mint.
+
+Minting and burning are derived from the books rather than restated: each instruction
+snapshots `(minted, principal_repaid + written_off)` on entry, and on exit mints or burns
+the difference and asserts
+
+```
+SETTLERS supply = Σ agent cash + bank cash
+```
+
+so a wrong burn fails the next transaction that touches the mint. `settle` and
+`pay_dividend` never carry the mint — neither can change the total. `clear_auction` takes
+it as **optional accounts**, required exactly when the asks contain a `BANK` order: a fire
+sale paying down `bad_debt` is the one way an auction destroys coins, and an ordinary
+auction (the transaction closest to the size limit) pays 3 bytes rather than 96 to leave
+them off.
+
+Verified end to end by `backend/scripts/check-settlers.sh`, which runs a village through
+every one of those paths on a validator of its own (port 8999, never 8899).
+
+**On devnet:** `backend/scripts/deploy-devnet.sh` deploys the program (~1.11 SOL of rent)
+and then walks one village through the whole monetary story slowly enough for devnet's
+rate limit — a loan, a repayment, a collection, a foreclosure, a fire sale, a dividend —
+leaving a mint anyone can open in Solana Explorer. The live simulation still runs against
+a local validator; devnet's ~10 req/s is too slow for 3-second rounds.
+
 ### Gaps
 
-- No SPL token — cash is a `u64` field in our account, not a mint.
 - No per-agent on-chain identity — an agent is an array index, not an account.
 - No standalone script for a judge to call `liquidate` themselves.
+- No Metaplex token metadata, so explorers show the mint's address rather than the name
+  "SETTLERS". The metadata program isn't on a bare `solana-test-validator`; on devnet it is.
 
 All three are in FUTURE_PLAN.md §6.
 

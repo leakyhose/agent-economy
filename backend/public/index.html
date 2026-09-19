@@ -106,9 +106,9 @@
 <script>
 const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
-const GN = ['food', 'wood', 'nets', 'boats', 'houses'];   // good index -> name, same order as the chain
+const GN = ['food', 'wood', 'nets', 'labour', 'houses'];  // good index -> name, same order as the chain
 const GC = ['#2f7fc1', '#8a5a2b', '#7b4fb0', '#333', '#c77700'];   // one colour per good, used everywhere
-const SHOWN = [0, 1, 2, 4];          // boats (3) are a dead on-chain slot: never made, never shown
+const SHOWN = [0, 1, 2, 4];          // goods with a chart of their own. Labour (3) is a shift of work: its price is the wage, shown with the economy's numbers
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 let running = false;
@@ -457,6 +457,7 @@ function details() {
     (s.bank.creditOn ? `loans run ${s.bank.terms} rounds` : 'credit off') + '<br>' +
     (s.metrics ? `economy (last round): GDP ${s.metrics.gdp.toFixed(2)} · price index ${s.metrics.priceIndex.toFixed(2)}` +
       ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
+      (s.metrics.wage != null ? ` · wage ${(s.metrics.wage / 100).toFixed(2)} a shift · working for a wage ${Math.round((s.metrics.hiredShare ?? 0) * 100)}% · sold through the market ${Math.round((s.metrics.tradedShare ?? 0) * 100)}% of output` : '') +
       ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}` : '');
   events.innerHTML = s.events.map(e => e.type === 'error'
     ? `<div class="hungry">error: ${e.message}</div>`
@@ -489,6 +490,8 @@ async function refresh() {
     `a round takes ≈${(s.roundMs / 1000).toFixed(1)}s` +
     (s.decide?.timeouts ? ` · <span class="hungry">${s.decide.timeouts} timed out last round</span>` : '') +
     ` · solana: <b>${s.chain.transactions}</b> transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}… ↗</a>` +
+    ` · <a target="_blank" href="${s.chain.mintExplorer}" title="SETTLERS — the mint's authority is itself, a program address: no key that could mint one exists">SETTLERS ${s.chain.mint.slice(0, 8)}… ↗</a>` +
+    (s.chain.settlers != null ? ` (${(s.chain.settlers / 100).toFixed(2)} in existence)` : '') +
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '') +
     ` · <span class="${s.totals.hungry ? 'hungry' : 'muted'}">hungry ${s.totals.hungry}</span> · <span class="${s.totals.cold ? 'hungry' : 'muted'}">cold ${s.totals.cold}</span>` +
     (s.foreclosures.length ? ` · <span class="hungry">latest foreclosure: r${s.foreclosures[0].round} ${s.foreclosures[0].name}</span>` : '');

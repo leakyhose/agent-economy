@@ -1,88 +1,87 @@
 // PLACEHOLDER BRAIN. Free, instant, no API key. It acts through exactly the same
 // tools the Claude brain uses, so the rest of the system can't tell them apart.
 // It is deliberately simple — it exists to exercise the economy, not to be smart.
+// What it does know is the one thing the economy is built on: work at whatever a shift
+// of yours is worth most in coins, sell what you make, buy what you need.
+import { CFG } from '../config.mjs';
 
 export function stubBrain() {
   let seed = 999;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const MEAL = CFG.MEAL, EFF = CFG.HAND_EFFICIENCY, F = CFG.TASKS.gather_food;
 
   return {
     name: 'stub',
     stats: () => ({ calls: 0, cost: 0 }),
     async decide(a, t) {
-      const v = t.view(), p = v.prices;
-      const jitter = 0.9 + rnd() * 0.25;
-      const sk = v.skills, crafter = sk.craft_net >= Math.max(sk.gather_food, sk.gather_wood);
+      const v = t.view(), p = v.prices, sk = v.skills;
+      const jitter = 0.9 + rnd() * 0.2;
+      const order = (side, good, quantity, price) => quantity >= 1 && price >= 0.01 &&
+        t.exec('place_order', { side, good, quantity: Math.floor(quantity), price: +price.toFixed(2) });
 
-      // lifestyle: eat more when food is plentiful or cash is, less when both are short
-      const meals = (v.availCash / 100 / p.food + v.food) / v.meal;
-      const want = meals > 40 ? 3 : meals > 15 ? 2 : 1;
+      // what a shift of each job is worth to me, in coins at last prices
+      const fish = v.yields.food * (v.netsUsable ? F.netYield / F.yield : 1) * p.food;
+      const cut = v.yields.wood * p.wood;
+      const craft = p.nets - v.netWood * p.wood;                                     // a net, less the wood in it
+      const build = (p.houses - v.houseWood * p.wood) / v.buildShifts;               // a house, less its wood, per building shift it still takes me
+      const crafter = sk.craft_net >= 1.2;
+      const best = Math.max(fish, cut, crafter ? craft : 0, crafter ? build : 0);
+
+      // lifestyle: eat better when food or cash is plentiful
+      const meals = (v.availCash / 100 / p.food + v.food) / MEAL;
+      const want = meals > 40 ? 3 : meals > 12 ? 2 : 1;
       if (want !== v.lifestyle) t.exec('set_lifestyle', { level: want, reason: want > v.lifestyle ? 'I can afford to eat better' : 'food is getting tight' });
-      const keepFood = 6 * want * v.meal;
 
-      // sell what you don't need, asking less the less of it has been selling (what the prompt tells
-      // LLM agents to do). Buyers bid a fixed 8% over, so a good nobody wants clears at about the
-      // old price and one that sells out drifts up: the stub must not ratchet the index on its own.
-      const shade = g => jitter * (0.92 + 0.16 * v.sellThrough[g]);
-      if (v.food > keepFood) t.exec('place_order', { side: 'sell', good: 'food', quantity: v.food - keepFood, price: +(p.food * shade('food')).toFixed(2) });
-      // patient villagers save wood for a house, and keep going until they have a few
-      const wantsHouse = v.owned < 3 && v.building === null && a.traits.patience > 0.4;
-      const woodNeed = 2 * v.fireWood + 3 * v.upkeep + (v.netsUsable && !crafter ? 0 : v.netWood) + (wantsHouse ? v.houseWood : 0);
-      if (v.wood > woodNeed) t.exec('place_order', { side: 'sell', good: 'wood', quantity: v.wood - woodNeed, price: +(p.wood * shade('wood')).toFixed(2) });
-      const keepNets = crafter ? 0 : 1;
-      if (v.nets > keepNets) t.exec('place_order', { side: 'sell', good: 'net', quantity: v.nets - keepNets, price: +(p.nets * shade('nets')).toFixed(2) });
-      // a builder lives in one house and sells the rest, at about what building it cost him
-      const houseCost = v.houseWood * p.wood + (v.buildShifts + 1) * p.food * v.meal;
-      if (v.owned > 1) t.exec('place_order', { side: 'sell', good: 'house', quantity: v.owned - 1, price: +(houseCost * jitter).toFixed(2) });
+      // keep a few rounds of food and firewood; sell the rest, buy what's short
+      const keepFood = MEAL * want * 4;
+      const project = crafter && build >= craft ? v.trancheWood : crafter ? v.netWood : 0;
+      const keepWood = CFG.FIRE_WOOD * 2 + CFG.HOUSE_UPKEEP * v.homes * 4 + project;
+      // STUB_PLANS=1: leave food and wood to the stall and the shopping list, as the LLM agents mostly do
+      const plans = process.env.STUB_PLANS === '1';
+      if (!plans && v.food > keepFood) order('sell', 'food', v.food - keepFood, p.food * jitter * 0.95);
+      if (!plans && v.wood > keepWood) order('sell', 'wood', v.wood - keepWood, p.wood * jitter * 0.95);
+      let cash = () => t.view().availCash / 100;
+      if (plans) { /* the plans trade */ } else
+      if (v.food < keepFood / 2) order('buy', 'food', Math.min(keepFood - v.food, cash() * 0.5 / (p.food * 1.1)), p.food * 1.1 * jitter);
+      if (!plans && v.wood < keepWood) order('buy', 'wood', Math.min(keepWood - v.wood, cash() * 0.4 / (p.wood * 1.1)), p.wood * 1.1 * jitter);
 
-      // buy what you need
-      const cash = v.availCash / 100;
-      const buyFood = 3 * want * v.meal;
-      if (v.food < buyFood && cash > p.food * buyFood) t.exec('place_order', { side: 'buy', good: 'food', quantity: buyFood, price: +(p.food * 1.08 * jitter).toFixed(2) });
-      // firewood and upkeep: buy it when someone else cuts it cheaper than a shift of yours would
-      const burn = v.fireWood + v.upkeep * 2;
-      if (v.wood < burn && cash > p.wood * burn * 2) t.exec('place_order', { side: 'buy', good: 'wood', quantity: 2 * burn - v.wood, price: +(p.wood * 1.1 * jitter).toFixed(2) });
-      if (crafter && v.wood < v.netWood && cash > p.wood * v.netWood + p.food * v.meal)
-        t.exec('place_order', { side: 'buy', good: 'wood', quantity: v.netWood - v.wood, price: +(p.wood * 1.1).toFixed(2) });
-      else if (wantsHouse && v.wood < v.houseWood) {   // buy what's missing for a house, as far as cash goes
-        const spare = t.view().availCash / 100 - p.food * 6 * v.meal, qty = Math.min(v.houseWood - v.wood, Math.floor(spare / (p.wood * 1.1 + 0.01)));
-        if (qty >= 1) t.exec('place_order', { side: 'buy', good: 'wood', quantity: qty, price: +(p.wood * 1.1).toFixed(2) });
-      }
-      if (!v.netsUsable && !crafter && cash > p.nets * 1.1 + p.food * v.meal && rnd() < 0.3)
-        t.exec('place_order', { side: 'buy', good: 'net', quantity: 1, price: +(p.nets * 1.05).toFixed(2) });
-      // with no house of your own, a built one is worth bidding a good part of your savings for
-      if (!v.owned && v.building === null && cash > 60 && rnd() < 0.25)
-        t.exec('place_order', { side: 'buy', good: 'house', quantity: 1, price: +(Math.min(cash * 0.6, houseCost * 0.9) * jitter).toFixed(2) });
+      // capital: a fisher wants a net, and more nets once hiring pays; a crafter sells the nets it makes
+      const fisher = fish >= cut && !crafter;
+      if (crafter && v.nets > 0) order('sell', 'net', v.nets, p.nets * jitter);
+      else if (fisher && v.netsUsable < 1 + CFG.MAX_HANDS && cash() > p.nets * 1.5 && (!v.netsUsable || rnd() < 0.3)) order('buy', 'net', 1, p.nets * 1.05 * jitter);
 
-      // the bank: borrow when broke and holding collateral, repay as soon as affordable
-      // (a fresh view: the sell orders above committed some goods)
-      // Impatient ones repay early; the rest let the bank collect at the deadline.
+      // houses: builders sell what they build beyond their own; the rest buy when they can afford one
+      if (crafter && v.houses > 1) order('sell', 'house', v.houses - 1, Math.max(p.houses, v.houseWood * p.wood * 1.3) * jitter);
+      else if (!crafter && v.nextHouseWb >= 0.5 && cash() > p.houses * 1.2) order('buy', 'house', 1, p.houses * 1.05 * jitter);
+
+      // labour: hire when a hand makes more than the wage and there is capital for it; otherwise offer my own shift
+      const spare = Math.max(0, v.netsUsable - 1);
+      const hand = Math.max(v.yields.food * (spare ? F.netYield / F.yield : 1) * EFF * p.food, v.yields.wood * EFF * p.wood);
+      if (hand > p.labour * 1.15 && cash() > p.labour * 2) order('buy', 'labour', Math.min(CFG.MAX_HANDS, fisher ? Math.max(1, spare) : 1, Math.floor(cash() * 0.3 / p.labour)), Math.min(hand * 0.85, p.labour * 1.15) * jitter);
+      else if (v.canSellLabour && !v.hands) order('sell', 'labour', 1, Math.max(best * 1.05, p.labour * 0.9) * jitter);
+
+      // the bank: borrow against goods to buy capital or wood for a build; repay when cash allows
       const f = t.view();
-      if (f.debt && f.availCash > f.debtNow && (a.traits.patience < 0.5 || f.dueIn <= 2)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
-      else if (!f.debt && f.credit && cash < p.food * v.meal && f.maxLoan > 100) {
-        // pledged nets still fish, so the net goes in the pledge too
-        const pledge = { wood: Math.max(0, f.wood - f.fireWood), nets: f.nets };
-        const value = pledge.wood * p.wood + pledge.nets * p.nets;                     // coins
-        const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100; // under LTV
-        if (amount >= 1) t.exec('borrow', { amount, ...pledge, reason: 'short of cash' });
+      if (f.debt && f.availCash > f.debtNow * 1.5 && (a.traits.patience < 0.5 || f.dueIn <= 3)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
+      else if (!f.debt && f.credit && f.maxLoan > 1000 && (crafter ? f.wood < v.houseWood : fisher && !v.netsUsable) && cash() < p.nets) {
+        const pledge = { wood: Math.max(0, f.wood - keepWood), nets: 0, houses: Math.max(0, f.houses) };
+        const value = pledge.wood * p.wood + pledge.houses * p.houses;
+        const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100;
+        if (amount >= 5) t.exec('borrow', { amount, ...pledge, reason: 'to invest' });
       }
 
-      // pick the shift
-      let act;
+      if (v.hired) return;                                                           // this shift is sold
+
+      // the shift: whatever is worth most, unless something is about to run out
       const g = t.view();
-      if (g.building !== null && !v.hunger && rnd() < 0.8) act = 'build_house';          // keep building, mostly
-      else if (wantsHouse && g.wood >= v.houseWood && !v.hunger) act = 'build_house';     // enough wood saved: start
-      else if (v.wood >= v.netWood + (wantsHouse ? v.houseWood : 0) && (crafter || !v.netsUsable)) act = 'craft_net';
-      else {
-        // a shift's output is worth what sells of it (sell-through), plus what you'd use yourself
-        const st = x => 0.3 + 0.7 * x;
-        const foodValue = p.food * v.yields.food * (v.netsUsable ? 1.4 : 1) * (v.food < keepFood ? 1 : st(v.sellThrough.food));
-        const woodValue = p.wood * v.yields.wood * (1 + a.traits.patience * 1.6) *   // patient villagers value wood for the nets and houses it becomes
-          (v.wood < 3 * (v.fireWood + v.upkeep) ? 1 : st(v.sellThrough.wood));
-        act = foodValue * jitter >= woodValue ? 'gather_food' : 'gather_wood';
-        if (v.hunger > 1 && v.food < v.meal) act = 'gather_food';
-        else if (v.cold && v.wood < v.fireWood) act = 'gather_wood';   // out of firewood and nobody sold you any
-      }
+      let act = fish >= cut ? 'gather_food' : 'gather_wood';
+      if (crafter && Math.max(craft, build) > Math.max(fish, cut)) {
+        if (g.building !== null && g.wood >= v.trancheWood) act = 'build_house';
+        else if (build >= craft && g.wood >= v.trancheWood) act = 'build_house';
+        else if (g.wood >= v.netWood && craft > 0) act = 'craft_net';
+      } else if (g.building !== null && g.wood >= v.trancheWood) act = 'build_house';
+      if (v.hunger && v.food < MEAL) act = 'gather_food';
+      else if (v.cold && v.wood < CFG.FIRE_WOOD) act = 'gather_wood';
       t.exec(act, { reason: `[stub] ${act.replace('_', ' ')}` });
     },
   };
