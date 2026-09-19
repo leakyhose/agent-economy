@@ -9,40 +9,60 @@ Team: 2 people. Strengths: TS/JS, Solana client-side, frontend/graphics, sim/LLM
 
 ## 1. What this is
 
-A fishing village of ~100 AI agents who forage, trade, borrow, and go bankrupt — where the
-economy itself lives on Solana. Balances, goods ownership, market trades, loans and
-repossessions are real on-chain state, not a log of what happened off-chain.
+**A village of ~100 AI agents with real jobs and a real economy running on Solana. It runs
+itself. Then you mess with it — and watch 100 minds react.**
+
+Every agent is an LLM that picks its own work, prices its own goods, and can tell you why.
+The economy underneath them — balances, goods ownership, trades, loans — is real Solana
+program state, not a log of what happened somewhere else.
 
 **Two halves, and the split is deliberate:**
 
-- **Off-chain (the renderer):** walking, animation, hunger, agent decision-making.
+- **Off-chain (the renderer + the minds):** walking, animation, hunger, agent reasoning.
 - **On-chain (the economy):** every economically meaningful state transition.
 
-Say this out loud to judges before they ask: *"The policy is off-chain, the settlement is
-on-chain, and that's the correct split. The chain enforces what can't be faked."* Pretending
-the agents' brains are on-chain is the thing judges catch.
+Say this to judges before they ask: *"The policy is off-chain, the settlement is on-chain, and
+that's the correct split. The chain enforces what can't be faked."* Pretending the agents'
+brains are on-chain is the thing judges catch.
 
 ---
 
-## 2. The economic loop
+## 2. The economy, and messing with it
+
+The base loop — **stable and pleasant by default:**
 
 ```
-FORAGE        →  fish / chop wood / mine ore   (visible, takes ~8 ticks)
-SELL          →  batch auction, price from supply & demand
-BUY CAPITAL   →  a boat catches 3x fish, but costs more than you have
-BORROW        →  post the boat as collateral
-─────────────────────────────────────────────────────────────────────────
-fish price falls → revenue falls → can't service debt → BOAT REPOSSESSED
-  → repossessed boats go back on the market → boat prices fall
-  → the next fisherman is underwater → repossession spreads along the docks
+WORK      →  fish / chop wood / mine ore     (visible, takes ~8 ticks)
+SELL      →  batch auction, price from supply and demand
+EAT       →  hunger creates real demand; poverty is visible
+SAVE      →  cash accumulates
+BUY TOOLS →  a boat triples the catch; an axe doubles wood
+BORROW    →  can't afford a boat? finance it against the boat itself
 ```
 
-That last block is the thesis: a **liquidation cascade you can watch**. The docks empty out,
-boat by boat. The collateral is a physical object on screen, not an abstract position.
+**The drama comes from the user, not from a built-in doom spiral.** The user is the shock
+generator:
 
-**The connection that ties both halves together:** the auction's clearing price is the oracle
-for the loan health check. Not an invented price feed — the actual price the town just traded
-at, on-chain, this tick.
+| Intervention | What the swarm has to work out |
+|---|---|
+| Drought hits the fishing grounds | Who switches trade, who starves, where fish prices go |
+| Gold rush — ore triples in value | Everyone abandons food production; famine? |
+| Tax the rich 30% | Where the money ends up; does anyone hide it |
+| "A stranger says tulips will triple" | Can a rumor alone move a market |
+| Invent a better net | Who captures the gains — workers or tool owners |
+| Print a million gold | Inflation — and in Freeport it simply cannot happen (§4) |
+
+### Crashes are an outcome, not the thesis
+
+Push the credit system hard enough and you get a **cascade**: a fisherman borrows against a
+boat → fish prices fall → he can't service the loan → the boat is repossessed and resold →
+more boats on the market → boat prices fall → the next borrower's collateral is underwater →
+it spreads down the docks.
+
+This is worth having because it is genuinely emergent and visually unmistakable (the docks
+empty out, boat by boat). But it is **one possible outcome of pushing too hard**, not the
+point of the project. The default run should not collapse. Verified in the `poc/` spike that
+this behaviour does emerge from the rules — see §8.
 
 ---
 
@@ -173,42 +193,60 @@ town price board / rumor neighbors). Disagreement produces volume; volume produc
 
 ---
 
-## 6. Agent design — heuristic core, thin LLM layer
+## 6. Agent design — LLM minds, rule-based bodies
 
-**The core loop has no LLM in it.** ~800 lines of deterministic, seeded code. This is not a
-budget compromise — it's the only version whose emergence claim survives a skeptical judge:
+**Every agent is an LLM.** This is a deliberate reversal of an earlier draft that used pure
+heuristics; the project is an *agent swarm*, and the agents must actually think.
 
-- LLM traders price near fundamentals and barely bubble ([arXiv 2502.15800](https://arxiv.org/abs/2502.15800), Caltech).
-- Where LLMs do produce drama, **bubble magnitude is a dial you turn by editing the prompt**
-  ([arXiv 2604.18373](https://arxiv.org/abs/2604.18373)). A judge asks "did you prompt them to
-  extrapolate?" and there's no answer.
-- LLM calls make runs non-replayable, destroying the best proof we have.
+```
+MIND  — one Haiku 4.5 call, ONLY at decision points (~every 15-30s per agent)
+  in:  identity · inventory · recent history · the price board
+       · rumors heard · what just happened to me
+  out: { "action": "fish", "target": "north dock",
+         "reason": "wood's flooded, fish is up 40%. switching." }
 
-LLMs go where they're defensible:
+BODY  — deterministic rules, every tick, free
+  walk there · do the work · post the limit order · eat · sleep
+```
 
-| Layer | Model | Why honest |
-|---|---|---|
-| ~8 firm managers setting prices | Haiku 4.5 | LLM algorithmic collusion is *robust* ([arXiv 2404.00806](https://arxiv.org/abs/2404.00806)) — supracompetitive prices would be a real documented phenomenon |
-| Narrator / headlines | Haiku 4.5 | Code detects events; LLM only phrases them. Numbers pinned, causes forbidden |
-| "Why did this happen?" | Opus 5 | RAG over the real event log, citing ticks and agent IDs. Must be able to say "I don't see a cause" |
-| Director (text, later voice) | Sonnet 5 | Strict tool schema, translation shown on screen |
+**Decision points** (not every tick — this is what makes it affordable and natural):
+finished a job · hungry and broke · price moved sharply · offered a loan · lost a tool ·
+heard a rumor · an intervention just landed.
 
-Cost: ~$3.90/hour, under $1 for the demo.
+Work taking real time paces this for free: fishing is ~8 ticks, so an agent decides a couple
+of times a minute, not 60 times.
 
-**Watch for accounting identities.** EconAgent's famous Okun's-law result is an accounting
-identity — a coin-flip work policy scores -0.998 ([arXiv 2608.11215](https://arxiv.org/html/2608.11215)).
-A production chain mechanically links output and employment, so check that any "emergent"
-regularity isn't implied by our own bookkeeping.
+**Cost:** ~100 agents, 1 call/20s, prompt caching on the shared world-state prefix
+≈ **$20/hour on Haiku 4.5**, ~$3.50 for a 10-minute demo. **Stub the LLM in dev** — do not
+burn money on every test run.
 
-**Double-buffer the sim** (all agents read `S_t`, write `S_next`). Without it, iteration order
-silently becomes a behavioral parameter and "emergence" is a bug.
+**The payoff, and it is the core interaction:** click any agent and read why it did what it
+did, in its own words. That is what makes this a swarm of minds rather than colored dots.
 
-**Stabilizers** (keep a 10-min run alive without looking scripted): perishability/decay,
-endogenous firm entry, transaction tax with rebate, leverage cap 3–4x, bankruptcy with partial
-recovery (inventory goes to next tick's auction — fuel for the cascade). Keep fast levers
-(circuit breaker, deposit insurance) OFF by default so turning one on becomes a demo beat.
+### Heterogeneity
+Traits are drawn once from the seed and injected into the prompt: risk appetite, patience,
+herding tendency, memory length, and — most important — **information set** (does this agent
+see only its own market, the town price board, or gossip from neighbors?). Differential
+information produces genuine disagreement, and disagreement is what produces trade volume.
 
----
+### Honesty about LLM agents
+Documented and worth knowing before a judge raises it:
+- LLM traders price near fundamentals and rarely bubble on their own ([arXiv 2502.15800](https://arxiv.org/abs/2502.15800), Caltech).
+- Behavioral magnitudes are **prompt-tunable** ([arXiv 2604.18373](https://arxiv.org/abs/2604.18373)) — so if asked
+  "did you prompt them into that?", the answer is "the prompt is on screen, read it." Show the prompt.
+- LLM algorithmic collusion is robust ([arXiv 2404.00806](https://arxiv.org/abs/2404.00806)) — supracompetitive pricing
+  among LLM sellers would be a real documented phenomenon, not an artifact.
+- LLM calls are non-deterministic, so runs are not bit-reproducible. Replay the **recorded
+  decision stream**, not a re-derivation, and say so plainly.
+- Watch for accounting identities: EconAgent's famous Okun result is one — a coin-flip policy
+  scores -0.998 ([arXiv 2608.11215](https://arxiv.org/html/2608.11215)).
+
+### Stability
+The economy should be **stable and pleasant by default** — the drama comes from the user, not
+from a built-in doom spiral. Stabilizers: perishable goods, endogenous producer entry, a
+downward-sloping export demand curve (a non-absorbing price floor and the economy's money
+source), tool depreciation (caps the capital stock), and conservation of money — every unit
+has a source and a sink, or the economy silently deflates to nothing.
 
 ## 7. Stack (versions verified 2026-09-19)
 
