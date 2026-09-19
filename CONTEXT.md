@@ -5,384 +5,371 @@ Target prize: **Best Use of Solana** ($5,000 + Ledger Nano S Plus)
 Submission deadline: **Sun Sept 20, 08:00 EDT**
 Team: 2 people. Strengths: TS/JS, Solana client-side, frontend/graphics, sim/LLM plumbing. Rust OK if simple.
 
+This doc was rewritten on 2026-09-19 to describe what is **actually built**, after an
+earlier version (still in git history) described a fish/boats/credit design that was
+superseded once real building started. See §8 for what's genuinely still ahead.
+
 ---
 
-## 1. What this is
+## 1. What's built right now
 
-**A village of ~100 AI agents with real jobs and a real economy running on Solana. It runs
-itself. Then you mess with it — and watch 100 minds react.**
+A small village where **every agent is an LLM that acts through tool calls**, and every
+trade settles on a real Solana program. It runs headless or with a barebones live
+dashboard.
 
-Every agent is an LLM that picks its own work, prices its own goods, and can tell you why.
-The economy underneath them — balances, goods ownership, trades, loans — is real Solana
-program state, not a log of what happened somewhere else.
+```
+agent-economy/
+├── chain/            Anchor program: the ledger and its market
+│   └── programs/chain/src/lib.rs
+├── backend/          the village: clock, agents, the market round, the dashboard
+│   ├── src/
+│   │   ├── config.mjs      every setting, one place
+│   │   ├── chain.mjs       talks to Solana (hand-encoded instructions)
+│   │   ├── world.mjs       the clock, work shifts, eating, spoilage, market rounds
+│   │   ├── tools.mjs       what an agent can do, and what it's told
+│   │   ├── server.mjs      runs it, serves the dashboard, saves every run
+│   │   └── brains/
+│   │       ├── stub.mjs      free heuristic placeholder (no API key needed)
+│   │       ├── claude.mjs    Claude, tool-calling
+│   │       └── openai.mjs    OpenAI, tool-calling (currently gpt-5.6-luna)
+│   ├── public/index.html   the dashboard — one file, no build step
+│   ├── scripts/analyze.mjs analyze any saved run
+│   └── runs/                every run, saved automatically (gitignored)
+└── .env / .env.example     API keys and settings
+```
 
 **Two halves, and the split is deliberate:**
+- **Off-chain:** the clock, agent reasoning (LLM calls), the dashboard.
+- **On-chain:** every agent's cash and goods, and the market that sets prices. This is
+  real Solana program state, not a log of what happened elsewhere.
 
-- **Off-chain (the renderer + the minds):** walking, animation, hunger, agent reasoning.
-- **On-chain (the economy):** every economically meaningful state transition.
-
-Say this to judges before they ask: *"The policy is off-chain, the settlement is on-chain, and
-that's the correct split. The chain enforces what can't be faked."* Pretending the agents'
-brains are on-chain is the thing judges catch.
-
----
-
-## 2. The economy, and messing with it
-
-The base loop — **stable and pleasant by default:**
-
-```
-WORK      →  fish / chop wood / mine ore     (visible, takes ~8 ticks)
-SELL      →  batch auction, price from supply and demand
-EAT       →  hunger creates real demand; poverty is visible
-SAVE      →  cash accumulates
-BUY TOOLS →  a boat triples the catch; an axe doubles wood
-BORROW    →  can't afford a boat? finance it against the boat itself
-```
-
-**The drama comes from the user, not from a built-in doom spiral.** The user is the shock
-generator:
-
-| Intervention | What the swarm has to work out |
-|---|---|
-| Drought hits the fishing grounds | Who switches trade, who starves, where fish prices go |
-| Gold rush — ore triples in value | Everyone abandons food production; famine? |
-| Tax the rich 30% | Where the money ends up; does anyone hide it |
-| "A stranger says tulips will triple" | Can a rumor alone move a market |
-| Invent a better net | Who captures the gains — workers or tool owners |
-| Print a million gold | Inflation — and in Freeport it simply cannot happen (§4) |
-
-### Crashes are an outcome, not the thesis
-
-Push the credit system hard enough and you get a **cascade**: a fisherman borrows against a
-boat → fish prices fall → he can't service the loan → the boat is repossessed and resold →
-more boats on the market → boat prices fall → the next borrower's collateral is underwater →
-it spreads down the docks.
-
-This is worth having because it is genuinely emergent and visually unmistakable (the docks
-empty out, boat by boat). But it is **one possible outcome of pushing too hard**, not the
-point of the project. The default run should not collapse. Verified in the `poc/` spike that
-this behaviour does emerge from the rules — see §8.
+Say this to judges before they ask: *"The policy is off-chain, the settlement is
+on-chain. The chain enforces what can't be faked."*
 
 ---
 
-## 3. What's on Solana
+## 2. The economy as it exists today
 
-Rule: **every economically meaningful state transition, and no agent steps.** Logging
-footsteps is what "decorative" means — it's what killed Moltlets' credibility (their
-"on-chain" was SPL Memo strings on treasury transfers).
+```
+WORK   →  gather_food / gather_wood / craft_net   (a timed shift, several seconds)
+SELL   →  place limit orders; a batch auction clears once per round, on-chain
+EAT    →  automatic, every few ticks; no food = hunger, which halves output
+SPOIL  →  unsold food and wood rot every round; coins never spoil
+```
 
-| Off-chain | On-chain |
-|---|---|
-| Walking, pathfinding, animation | `settle_tick(Vec<Harvest>)` — one tx/tick, all catches |
-| Hunger, fatigue | `submit_batch(Vec<Order>)` + `clear_auction()` |
-| *Deciding* where to fish | `buy_capital()` — boat ownership transfer |
-| Traits, expectations, rumors | `borrow()` / `deposit_collateral()` |
-| Everything time-based and visual | **`repossess(agent)` — permissionless, health-gated** |
-| | Money: SPL mint, **authority revoked** |
+Three goods: **food, wood, nets**. A net doubles your fishing catch and is crafted from
+wood. Every agent's only stated goal is to end up with as much money as possible, but
+they must eat, and a hungry agent gathers at half rate.
 
-### Account layout
+**Money is a fixed supply, seeded once.** `AGENTS × START_CASH` coins exist at
+`initialize` and that's all there will ever be — nothing creates or destroys money
+except a trade moving it from one agent's purse to another's. Verified: every saved run
+ends with the same total on-chain cash it started with.
+
+**No credit, no capital beyond nets/tools, no lending, no repossession, no boats.**
+These were all in an earlier design (§8) and are not implemented. The current build is
+a working goods market with real agents, nothing more, nothing less — deliberately, so
+the market and the agent loop could be validated before adding a finance layer on top.
+
+### Findings from real runs so far (see `backend/runs/`, analyzed with `analyze.mjs`)
+
+- **A goods market with a fixed starting price only trades if a good is genuinely
+  scarce.** Early calibration had food abundant enough that nobody ever needed to buy
+  it — zero trades, frozen price, the whole point of a market absent. Tightening food
+  (fewer ticks between meals, lower fishing yield, spoilage) got real trading and a
+  moving price (food rose ~30% over one run as it got scarce).
+- **Wood is currently a dead market.** Everyone can cut their own wood and craft their
+  own net, so nobody needs to buy wood from anyone else — lots of sell orders, almost
+  no buy orders, price never moves. The fix is either (a) different agents being better
+  at different trades, or (b) a second use for wood that not everyone needs. Neither is
+  built yet.
+- **LLM agents anchor hard on the price they're shown.** They mostly post orders at or
+  very near the current price rather than pushing it around — consistent with the
+  literature (§7) that LLM traders price near fundamentals rather than speculating.
+  Real price movement in the runs so far comes from scarcity forcing trades through,
+  not from agents forming expectations about where the price is going.
+- **LLM reasoning is legible and mostly sensible.** Agents correctly reason about
+  committed vs. free inventory (e.g. "my wood is committed to a sale so crafting is
+  blocked"), balance eating against building a sellable surplus, and give concrete,
+  agent-specific reasons for their choices — this is real model output, not scripted
+  text.
+
+---
+
+## 3. What's on Solana today
+
+One Anchor program (`chain/programs/chain/src/lib.rs`), three instructions:
 
 ```rust
-pub const MAX_AGENTS: usize = 320;       // ceiling, see below. Start populated at ~100.
+pub const MAX_AGENTS: usize = 320;
+pub const N_GOODS: usize = 3;   // food, wood, nets
 
-#[account(zero_copy)]                    // 8 + 320*32 = 10,248 bytes
-pub struct Ledger { pub num_agents: u32, pub epoch: u32, pub slots: [AgentSlot; MAX_AGENTS] }
+initialize(num_agents, start_cash, start_food)   // create the ledger, seed purses
+settle(deltas: Vec<Delta>)                        // signed goods deltas: catches,
+                                                   //   meals, crafting, spoilage
+clear_auction(good, bids, asks)                   // uniform-price batch auction
+```
 
-#[zero_copy]
-pub struct AgentSlot {                   // 32 bytes
-    pub cash: u64, pub fish: u32, pub wood: u32, pub ore: u32,
-    pub boat: bool, pub axe: bool, pub debt: u64,
+```rust
+#[account(zero_copy)]                    // one hot account, 8 + 32 + 8 + 24 + 320*32 bytes
+pub struct Ledger {
+    pub authority: Pubkey,               // only this key may write — CHECKED on every write
+    pub num_agents: u32,
+    pub round: u32,
+    pub last_price: [u64; N_GOODS],
+    pub slots: [AgentSlot; MAX_AGENTS],
 }
+#[zero_copy]
+pub struct AgentSlot { pub cash: u64, pub goods: [u32; N_GOODS], pub _pad: u32 }  // 32 bytes
 ```
 
-**Start at ~100 agents, but do not hardcode 100.** Size the array to the ceiling and track the
-live count in `num_agents`, so scaling up is a config change and not a migration. Two hard
-walls, and they happen to land in the same place:
+**Every write requires the ledger's `authority` to sign, and the program checks the
+signer matches** (`Write::load_checked`). This closes a real hole from an early
+version, where any transaction could mutate any ledger.
 
-- **Anchor `init` caps an account at 10,240 bytes** → 320 slots at 32 bytes each. Past that
-  you need manual allocation or `realloc`.
-- **One V1 transaction holds ~316 orders** at 12 bytes each. Past that the market needs
-  more than one transaction and loses atomicity.
+### What actually happens on-chain, per market round
 
-So **~300 agents is the natural ceiling for this design**, and 100 leaves comfortable room.
+1. The backend batches everything that happened that round (catches, meals eaten,
+   crafting, spoilage) as **signed deltas** and sends one or more `settle` transactions.
+   No balance may go negative — the program checks and rejects.
+2. For each of the three goods, the backend sends the round's order book to
+   `clear_auction`. **Orders are pre-sorted off-chain; the program verifies the
+   sortedness in one O(n) pass** rather than sorting on-chain (sorting on-chain risks
+   blowing the compute budget at scale — this is the same design as the earlier
+   research recommended). An unsorted book is rejected — verified with a real
+   transaction that the program refuses it.
+3. The clearing price is the midpoint of the last crossing bid/ask pair; every filled
+   order settles atomically inside that one transaction.
+4. The backend reads the ledger back and replaces its local mirror with what the chain
+   says — **the chain is the source of truth**, not an assertion the server makes about
+   itself.
 
-Plus a thin `AgentIdentity` PDA per agent so the explorer shows real accounts — legitimate
-*because* the health check reads it. This hybrid (thin identity PDAs + one packed hot account)
-is exactly how OpenBook and Phoenix work; saying that converts an apparent shortcut into
-evidence you know the ecosystem.
+**Instructions are hand-encoded** (`backend/src/chain.mjs`), not built through
+Anchor's JS coder — its `BorshInstructionCoder` hardcodes a 1000-byte instruction
+buffer and silently throws `ERR_OUT_OF_RANGE` on a full order book. A ~30-line manual
+encoder replaces it. At 100 agents a `clear_auction` transaction sits at 1220 of 1232
+legacy-transaction bytes — right at the ceiling; see §7 on why Transaction V1 matters
+for growing past this.
 
-### The three places the chain does real work
+### Measured, not estimated
 
-1. **The whole town's market clears in one atomic transaction.** Transaction V1 shipped to
-   mainnet 2026-09-15 (SIMD-0385, epoch 1035): max tx size 1232 → 4096 bytes. A 12-byte order
-   struct gives ~316 orders per tx. On v0 + ALTs you'd get ~75 and need four transactions —
-   a partial fill could land while another failed and the market would tear. Atomicity here
-   is correctness, not flourish. **This capability is days old.**
-2. **Repossession is permissionless.** `repossess()` is callable by anyone once the health
-   factor breaks. Hand a judge a terminal and let them take a fisherman's boat. No off-chain
-   sim can offer this.
-3. **The server cannot create value.** Conservation of money is program-enforced. Prove it:
-   kill the sim server mid-demo and rebuild the town from chain state.
+From an early load test on `solana-test-validator`:
 
-### Decoration to avoid
-- Minting identity NFTs the simulation never reads.
-- A DAO vote by rule-based agents — a deterministic function of a balance distribution we control. Cut.
-
----
-
-## 4. Centralized vs decentralized
-
-Decentralization here is **not** about who runs the server. It's about **which rules have an owner.**
-
-| Institution | Crownhaven (centralized) | Freeport (decentralized) |
+| Instruction | Compute units | Share of 1.4M budget |
 |---|---|---|
-| Money supply | authority key can `mint()` | `mintAuthority: null` — no instruction exists |
-| Foreclosure | authority calls `forbear()` / `seize()` at discretion | `repossess()` — permissionless, no discretion |
-| Ownership | authority can reassign | a field only the rules can change |
+| `initialize(100)` | 4,882 | 0.3% |
+| `settle(40 deltas)` | 2,491 | 0.2% |
+| `clear_auction(100 orders)` | 12,717 | 0.9% |
 
-Cost: **one optional `authority` pubkey in the program, ~50 lines.** Not two worlds, two sims,
-two renderers — one program, two configs, same seed run twice. This gets the split-screen
-comparison back for ~1 hour instead of a day.
+Compute is nowhere near the constraint. Transaction **size** is: 100 orders is close to
+what fits in one legacy (1232-byte) transaction.
 
-**Thesis moment:** "Print a million gold." In Crownhaven it works and savers get wiped out. In
-Freeport it fails — not because of a coded refusal message, but because the mint authority was
-revoked. Then open the Solana explorer and point at `mintAuthority: null`. A verifiable
-on-chain fact on a block explorer, not a claim in slides.
+### Honest gaps against the original vision (see §8)
 
-**Frame it as a trade, not a win.** Freeport: cascade rips through, 20 fishermen lose boats in
-90 seconds, brutal and fast — and it clears. Crownhaven: authority forbears, nobody loses a
-boat, and then show the bill (idle boats with owners who can't use them, a money supply that
-ate everyone's savings). A judge who hears "decentralization is better" discounts you.
-
-**Concede before they ask:** the sim is centrally run, the agent policies are ours, we could
-have rigged them. The chain doesn't fix that. Seed replay + the unshocked twin run do.
+- No SPL token — cash is a `u64` field inside our account, not a mint. There's no
+  `mintAuthority: null` moment to show a judge yet.
+- No per-agent on-chain identity (no PDA per agent) — agent #40 is an array index, not
+  an account a judge can open in the explorer individually.
+- No permissionless instruction anyone-but-us can call — every write requires our
+  authority signature. The "hand a judge a terminal" demo beat doesn't exist yet.
 
 ---
 
-## 5. The market
+## 4. The market
 
-Uniform-price **batch auction**, one round per tick, per good. Markets: fish, wood, ore,
-boats/axes. Repossessed boats re-enter the boat market — that's the cascade's transmission
-mechanism.
+Uniform-price batch auction, one round every `ROUND_TICKS` ticks (default 6 ticks =
+3s), per good, cleared on-chain (§3).
 
 ```
-clear(good, bids, asks):
-    sort bids desc by limit, asks asc by limit     # off-chain; VERIFIED on-chain in O(n)
-    D(p) = Σ qty of bids with limit >= p
-    S(p) = Σ qty of asks with limit <= p
-    p* = argmax_p min(D(p), S(p))                  # maximize volume
-         tie-break: minimize |D-S|, then nearest to last tick's price
-    fill bids above p* and asks below p* fully
-    ration the marginal level pro-rata by agent id # deterministic
-    everyone executes at p*
+clear(bids, asks):     # bids desc by limit, asks asc by limit — verified on-chain
+  walk both ladders inward while bid.limit >= ask.limit, accumulating volume
+  price = midpoint of the last crossing bid and ask
+  settle every filled order at that one price, atomically
 ```
 
-**Why not an AMM:** price is a mechanical function of reserves, so it cannot bubble
-endogenously, and it guarantees liquidity — which structurally eliminates the finite-depth
-channel the cascade requires. It would delete the thesis.
+**Why this and not an AMM:** price is a mechanical function of reserves in an AMM, so
+it can't move from agents actually disagreeing about value — and it guarantees
+liquidity, which would hide the exact scarcity dynamics we're trying to observe.
 
-**Why not a continuous order book:** 5–10x the code, and the outcome depends on message
-arrival order, so it can't be replayed deterministically. That kills seed-replay and twin-run
-proofs.
+**Why this and not a continuous order book:** far more code, and the outcome depends on
+message arrival order, which makes runs non-reproducible from a saved log.
 
-Agents submit limit orders from heuristics — reservation price rises with hunger, trend
-followers chase, fundamentalists fade. Heterogeneity comes from traits (trend gain, memory
-length, risk tolerance) and critically from **different information sets** (own market only /
-town price board / rumor neighbors). Disagreement produces volume; volume produces dynamics.
+Agents submit orders through the `place_order` tool with a side, good, quantity and
+price; the backend validates against each agent's **free** (uncommitted) cash and
+goods before the round clears, so the on-chain auction can never be sent an order that
+would fail.
 
 ---
 
-## 6. Agent design — LLM minds, rule-based bodies
+## 5. Agent design — LLM minds, tool calls, shared interface
 
-**Every agent is an LLM.** This is a deliberate reversal of an earlier draft that used pure
-heuristics; the project is an *agent swarm*, and the agents must actually think.
-
-```
-MIND  — one Haiku 4.5 call, ONLY at decision points (~every 15-30s per agent)
-  in:  identity · inventory · recent history · the price board
-       · rumors heard · what just happened to me
-  out: { "action": "fish", "target": "north dock",
-         "reason": "wood's flooded, fish is up 40%. switching." }
-
-BODY  — deterministic rules, every tick, free
-  walk there · do the work · post the limit order · eat · sleep
-```
-
-**Decision points** (not every tick — this is what makes it affordable and natural):
-finished a job · hungry and broke · price moved sharply · offered a loan · lost a tool ·
-heard a rumor · an intervention just landed.
-
-Work taking real time paces this for free: fishing is ~8 ticks, so an agent decides a couple
-of times a minute, not 60 times.
-
-**Cost:** ~100 agents, 1 call/20s, prompt caching on the shared world-state prefix
-≈ **$20/hour on Haiku 4.5**, ~$3.50 for a 10-minute demo. **Stub the LLM in dev** — do not
-burn money on every test run.
-
-**The payoff, and it is the core interaction:** click any agent and read why it did what it
-did, in its own words. That is what makes this a swarm of minds rather than colored dots.
-
-### Heterogeneity
-Traits are drawn once from the seed and injected into the prompt: risk appetite, patience,
-herding tendency, memory length, and — most important — **information set** (does this agent
-see only its own market, the town price board, or gossip from neighbors?). Differential
-information produces genuine disagreement, and disagreement is what produces trade volume.
-
-### Honesty about LLM agents
-Documented and worth knowing before a judge raises it:
-- LLM traders price near fundamentals and rarely bubble on their own ([arXiv 2502.15800](https://arxiv.org/abs/2502.15800), Caltech).
-- Behavioral magnitudes are **prompt-tunable** ([arXiv 2604.18373](https://arxiv.org/abs/2604.18373)) — so if asked
-  "did you prompt them into that?", the answer is "the prompt is on screen, read it." Show the prompt.
-- LLM algorithmic collusion is robust ([arXiv 2404.00806](https://arxiv.org/abs/2404.00806)) — supracompetitive pricing
-  among LLM sellers would be a real documented phenomenon, not an artifact.
-- LLM calls are non-deterministic, so runs are not bit-reproducible. Replay the **recorded
-  decision stream**, not a re-derivation, and say so plainly.
-- Watch for accounting identities: EconAgent's famous Okun result is one — a coin-flip policy
-  scores -0.998 ([arXiv 2608.11215](https://arxiv.org/html/2608.11215)).
-
-### Stability
-The economy should be **stable and pleasant by default** — the drama comes from the user, not
-from a built-in doom spiral. Stabilizers: perishable goods, endogenous producer entry, a
-downward-sloping export demand curve (a non-absorbing price floor and the economy's money
-source), tool depreciation (caps the capital stock), and conservation of money — every unit
-has a source and a sink, or the economy silently deflates to nothing.
-
-## 7. Stack (versions verified 2026-09-19)
+**Every agent decision goes through the same set of tools**
+(`backend/src/tools.mjs`), regardless of which brain is answering:
 
 ```
-Program:  anchor 1.2.0 (via avm) · agave 4.3.0 · litesvm 1.4.1 · surfpool 1.6.0 (dev only)
-Client:   @solana/kit 8.3.0 · @anchor-lang/core 1.2.0    # RENAMED from @coral-xyz/anchor
-Front:    react 19.3.0 · vite 8.3.0 · pixi.js 8.21.0 · @pixi/react 8.0.5 · zustand · gsap
-Art:      Kenney Tiny Town (CC0) · Ninja Adventure (CC0, has walk cycles)
+gather_food / gather_wood / craft_net / rest   — choose your next shift (needs a reason)
+place_order                                     — post a limit order for the next round
+check_market                                    — see recent prices and volumes
 ```
 
-Sprites at work sites (you need to see fishing); dots with trails at city zoom.
+The brain is fully swappable and the rest of the system can't tell which one is
+running:
 
-**Demo on a local validator**, devnet as cold backup. Public devnet RPC is 100 req/10s ≈ 10/s —
-dead on arrival, and you can't faucet 100 wallets.
+| Brain | File | Status |
+|---|---|---|
+| `stub` | `brains/stub.mjs` | Free heuristic placeholder. No API key. Used for fast/free load testing. |
+| `openai` | `brains/openai.mjs` | Tool-calling via Chat Completions. Currently `gpt-5.6-luna`. Reasoning must be set to `'none'` — the API rejects tool calls with `reasoning_effort` on by default for this model family. |
+| `claude` | `brains/claude.mjs` | Tool-calling via the Messages API. Currently `claude-haiku-4-5`. |
+
+Both real brains get the **same system prompt** (`brains/prompt.mjs`) and the same
+per-turn `observe()` text: identity, cash and goods (free vs. committed), hunger,
+recent prices and volumes, and a short rolling memory of what just happened to them
+("Market: you sold 4 wood at 3.00", "3 of your food spoiled").
+
+Decisions happen **only when an agent finishes a shift**, not every tick — this paces
+LLM calls for free and is why the cost stays low. Agent wake-ups are staggered over a
+window (`STAGGER_MS`) so 10 or 100 agents don't all call out in the same instant.
+
+### Cost, measured
+
+A 100-second, 10-agent run on `gpt-5.6-luna` with reasoning off: **379 LLM calls, $0.08
+total.** Scales roughly linearly with agent count and run length.
+
+### Honesty about LLM agents (still true, worth knowing before a judge raises it)
+
+- LLM traders price near fundamentals and rarely speculate on their own
+  ([arXiv 2502.15800](https://arxiv.org/abs/2502.15800), Caltech) — **matches what
+  we're observing**: agents anchor on the shown price rather than forming independent
+  expectations.
+- Behavioral magnitudes are prompt-tunable
+  ([arXiv 2604.18373](https://arxiv.org/abs/2604.18373)) — if asked "did you prompt
+  them into that?", the honest answer is "the prompt is on screen, read it."
+- LLM algorithmic collusion is a robust, documented phenomenon
+  ([arXiv 2404.00806](https://arxiv.org/abs/2404.00806)) — if agents converge on
+  suspiciously similar prices, that's real and citable, not a bug to hide.
+- LLM calls are non-deterministic — runs are not bit-reproducible. The saved event log
+  (§6) is what lets a run be reconstructed and analyzed after the fact; it is not a
+  deterministic replay.
 
 ---
 
-## 8. Build ladder
+## 6. Logging and analysis
 
-Walking skeleton first, not layers. The riskiest component is the **loop** (sim → chain →
-mirror → screen), not the auction.
-
-**v0 — 20 agents, fish only, FIXED price, no market, no credit.**
-Agent walks to water → fishes 8 ticks → walks to market → sells. SPL mint + Ledger + one
-`settle_tick` instruction. Crank submits one tx/tick; server mirrors via `accountSubscribe`;
-frontend renders 20 dots + balances.
-*Done when: a dot fishes, a Solana account changes, the screen shows it, and it's visible in the explorer.*
-
-| | Add | Proves | ~h |
-|---|---|---|---|
-| v1 | Batch auction (clear off-chain first, then port on-chain) | Real economy | 3 |
-| v2 | Boats — cost money, triple fish yield | Capital exists | 1.5 |
-| v3 | `borrow()` against the boat | Credit exists | 2 |
-| v4 | **`repossess()` — permissionless** | the thesis | 2 |
-| v5 | Shock buttons + interest rate slider | Interactivity | 2 |
-| v6 | `authority` variant → Crownhaven, same seed | The comparison | 1 |
-
-Every version is demoable. Checkpoint to write on the wall: **on-chain clear == off-chain clear
-on the same order set.**
-
-**Descope order:** voice → LLM pricers → twin ghost → newspaper → on-chain auction
-(fallback: clear off-chain, settle on-chain) → lending (never, it's the thesis).
-
-**Working rules:** freeze the byte layout (`Order`, `AgentSlot`, WS message) before splitting
-up. Fake the other half — frontend renders from a JSON fixture, chain tested with LiteSVM
-against a fake order list. Neither blocks the other.
-
----
-
-## 9. Landmines
-
-1. **V1 txs: an unset `computeUnitLimit` defaults to ZERO, not the runtime default.** Instant
-   failure, no useful error. Set it explicitly in the very first transaction.
-2. **ALTs do not exist on V1.** Encoding must be base64. `getTransaction`/`getBlock` need
-   `maxSupportedTransactionVersion: 1` — and one v1 tx in a block makes `getBlock` fail
-   entirely, no partial result.
-3. **Sorting 300 orders on-chain blows the 1.4M CU budget.** Submit pre-sorted; verify
-   sortedness in one O(n) pass. Still a real on-chain invariant. Budget 2h.
-4. **`--limit-ledger-size 50000000`** on the test validator or it eats the disk mid-demo.
-5. **Never `getLatestBlockhash()` per transaction.** Cache per slot. Confirm via
-   `signatureSubscribe`, never `confirmTransaction` polling.
-6. **Token-2022 "interest-bearing" is display-only** — "no new tokens are ever created."
-   Pitch it as loan interest and a judge who knows the extension ends the demo. Transfer-fee
-   *is* real if a sales tax is wanted.
-7. **SPL Governance / Realms: the UI was discontinued 2026-07-01.** Don't go near it.
-8. **Pixi `Text` objects are the #1 frame killer** — 300 labels = 300 texture uploads. Use
-   BitmapText or put numbers in DOM.
-9. **Anchor 1.2 TS v1-transaction support is UNVERIFIED.** Budget 2h; fallback is building the
-   v1 tx with `@solana/kit` 8.3 directly and passing Anchor-encoded instruction data in.
-
----
-
-## 10. Demo (3 minutes)
+**Every run is saved automatically**, from server start to Stop, in
+`backend/runs/<timestamp>/` (gitignored):
 
 ```
-0:00  Town. Seed printed. SHA-256(seed || ruleset) on screen.
-0:20  Boom. Fishermen lever up for boats. Price climbing.
-0:50  "Same seed, no shock" -> ghost line on the chart. Flat.
-1:10  HAND A JUDGE A TERMINAL:  agent-economy repossess --agent 41
-      Permissionless. Anyone can call it. It succeeds.
-1:20  Boat hits the next auction. Boat price cracks.
-      Agents 3, 7, 19 breach margin. Docks empty, boat by boat.
-1:50  Click the crash -> grounded why-chain citing ticks and agent IDs.
-2:20  Zoom to agent 47. Wallet, last five trades. Click through to the real explorer.
-2:40  Kill the sim server. Rebuild the whole town from chain state.
-      "The chain is the source of truth. The town is just a renderer."
+meta.json       config, agent names/traits, program + ledger address, start time
+events.jsonl    every decision (what the agent saw · thought · did), every order,
+                every round (prices, volumes, order book stats, trades, spoilage,
+                every agent's state)
+final.json      on-chain balances read back after Stop, LLM call stats
 ```
 
-**Interactivity, by payoff per hour:** interest-rate slider (~1h, best in class) · click agent →
-wallet + explorer deep link (~2h) · hand the judge `repossess` (~0.5h) · shock buttons (~2h) ·
-place a resource node and watch migration (~1.5h).
+```bash
+node backend/scripts/analyze.mjs                  # the latest run
+node backend/scripts/analyze.mjs runs/2026-09-19T14-45-27
+```
+
+The analysis script reports, per run: which goods actually traded and how price moved,
+what agents chose to do and how many orders were rejected (and why), hunger and
+spoilage, how much money changed hands and the cash Gini coefficient, final standings,
+and a sample of agents' own reasoning. This is what produced the findings in §2 — it's
+the way to get real answers instead of guessing at what changed a run.
 
 ---
 
-## 11. Prior art
+## 7. Solana specifics worth remembering
 
-Useful as proof-of-concept and as code to steal. The only real risk is visual pattern-match:
-if a judge's first three seconds say "AI Town with coins," we lose originality points
-specifically. Build in the proven space, look different doing it.
+- **Transaction V1** shipped to mainnet 2026-09-15 (SIMD-0385, epoch 1035): max
+  transaction size 1232 → 4096 bytes. Not yet adopted in this build (still on legacy
+  transactions), but it's the direct answer to "how do we grow past ~100 agents in one
+  atomic auction" — a 12-byte order struct gives roughly 316 orders per transaction
+  instead of ~100. Worth wiring in if agent count needs to grow.
+- **`solana-test-validator`** is what this has been developed and tested against
+  (`http://127.0.0.1:8899`), not devnet — devnet's public RPC rate limit (~10 req/s) is
+  hostile to a fast-moving sim with 10–100 agents.
+- **Anchor's JS `BorshInstructionCoder` caps instruction data at 1000 bytes.** A full
+  order book overflows it with an unhelpful `ERR_OUT_OF_RANGE`. Solved by hand-encoding
+  instructions (`backend/src/chain.mjs`) rather than using `program.methods.*`.
+- **`AccountLoader` + `zero_copy` needs `bytemuck` as a direct crate dependency** with
+  the `derive` and `min_const_generics` features — the `#[account(zero_copy)]` macro
+  expands to reference it directly; Anchor doesn't pull it in for you.
+- **LiteSVM (as scaffolded by `anchor init`, pinned to 0.10.0) works on stable Rust;
+  upgrading to 0.16.0 requires nightly** (`maybe_uninit_write_slice`). Testing against
+  a real local validator was used instead, which is also closer to how the demo will
+  actually run.
+
+---
+
+## 8. What's still ahead — the original vision, not yet built
+
+An earlier planning pass (before any code existed) designed a deeper system: fish,
+boats as capital, borrowing against a boat, **permissionless repossession**, a
+central-bank-vs-decentralized comparison (`Freeport` / `Crownhaven`, same seed, one
+optional `authority` key), a voice/text "director" for live interventions, and a
+PixiJS/React visual frontend. None of that is built. It's recorded here because it's
+the reason certain design choices were made early (the packed-account layout, the
+`authority` field already existing on `Ledger`, the batch-auction market) and because
+it's the natural next layer once the current goods market is solid:
+
+- **Credit and repossession are still the most genuinely unoccupied idea** found in
+  prior art (§9) — nobody has agents borrow, post collateral, get liquidated, and have
+  that liquidation be a real on-chain instruction a stranger can call. This remains the
+  strongest "why Solana, really" story if there's time to build it.
+- **An SPL token for money**, with the mint authority revoked, would make "the supply
+  can't be inflated" a fact a judge can verify in the explorer instead of a claim.
+- **A visual frontend does not exist.** Everything observable right now is the
+  barebones HTML dashboard (`backend/public/index.html`): a status panel, three live
+  price charts with volume bars and hover tooltips, an order book / recent trades
+  panel, and a sortable agent table with each agent's live activity and last thought.
+  It's deliberately minimal and was built to be replaced, not extended.
+
+---
+
+## 9. Prior art
+
+Useful as proof-of-concept and as code to steal, not as a reason to avoid the space.
+The only real risk is visual pattern-match — a polished frontend needs to look
+distinct from these, not that the underlying idea is taken.
 
 | Project | What it proves | Use |
 |---|---|---|
-| [a16z-infra/ai-town](https://github.com/a16z-infra/ai-town) — MIT, 10.5k★, React+Vite+PixiJS+Convex | A browser agent town with tick-based sim works | **Steal, don't fork.** Convex owns the game loop and is built for conversation, not markets. Take the PixiJS setup |
-| [Mercatorio](https://mercatorio.io/) — browser medieval economy | Production chains + order-book prices ("not by predetermined scripting") are legible to normal players | Best reference for the economy UI. Play it for 20 min |
-| [manicinc/wunderland-sol](https://github.com/manicinc/wunderland-sol) — Apache-2.0, Colosseum | Per-agent on-chain identity as PDAs works today | **Best code reference for the chain layer.** Copy the Anchor account layout |
-| [salesforce/ai-economist](https://github.com/salesforce/ai-economist) | Gather-Trade-Build: the forage→trade→capital loop produces real dynamics | Steal the environment design |
-| [Project Sid](https://github.com/altera-al/project-sid) (arXiv:2411.00114) | 1000+ agents converged on gems as currency, formed a merchant hub | Paper + video only, **no code** |
-| [arXiv 2506.04699](https://arxiv.org/abs/2506.04699) | Emergent role specialization + price fluctuations in MMO economies | Academic validation of this exact design |
-| [SOLPRISM](https://github.com/NeukoAI/axiom-protocol) | Commit-reveal for agent reasoning, 300+ traces on mainnet | If we want decision attestation, **use theirs** |
-| [Moltlets World](https://web.archive.org/web/20260225082836/https://moltlets.world/) (site now 404s) | Fish/chop/build/sell is engaging — ran 7 months | Economy was in a database; Solana part was memo strings. **This is the gap we fill** |
-| [GOD](https://arxiv.org/abs/2608.27992) (Aug 2026) | NL intervention into agent sims. Text, not voice | Read before building the director; primitive taxonomy is done |
+| [a16z-infra/ai-town](https://github.com/a16z-infra/ai-town) — MIT, 10.5k★, React+Vite+PixiJS+Convex | A browser agent town with tick-based sim works | Steal the PixiJS setup, not the Convex game loop (built for conversation, not markets) |
+| [Mercatorio](https://mercatorio.io/) — browser medieval economy | Production chains + order-book prices are legible to normal players | Best reference for economy UI |
+| [manicinc/wunderland-sol](https://github.com/manicinc/wunderland-sol) — Apache-2.0, Colosseum | Per-agent on-chain identity as PDAs works today | Reference for adding identity PDAs (§8) |
+| [salesforce/ai-economist](https://github.com/salesforce/ai-economist) | Gather-Trade-Build: forage→trade→capital loop produces real dynamics | Reference for a spatial/capital layer if added |
+| [Project Sid](https://github.com/altera-al/project-sid) (arXiv:2411.00114) | 1000+ agents converged on gems as currency, formed a merchant hub | Paper + video only, no code |
+| [arXiv 2506.04699](https://arxiv.org/abs/2506.04699) | Emergent role specialization + price fluctuations in MMO economies | Academic validation of this general design |
+| [Moltlets World](https://web.archive.org/web/20260225082836/https://moltlets.world/) (site now 404s) | Fish/chop/build/sell is engaging — ran 7 months | **Cloned and inspected directly.** Its "on-chain" was SPL Memo strings summarizing counts every 5 minutes; the real economy lived in SQLite, and agent wallets were server-derived from a salt, so the server could recover any agent's keys. This build already has more real on-chain state than Moltlets ever did — the ledger is genuinely the source of truth, not a log. |
 
-**Genuinely unoccupied:** credit, default and insolvency. Sid got to barter and a shared
-currency; nobody has agents borrow, post collateral, get liquidated, and have that liquidation
-be a real on-chain instruction a stranger can call.
+**Genuinely unoccupied (confirmed, and still true):** credit, default and insolvency as
+real on-chain instructions. See §8.
 
 ---
 
-## 12. Decisions and what's still open
+## 10. Decisions made along the way
 
-**Settled (2026-09-19):**
+- **Name:** just `agent-economy`.
+- **Agents are LLMs with tool calls, not heuristics that merely resemble reasoning.**
+  Reversed from an earlier "heuristic core, thin LLM layer" plan once the team decided
+  the swarm itself needed to think, not just narrate.
+- **Started at 10 agents, not 100**, to keep API cost and iteration speed manageable
+  while tuning the economy; `AGENTS` in `.env` scales this trivially.
+- **Brain is OpenAI (`gpt-5.6-luna`) by default**, with Claude Haiku as an alternative
+  — both implemented behind the same tool interface, switchable via `BRAIN=`.
+- **Coins never spoil; food and wood do** — this is what makes holding money the
+  rational choice for storing value, and forces surplus goods to be sold or lost.
+- **Every run is saved to disk automatically** — this was previously a gap (a run's
+  reasoning was lost on Stop) and is now fixed.
+- **Badge Hack: dropped.** Not pursued.
+- **Rox "Best AI Agent" ($10,000):** worth a free submission as-is; not worth
+  reweighting the build toward it.
 
-- **Name:** just `agent-economy`. `Freeport` / `Crownhaven` remain as labels for the two
-  program configs (no-authority vs authority), not as branding.
-- **Agent count:** start at ~100. Design for growth to ~300 — see the ceilings in §3.
-- **Badge Hack: dropped entirely.** Not on the descope ladder, not competing for attention.
-- **Rox "Best AI Agent" ($10,000):** submit to the track as-is, change nothing about the build.
-  Free lottery ticket. Do **not** reweight toward visible LLM decision-making — that trades the
-  heuristic-core defence in §6 for a prize we'd likely lose anyway.
-- **Starting point:** bare repo. The v0 walking skeleton in §8 starts from zero.
+### Still open
 
-**Still open:**
-
-- Let the audience trade (a judge bids on fish from their phone — real wallet, real transaction)?
-  Breaks "no outsiders in the world," ~2h. Stretch goal, sits behind repossession.
-- Voice director, or text/buttons only? Text console is in the plan; voice is a ~45-min skin on
-  top of the same primitives if there's time. Voice was named first-to-cut.
-- Whether to keep the LLM firm-manager pricers (§6) if the schedule tightens — they're the one
-  place LLMs are genuinely defensible, but they're also cuttable.
+- Fixing the dead wood market: differentiated agent skills, or a second use for wood.
+- Whether to build the credit/repossession layer (§8) at all given remaining time, or
+  stay focused on making the current goods market and its frontend excellent.
+- A real frontend — nothing beyond the barebones dashboard exists yet.
+- SPL token for money; per-agent identity PDAs; a permissionless instruction.
