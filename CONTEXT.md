@@ -1,4 +1,4 @@
-# Shoal — an AI agent economy on Solana
+# agent-economy — an AI agent economy on Solana
 
 Hack the North 2026 · Sept 18–20 · University of Waterloo
 Target prize: **Best Use of Solana** ($5,000 + Ledger Nano S Plus)
@@ -274,7 +274,7 @@ against a fake order list. Neither blocks the other.
 0:00  Town. Seed printed. SHA-256(seed || ruleset) on screen.
 0:20  Boom. Fishermen lever up for boats. Price climbing.
 0:50  "Same seed, no shock" -> ghost line on the chart. Flat.
-1:10  HAND A JUDGE A TERMINAL:  shoal repossess --agent 41
+1:10  HAND A JUDGE A TERMINAL:  agent-economy repossess --agent 41
       Permissionless. Anyone can call it. It succeeds.
 1:20  Boat hits the next auction. Boat price cracks.
       Agents 3, 7, 19 breach margin. Docks empty, boat by boat.
