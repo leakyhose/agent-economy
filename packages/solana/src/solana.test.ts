@@ -80,6 +80,20 @@ describe('the population lands in ledger slots', () => {
     expect(r.indexOf('person_23')).toBe(23);
   });
 
+  it('numbers several cohorts of one type continuously, as the engine does', () => {
+    // Two cohorts of the same type must not both start at _0.
+    const twoCohorts = {
+      ...sandbox,
+      population: [
+        { type: 'person', count: 3 },
+        { type: 'person', count: 2 },
+      ],
+    };
+    const r = rosterFromWorld(twoCohorts);
+    expect(r.ids).toEqual(['person_0', 'person_1', 'person_2', 'person_3', 'person_4']);
+    expect(new Set(r.ids).size).toBe(r.ids.length);
+  });
+
   it('flattens the kingdom to 18 + 4 + 3 + 2', () => {
     const r = rosterFromWorld(kingdom);
     expect(r.count).toBe(27);

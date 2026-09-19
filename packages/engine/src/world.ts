@@ -87,7 +87,16 @@ function collectExprPaths(expr: Expr | undefined, sink: string[], ctx: Ctx, wher
     } else if (!ctx.entityTypeIds.has(spec.of)) {
       ctx.problems.push(`${where}: "count.of" names unknown entity type "${spec.of}"`);
     }
-    if (spec?.where) collectPredicatePaths(spec.where, sink, ctx, where);
+    if (spec?.where) {
+      // Inside a count's filter the engine binds each candidate to $e, so paths
+      // rooted there are legitimate and must not be checked against the
+      // enclosing rule's scope. Collect them separately and discard.
+      const inner: string[] = [];
+      collectPredicatePaths(spec.where, inner, ctx, where);
+      for (const path of inner) {
+        if (!path.startsWith('$e.') && path !== '$e') sink.push(path);
+      }
+    }
     return;
   }
   ctx.problems.push(`${where}: unrecognised expression ${JSON.stringify(expr)}`);
@@ -174,6 +183,20 @@ function collectEffectPaths(
         collectExprPaths(expr, sink, ctx, where);
       }
       break;
+    case 'with': {
+      collectExprPaths(effect.entity, sink, ctx, where);
+      const key = effect.bind.startsWith('$') ? effect.bind : `$${effect.bind}`;
+      if (!effect.bind) ctx.problems.push(`${where}: with needs a bind name`);
+      bound.add(key);
+      // Both arms see the binding; the else arm sees it only as a name it must
+      // not read, which checkRoots catches if it tries.
+      for (const predicate of effect.require ?? []) {
+        collectPredicatePaths(predicate, sink, ctx, where);
+      }
+      for (const child of effect.effects) collectEffectPaths(child, sink, ctx, where, bound);
+      for (const child of effect.else ?? []) collectEffectPaths(child, sink, ctx, where, bound);
+      break;
+    }
     default:
       ctx.problems.push(`${where}: unrecognised effect ${JSON.stringify(effect)}`);
   }

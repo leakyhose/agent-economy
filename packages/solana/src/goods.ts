@@ -104,11 +104,19 @@ export interface AgentRoster {
 export function rosterFromWorld(world: WorldDefinition): AgentRoster {
   const ids: string[] = [];
   const types: string[] = [];
+  // Ids run continuously per entity type, exactly as the engine allocates them.
+  // A world may declare several cohorts of one type - to give them different
+  // goals or attributes - and numbering must not restart at each one, or two
+  // cohorts of people both claim person_0.
+  const nextOfType = new Map<string, number>();
   for (const cohort of world.population) {
+    let n = nextOfType.get(cohort.type) ?? 0;
     for (let k = 0; k < cohort.count; k++) {
-      ids.push(`${cohort.type}_${k}`);
+      ids.push(`${cohort.type}_${n}`);
       types.push(cohort.type);
+      n += 1;
     }
+    nextOfType.set(cohort.type, n);
   }
   if (ids.length > MAX_AGENTS) {
     throw new Error(

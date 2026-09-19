@@ -60,6 +60,9 @@ export class Simulation {
   brain: string = CFG.BRAIN;
   /** Held so the console can read what the run has actually spent. */
   private provider: { name: string; usage?: () => LLMUsage } | null = null;
+  /** Mints a decision loop for an entity that appeared after load. */
+  private mint: ((id: string, type: string) => Agent) | null = null;
+  private agentTypes = new Set<string>();
 
   constructor(private readonly onFrame: (frame: Frame) => void,
               private readonly log: (line: string) => void = console.log) {
@@ -125,6 +128,34 @@ export class Simulation {
     const usesModel = mix || this.brain === 'llm' || this.brain === 'hybrid';
     const lens = makeLens(world);
 
+    // Goals come from the world, not from the platform: a cohort's goals win
+    // over its entity type's. Ids are allocated in population order, so the
+    // cohort boundaries fall where the counts say they do.
+    const goalsById = new Map<string, readonly string[]>();
+    const seen = new Map<string, number>();
+    for (const spec of world.population ?? []) {
+      const start = seen.get(spec.type) ?? 0;
+      const typeGoals = world.entityTypes.find((t) => t.id === spec.type)?.goals ?? [];
+      for (let k = 0; k < spec.count; k++) {
+        goalsById.set(`${spec.type}_${start + k}`, spec.goals ?? typeGoals);
+      }
+      seen.set(spec.type, start + spec.count);
+    }
+
+    // An entity born mid-run - a company somebody founded - needs a decision
+    // loop too, or it sits inert while the world assumes it is acting. Keep the
+    // recipe so step() can mint one.
+    let minted = 0;
+    this.mint = (id: string, type: string) => createAgent({
+      id, lens,
+      kind: mix ? kinds[(agents.length + minted++) % kinds.length]! : (this.brain as EngineKind),
+      seed: world.seed ^ ((1000 + minted) * 0x9e3779b1),
+      goals: world.entityTypes.find((t) => t.id === type)?.goals ?? [],
+      walletAddress: addresses.get(id) ?? `offchain:${id}`,
+      ...(usesModel ? { provider } : {}),
+    });
+    this.agentTypes = agentTypes;
+
     const agents: Agent[] = [];
     let n = 0;
     for (const id of Object.keys(engine.state.entities).sort()) {
@@ -134,6 +165,9 @@ export class Simulation {
         id, lens,
         kind: mix ? kinds[n % kinds.length]! : (this.brain as EngineKind),
         seed: world.seed ^ (n * 0x9e3779b1),
+        goals: goalsById.get(id)
+          ?? world.entityTypes.find((t) => t.id === entity.type)?.goals
+          ?? [],
         walletAddress: addresses.get(id) ?? `offchain:${id}`,
         ...(usesModel ? { provider } : {}),
       }));
@@ -190,6 +224,18 @@ export class Simulation {
     // Skip agents the engine would reject as busy. They are mid-action, so the
     // proposal is discarded anyway, and asking a model to think for an agent
     // that cannot act is the easiest way to waste money.
+    // Adopt anything that has appeared since the last tick.
+    if (this.mint) {
+      const known = new Set(this.agents.map((a) => a.id));
+      for (const id of Object.keys(engine.state.entities).sort()) {
+        const entity = engine.state.entities[id];
+        if (!entity || known.has(id) || !this.agentTypes.has(entity.type)) continue;
+        this.agents.push(this.mint(id, entity.type));
+      }
+    }
+    // Drop anything that has gone - a firm that failed, say.
+    this.agents = this.agents.filter((a) => engine.state.entities[a.id]);
+
     const ready = this.agents.filter((a) => {
       const busy = engine.state.entities[a.id]?.state['busyUntil'];
       return typeof busy !== 'number' || busy <= engine.state.tick;

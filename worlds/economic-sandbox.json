@@ -49,21 +49,33 @@
         "food": 6,
         "wood": 0,
         "tools": 0
-      }
+      },
+      "goals": [
+        "Stay fed. Hunger is the one thing that will ruin you.",
+        "Build up savings in the world's currency.",
+        "Prefer income that keeps arriving over a single good trade."
+      ]
     },
     {
       "id": "company",
       "agent": true,
       "attributes": {
         "name": "unnamed",
-        "headcount": 0
+        "headcount": 0,
+        "founder": "",
+        "wage": 400
       },
       "resources": {
         "SOL": 0,
         "food": 0,
         "wood": 0,
         "tools": 0
-      }
+      },
+      "goals": [
+        "Buy labour cheaply and sell what it produces dearly.",
+        "Keep enough currency on hand to make payroll every round.",
+        "Grow the workforce while each worker earns more than their wage."
+      ]
     }
   ],
   "actions": [
@@ -154,9 +166,14 @@
           "name": "capital",
           "type": "number",
           "required": true
+        },
+        {
+          "name": "wage",
+          "type": "number",
+          "required": false
         }
       ],
-      "description": "Spend capital to found a company you own."
+      "description": "Found a company you own. You may own only one."
     },
     {
       "id": "hire",
@@ -167,14 +184,7 @@
       "targetTypes": [
         "person"
       ],
-      "params": [
-        {
-          "name": "wage",
-          "type": "number",
-          "required": true
-        }
-      ],
-      "description": "Offer a person a per-round wage."
+      "description": "Employ a person. They produce for you; you owe them a wage each round."
     },
     {
       "id": "idle",
@@ -246,58 +256,6 @@
     }
   ],
   "rules": [
-    {
-      "id": "gather_food_yield",
-      "when": {
-        "action": "gather_food"
-      },
-      "effects": [
-        {
-          "op": "increment",
-          "path": "$actor.resources.food",
-          "by": {
-            "add": [
-              2,
-              {
-                "mul": [
-                  2,
-                  {
-                    "ref": "$actor.resources.tools"
-                  }
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "op": "emit",
-          "event": "worked",
-          "data": {
-            "kind": "food"
-          }
-        }
-      ]
-    },
-    {
-      "id": "gather_wood_yield",
-      "when": {
-        "action": "gather_wood"
-      },
-      "effects": [
-        {
-          "op": "increment",
-          "path": "$actor.resources.wood",
-          "by": 3
-        },
-        {
-          "op": "emit",
-          "event": "worked",
-          "data": {
-            "kind": "wood"
-          }
-        }
-      ]
-    },
     {
       "id": "craft_tool_costs_wood",
       "when": {
@@ -398,118 +356,6 @@
       ]
     },
     {
-      "id": "found_company_requires_capital",
-      "when": {
-        "action": "found_company"
-      },
-      "require": [
-        {
-          "gte": [
-            {
-              "ref": "$actor.resources.SOL"
-            },
-            {
-              "ref": "$params.capital"
-            }
-          ]
-        }
-      ],
-      "effects": [
-        {
-          "op": "decrement",
-          "path": "$actor.resources.SOL",
-          "by": {
-            "ref": "$params.capital"
-          }
-        },
-        {
-          "op": "spawn",
-          "type": "company",
-          "bind": "$new",
-          "attributes": {
-            "name": "Newco",
-            "headcount": 0
-          }
-        },
-        {
-          "op": "increment",
-          "path": "$new.resources.SOL",
-          "by": {
-            "ref": "$params.capital"
-          }
-        },
-        {
-          "op": "relate",
-          "from": "$actor",
-          "to": "$new",
-          "kind": "owns"
-        },
-        {
-          "op": "settle",
-          "asset": "SOL",
-          "from": "$actor",
-          "to": "$new",
-          "amount": {
-            "ref": "$params.capital"
-          }
-        }
-      ]
-    },
-    {
-      "id": "hire_pays_wage",
-      "when": {
-        "action": "hire"
-      },
-      "require": [
-        {
-          "gte": [
-            {
-              "ref": "$actor.resources.SOL"
-            },
-            {
-              "ref": "$params.wage"
-            }
-          ]
-        }
-      ],
-      "effects": [
-        {
-          "op": "decrement",
-          "path": "$actor.resources.SOL",
-          "by": {
-            "ref": "$params.wage"
-          }
-        },
-        {
-          "op": "increment",
-          "path": "$target.resources.SOL",
-          "by": {
-            "ref": "$params.wage"
-          }
-        },
-        {
-          "op": "relate",
-          "from": "$target",
-          "to": "$actor",
-          "kind": "employer"
-        },
-        {
-          "op": "increment",
-          "path": "$actor.attributes.headcount",
-          "by": 1
-        },
-        {
-          "op": "settle",
-          "asset": "SOL",
-          "from": "$actor",
-          "to": "$target",
-          "amount": {
-            "ref": "$params.wage"
-          }
-        }
-      ]
-    },
-    {
       "id": "hunger_rises",
       "when": {
         "tick": {
@@ -535,6 +381,513 @@
         {
           "op": "emit",
           "event": "meal_time"
+        }
+      ]
+    },
+    {
+      "id": "proposal_opens",
+      "when": {
+        "action": "propose"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$target.resources.SOL"
+            },
+            {
+              "ref": "$params.amount"
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "emit",
+          "event": "proposal_opened"
+        }
+      ]
+    },
+    {
+      "id": "vote_recorded",
+      "when": {
+        "action": "vote"
+      },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "vote_cast"
+        }
+      ]
+    },
+    {
+      "id": "gather_food_yield",
+      "when": {
+        "action": "gather_food"
+      },
+      "description": "Employed workers deliver their catch to the firm; the unemployed keep it.",
+      "effects": [
+        {
+          "op": "with",
+          "entity": {
+            "ref": "$actor.attributes.employer"
+          },
+          "bind": "$employer",
+          "effects": [
+            {
+              "op": "increment",
+              "path": "$employer.resources.food",
+              "by": {
+                "add": [
+                  2,
+                  {
+                    "mul": [
+                      2,
+                      {
+                        "ref": "$employer.resources.tools"
+                      }
+                    ]
+                  },
+                  {
+                    "ref": "$actor.attributes.skill"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "emit",
+              "event": "worked",
+              "data": {
+                "kind": "food",
+                "forFirm": {
+                  "ref": "$employer.id"
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "increment",
+              "path": "$actor.resources.food",
+              "by": {
+                "add": [
+                  2,
+                  {
+                    "mul": [
+                      2,
+                      {
+                        "ref": "$actor.resources.tools"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "op": "emit",
+              "event": "worked",
+              "data": {
+                "kind": "food"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gather_wood_yield",
+      "when": {
+        "action": "gather_wood"
+      },
+      "description": "Same split for timber.",
+      "effects": [
+        {
+          "op": "with",
+          "entity": {
+            "ref": "$actor.attributes.employer"
+          },
+          "bind": "$employer",
+          "effects": [
+            {
+              "op": "increment",
+              "path": "$employer.resources.wood",
+              "by": {
+                "add": [
+                  3,
+                  {
+                    "ref": "$actor.attributes.skill"
+                  }
+                ]
+              }
+            },
+            {
+              "op": "emit",
+              "event": "worked",
+              "data": {
+                "kind": "wood",
+                "forFirm": {
+                  "ref": "$employer.id"
+                }
+              }
+            }
+          ],
+          "else": [
+            {
+              "op": "increment",
+              "path": "$actor.resources.wood",
+              "by": 3
+            },
+            {
+              "op": "emit",
+              "event": "worked",
+              "data": {
+                "kind": "wood"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "found_company_requires_capital",
+      "when": {
+        "action": "found_company"
+      },
+      "description": "Costs capital, and you may own only one company at a time.",
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "ref": "$params.capital"
+            }
+          ]
+        },
+        {
+          "gte": [
+            {
+              "ref": "$params.capital"
+            },
+            1000
+          ]
+        },
+        {
+          "eq": [
+            {
+              "count": {
+                "of": "company",
+                "where": {
+                  "eq": [
+                    {
+                      "ref": "$e.attributes.founder"
+                    },
+                    {
+                      "ref": "$actor.id"
+                    }
+                  ]
+                }
+              }
+            },
+            0
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "decrement",
+          "path": "$actor.resources.SOL",
+          "by": {
+            "ref": "$params.capital"
+          }
+        },
+        {
+          "op": "spawn",
+          "type": "company",
+          "bind": "$new",
+          "attributes": {
+            "name": "Newco",
+            "headcount": 0,
+            "founder": {
+              "ref": "$actor.id"
+            },
+            "wage": 400
+          }
+        },
+        {
+          "op": "increment",
+          "path": "$new.resources.SOL",
+          "by": {
+            "ref": "$params.capital"
+          }
+        },
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$new",
+          "kind": "owns"
+        },
+        {
+          "op": "settle",
+          "asset": "SOL",
+          "from": "$actor",
+          "to": "$new",
+          "amount": {
+            "ref": "$params.capital"
+          }
+        },
+        {
+          "op": "emit",
+          "event": "company_founded"
+        }
+      ]
+    },
+    {
+      "id": "hire_takes_one_worker",
+      "when": {
+        "action": "hire"
+      },
+      "description": "Employ an unemployed person. Wages are paid each round, not now.",
+      "require": [
+        {
+          "eq": [
+            {
+              "ref": "$target.attributes.employer"
+            },
+            null
+          ]
+        },
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "mul": [
+                2,
+                {
+                  "ref": "$actor.attributes.wage"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "set",
+          "path": "$target.attributes.employer",
+          "value": {
+            "ref": "$actor.id"
+          }
+        },
+        {
+          "op": "relate",
+          "from": "$target",
+          "to": "$actor",
+          "kind": "employer"
+        },
+        {
+          "op": "increment",
+          "path": "$actor.attributes.headcount",
+          "by": 1
+        },
+        {
+          "op": "emit",
+          "event": "hired"
+        }
+      ]
+    },
+    {
+      "id": "payroll",
+      "when": {
+        "tick": {
+          "every": 6
+        }
+      },
+      "description": "Each firm pays its workers, or lays off the ones it cannot pay.",
+      "effects": [
+        {
+          "op": "with",
+          "entity": {
+            "ref": "$each.person.attributes.employer"
+          },
+          "bind": "$boss",
+          "effects": [
+            {
+              "op": "with",
+              "entity": {
+                "ref": "$each.person.attributes.employer"
+              },
+              "bind": "$employer",
+              "require": [
+                {
+                  "gte": [
+                    {
+                      "ref": "$employer.resources.SOL"
+                    },
+                    {
+                      "ref": "$employer.attributes.wage"
+                    }
+                  ]
+                }
+              ],
+              "effects": [
+                {
+                  "op": "decrement",
+                  "path": "$employer.resources.SOL",
+                  "by": {
+                    "ref": "$employer.attributes.wage"
+                  }
+                },
+                {
+                  "op": "increment",
+                  "path": "$each.person.resources.SOL",
+                  "by": {
+                    "ref": "$employer.attributes.wage"
+                  }
+                },
+                {
+                  "op": "settle",
+                  "asset": "SOL",
+                  "from": "$employer",
+                  "to": "$each.person",
+                  "amount": {
+                    "ref": "$employer.attributes.wage"
+                  }
+                },
+                {
+                  "op": "emit",
+                  "event": "salary_paid"
+                }
+              ],
+              "else": [
+                {
+                  "op": "set",
+                  "path": "$each.person.attributes.employer",
+                  "value": null
+                },
+                {
+                  "op": "decrement",
+                  "path": "$employer.attributes.headcount",
+                  "by": 1
+                },
+                {
+                  "op": "unrelate",
+                  "from": "$each.person",
+                  "to": "$employer",
+                  "kind": "employer"
+                },
+                {
+                  "op": "emit",
+                  "event": "laid_off"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dividend",
+      "when": {
+        "tick": {
+          "every": 12
+        }
+      },
+      "description": "A firm with money left over pays its owner.",
+      "effects": [
+        {
+          "op": "with",
+          "entity": {
+            "ref": "$each.company.attributes.founder"
+          },
+          "bind": "$owner",
+          "require": [
+            {
+              "gte": [
+                {
+                  "ref": "$each.company.resources.SOL"
+                },
+                2000
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "decrement",
+              "path": "$each.company.resources.SOL",
+              "by": 1000
+            },
+            {
+              "op": "increment",
+              "path": "$owner.resources.SOL",
+              "by": 1000
+            },
+            {
+              "op": "settle",
+              "asset": "SOL",
+              "from": "$each.company",
+              "to": "$owner",
+              "amount": 1000
+            },
+            {
+              "op": "emit",
+              "event": "dividend_paid"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bankruptcy",
+      "when": {
+        "tick": {
+          "every": 12
+        }
+      },
+      "description": "A firm with no workers and no money dissolves.",
+      "effects": [
+        {
+          "op": "with",
+          "entity": {
+            "ref": "$each.company.id"
+          },
+          "bind": "$firm",
+          "require": [
+            {
+              "lt": [
+                {
+                  "ref": "$firm.resources.SOL"
+                },
+                200
+              ]
+            },
+            {
+              "eq": [
+                {
+                  "ref": "$firm.attributes.headcount"
+                },
+                0
+              ]
+            }
+          ],
+          "effects": [
+            {
+              "op": "emit",
+              "event": "company_failed",
+              "data": {
+                "firm": {
+                  "ref": "$firm.id"
+                }
+              }
+            },
+            {
+              "op": "destroy",
+              "path": "$firm"
+            }
+          ]
         }
       ]
     },
@@ -598,42 +951,6 @@
           "event": "equity_purchased"
         }
       ]
-    },
-    {
-      "id": "proposal_opens",
-      "when": {
-        "action": "propose"
-      },
-      "require": [
-        {
-          "gte": [
-            {
-              "ref": "$target.resources.SOL"
-            },
-            {
-              "ref": "$params.amount"
-            }
-          ]
-        }
-      ],
-      "effects": [
-        {
-          "op": "emit",
-          "event": "proposal_opened"
-        }
-      ]
-    },
-    {
-      "id": "vote_recorded",
-      "when": {
-        "action": "vote"
-      },
-      "effects": [
-        {
-          "op": "emit",
-          "event": "vote_cast"
-        }
-      ]
     }
   ],
   "markets": [
@@ -662,7 +979,25 @@
   "population": [
     {
       "type": "person",
-      "count": 24
+      "count": 18,
+      "goals": [
+        "Stay fed.",
+        "Take paid work when a firm offers it; a wage every round beats foraging.",
+        "Save what is left over."
+      ]
+    },
+    {
+      "type": "person",
+      "count": 6,
+      "attributes": {
+        "skill": 2
+      },
+      "goals": [
+        "Stay fed, but do not let that be the whole of your life.",
+        "You have capital and you mean to use it: found a company and hire people.",
+        "A firm you own earns while you sleep. Foraging does not.",
+        "You may own only one company, so choose your moment."
+      ]
     }
   ],
   "events": [

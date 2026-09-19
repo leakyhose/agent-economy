@@ -45,7 +45,27 @@ export type Effect =
   /** Marks this transfer as requiring on-chain settlement. The rule knows
    *  nothing about Solana; the settlement layer decides how it becomes a tx. */
   | { op: 'settle'; asset: string; from: Path; to: Path; amount: Expr }
-  | { op: 'emit'; event: string; data?: Record<string, Expr> };
+  | { op: 'emit'; event: string; data?: Record<string, Expr> }
+  /**
+   * Resolve an entity id held somewhere in state, bind it, and apply nested
+   * effects with that entity in scope. This is how a rule reaches an entity it
+   * only knows by reference - an employer named in an attribute, say.
+   *
+   * It is also the language's only branch. `effects` run when the entity exists
+   * and every `require` holds; `else` runs when it does not. That keeps
+   * conditionals declarative and total: both arms are data, and neither can
+   * escape into code.
+   */
+  | {
+      op: 'with';
+      /** Expression yielding an entity id. */
+      entity: Expr;
+      /** Scope name the entity is bound to, e.g. "$employer". */
+      bind: string;
+      require?: Predicate[];
+      effects: Effect[];
+      else?: Effect[];
+    };
 
 export interface Rule {
   id: string;

@@ -388,6 +388,31 @@ function applyOne(
       }
       return [mkEvent(effect.event, data)];
     }
+    case 'with': {
+      // Resolve an entity the rule knows only by reference, and branch on
+      // whether it is there and fit. Both arms are data; neither can run code.
+      const raw = evalExpr(effect.entity, scope, ectx);
+      const id = typeof raw === 'string' ? raw : null;
+      const entity = id ? state.entities[id] : undefined;
+
+      const bindKey = effect.bind.startsWith('$') ? effect.bind : `$${effect.bind}`;
+      let ok = Boolean(entity);
+      if (entity && effect.require) {
+        const inner: Scope = { ...scope, [bindKey]: entity };
+        ok = effect.require.every((p) => evalPredicate(p, inner, ectx));
+      }
+
+      const branch = ok ? effect.effects : (effect.else ?? []);
+      const nested: Scope = entity ? { ...scope, [bindKey]: entity } : scope;
+      const events: SimEvent[] = [];
+      for (const child of branch) {
+        // applyOne, not applyEffects: any broadcast wrapping this effect has
+        // already bound its member, and re-expanding here would apply the child
+        // once per member per member.
+        events.push(...applyOne(child, nested, state, ctx));
+      }
+      return events;
+    }
     default: {
       const never: never = effect;
       throw new EffectError(`unrecognised effect op: ${JSON.stringify(never)}`);

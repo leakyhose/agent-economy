@@ -26,6 +26,14 @@ export interface EntityTypeDef {
   id: EntityTypeId;
   /** Entities of this type run a decision loop. */
   agent?: boolean;
+  /**
+   * What entities of this type are trying to do, in their own terms. The engine
+   * never reads these - goals steer the agent layer only, and the world says
+   * what its inhabitants want rather than the platform assuming it. Without
+   * them agents optimise whatever gradients the rules happen to create, which
+   * is rarely what a world author has in mind.
+   */
+  goals?: string[];
   /** Default attribute values for entities spawned as this type. */
   attributes?: Record<string, Json>;
   /** Default resource endowment. */
@@ -98,6 +106,9 @@ export interface PopulationSpec {
   count: number;
   /** Attribute overrides applied to this cohort. */
   attributes?: Record<string, Json>;
+  /** Goals for this cohort, replacing the entity type's. Lets one world hold
+   *  populations that want different things. */
+  goals?: string[];
 }
 
 export interface WorldEventDef {
