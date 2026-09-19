@@ -1,0 +1,26 @@
+[package]
+name = "world"
+version = "0.1.0"
+description = "Agentic World — one generic on-chain ledger for any world definition."
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "world"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "1.2.0"
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

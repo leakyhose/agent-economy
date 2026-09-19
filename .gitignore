@@ -1,7 +1,6 @@
 node_modules/
 .next/
 dist/
-target/
 .env
 .env.local
 *.log
@@ -9,5 +8,18 @@ target/
 test-ledger/
 reference/
 pnpm-lock.yaml
-runs/
 package-lock.json
+runs/
+
+# Build output is ignored, with one deliberate exception: the program keypair is a
+# throwaway localnet identity with no funds and no upgrade authority worth stealing,
+# and without it the `declare_id!` in each program cannot be deployed by anyone else
+# on the team. A real deployment key would never be committed.
+target/
+!target/
+target/*
+!target/deploy/
+target/deploy/*
+!target/deploy/world-keypair.json
+!target/deploy/registry-keypair.json
+!target/deploy/org-keypair.json

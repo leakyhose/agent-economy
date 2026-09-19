@@ -1,0 +1,13 @@
+{
+  "name": "@aw/solana",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "demo": "tsx scripts/demo.ts"
+  },
+  "dependencies": {
+    "@aw/types": "workspace:*",
+    "@solana/web3.js": "^1.98.0"
+  }
+}
