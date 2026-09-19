@@ -5,3 +5,8 @@ target/
 test-ledger/
 .env
 .DS_Store
+chain/target/
+chain/test-ledger/
+chain/app/node_modules/
+chain/app/package-lock.json
+*.bak
