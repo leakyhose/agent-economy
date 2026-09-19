@@ -2,7 +2,7 @@
 // dashboard. After this, the browser drives the whole thing - pick a world,
 // start, pause, step, reset. Nothing else needs a terminal.
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 
 const CHAIN = process.env.CHAIN ?? '1';
 const RPC = process.env.RPC ?? 'http://127.0.0.1:8899';
@@ -31,6 +31,12 @@ if (!existsSync('.env')) {
   console.log('  no .env - agents will use the deterministic stub.');
   console.log('  for real reasoning: echo OPENAI_API_KEY=... > .env\n');
 }
+
+// Next's dev cache does not survive being written to by anything else - a
+// production build, an interrupted compile - and the symptom is an opaque
+// "__webpack_modules__[moduleId] is not a function" in the browser. Starting
+// from a clean cache costs about a second and removes the whole class of it.
+rmSync('apps/web/.next', { recursive: true, force: true });
 
 const children = [];
 function run(name, cmd, args, env) {

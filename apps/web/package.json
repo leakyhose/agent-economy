@@ -7,7 +7,7 @@
     "predev": "node scripts/sync-worlds.mjs",
     "dev": "next dev -p 3210",
     "prebuild": "node scripts/sync-worlds.mjs",
-    "build": "next build",
+    "build": "NEXT_DIST_DIR=.next-build next build",
     "start": "npx serve out",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
