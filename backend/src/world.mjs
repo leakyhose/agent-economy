@@ -125,7 +125,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // counted as the unfinished one first, so a free finished house stays sellable.
   const holdable = (a, g) => a.goods[g] - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
   W.sellable = (a, g) => holdable(a, g) - W.reservedGood(a, g);
-  W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.craftSkill(a)));
+  // A house costs the same wood for everyone. Dividing it by crafting skill was perverse:
+  // the three skills sum to 3.0, so the agents with the wood are the ones with the worst
+  // crafting, and they were quoted 300 wood while agents holding none were quoted 75.
+  W.houseWood = () => CFG.TASKS.build_house.wood;
 
   // ---- wellbeing: the goal ------------------------------------------------------
   const credit = (a, part, x) => { a.wellbeing += x; a.wbParts[part] += x; a.wbNow[part] += x; };
