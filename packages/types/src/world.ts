@@ -1,4 +1,5 @@
 import type { Rule, Effect, Expr } from './rules.ts';
+import type { ChainConfig, OrganizationDef } from './chain.ts';
 
 // The world definition. Everything world-specific lives here as DATA.
 // The engine reads these strings; it never knows what they mean.
@@ -85,6 +86,11 @@ export interface WorldDefinition {
   events?: WorldEventDef[];
   /** World-specific metrics (brief §28). */
   metrics?: MetricDef[];
+  /** How this world maps onto Solana (brief §11, §13). Optional: a world
+   *  that declares none of this still runs, entirely off chain. */
+  chain?: ChainConfig;
+  /** Organizations this world defines (brief §18). */
+  organizations?: OrganizationDef[];
 }
 
 export interface PopulationSpec {
