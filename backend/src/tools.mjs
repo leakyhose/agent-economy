@@ -60,6 +60,31 @@ const ALL_TOOLS = [
         reason:   { type: 'string', description: 'Optional: why this price, in a few words.' },
       },
     } },
+  { name: 'set_sale',
+    description: 'Your market stall: a STANDING instruction that works every round until you change it. Whatever you hold of the good above `keep` is offered for sale at `min_price` or better, automatically — ' +
+      'you do not need to place sell orders yourself. Everyone who trades a good gets the same clearing price, so you often get more than your minimum. Lower min_price if your goods are not selling; raise keep to hold more back. ' +
+      'For labour, it offers your next shift every round at that wage or better (keep is ignored). Set stop=true to stop selling that good.',
+    input_schema: {
+      type: 'object', additionalProperties: false, required: ['good', 'keep', 'min_price'],
+      properties: {
+        good:      { type: 'string', enum: ['food', 'wood', 'net', 'house', 'labour'] },
+        keep:      { type: 'integer', minimum: 0, description: 'units you never sell (your own reserve)' },
+        min_price: { type: 'number', description: 'the least you will take per unit, in coins' },
+        stop:      { type: 'boolean', description: 'true = stop selling this good' },
+      },
+    } },
+  { name: 'set_buy',
+    description: 'Your shopping list: a STANDING instruction that works every round until you change it. Whenever you hold less than `target` of the good, you automatically bid for the difference at up to `max_price` ' +
+      '(as far as your free cash goes). Everyone who trades a good gets the same clearing price, so you often pay less than your maximum. Raise max_price if you are not getting what you need; raise target to hold a bigger reserve; ' +
+      'target 0 stops buying. Keep target at or below your stall\'s keep for the same good. For food, wood and nets.',
+    input_schema: {
+      type: 'object', additionalProperties: false, required: ['good', 'target', 'max_price'],
+      properties: {
+        good:      { type: 'string', enum: ['food', 'wood', 'net'] },
+        target:    { type: 'integer', minimum: 0, description: 'the stock you want to hold' },
+        max_price: { type: 'number', description: 'the most you will pay per unit, in coins' },
+      },
+    } },
   { name: 'borrow',
     description: `Borrow newly minted coins from the village bank against pledged wood, nets and/or finished houses (food is not accepted). ` +
       `You may owe at most ${pct(B.LTV)}% of the collateral's value at last prices. Pledged goods stay in use (you fish with a pledged net, live in a pledged house) and don't rot, ` +
@@ -220,6 +245,12 @@ export function makeTools(W, a) {
       houseTxt,
       labourTxt,
       `Cash: ${coins(a.cash)} coins. You hold: ${GOODS.map((g, i) => i === LABOUR || (i > WOOD && !W.owned(a, i)) ? '' : `${g} ${W.owned(a, i)}${a.locked[i] ? ` (${a.locked[i]} pledged)` : ''}`).filter(Boolean).join(', ')}.`,
+      `Your stall (posted for you every round; change with set_sale): ` + (a.sale.some(Boolean)
+        ? a.sale.map((pl, g) => !pl ? '' : g === LABOUR ? `your next shift at ≥${coins(pl.min)}` : `${GOODS[g]} above ${pl.keep} at ≥${coins(pl.min)}`).filter(Boolean).join('; ') + '.'
+        : 'nothing on sale.'),
+      `Your shopping list (bid for you every round; change with set_buy): ` + (a.shop.some(Boolean)
+        ? a.shop.map((pl, g) => pl ? `${GOODS[g]} up to a stock of ${pl.target} at ≤${coins(pl.max)}` : '').filter(Boolean).join('; ') + '.'
+        : 'nothing.'),
       loanTxt,
       a.hunger ? `You are hungry: ${a.hunger} missed meal${a.hunger === 1 ? '' : 's'} in a row.` : '',
       a.cold ? `You are cold: ${a.cold} missed fire${a.cold === 1 ? '' : 's'} in a row (a fire burns ${CFG.FIRE_WOOD} wood every ${CFG.WARM_ROUNDS} rounds).` : '',
@@ -274,6 +305,23 @@ export function makeTools(W, a) {
       if (err) return no(err);
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
       return `From now on you eat ${a.lifestyle} food per meal.`;
+    }
+    if (name === 'set_sale') {
+      const g = GOOD_INDEX[input.good];
+      if (g === undefined) return no(`Unknown good "${input.good}".`);
+      if (input.stop) { W.stopSale(a, g); return `Your stall no longer sells ${GOODS[g]}.`; }
+      const err = W.setSale(a, g, input.keep, Number(input.min_price) * 100);
+      if (err) return no(err);
+      return g === LABOUR ? `From now on your next shift is offered every round at ${Number(input.min_price).toFixed(2)} or better.`
+        : `From now on your stall offers all your ${GOODS[g]} above ${Math.floor(input.keep)} at ${Number(input.min_price).toFixed(2)} or better, every round.`;
+    }
+    if (name === 'set_buy') {
+      const g = GOOD_INDEX[input.good];
+      if (g === undefined) return no(`Unknown good "${input.good}".`);
+      const err = W.setBuy(a, g, input.target, Number(input.max_price) * 100);
+      if (err) return no(err);
+      return Math.floor(input.target) ? `From now on you bid every round for whatever ${GOODS[g]} you hold short of ${Math.floor(input.target)}, at up to ${Number(input.max_price).toFixed(2)}.`
+        : `Your shopping list no longer buys ${GOODS[g]}.`;
     }
     if (name === 'place_order') {
       const g = GOOD_INDEX[input.good];

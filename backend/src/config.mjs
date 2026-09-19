@@ -90,6 +90,15 @@ export const CFG = {
   },
   HOUSE_UPKEEP: 2,              // wood each finished house uses up every round; a house not kept up gives nothing that round
 
+  // The market stall everyone starts with (agents change theirs with set_sale): what is held
+  // above `keep` is offered every round at `min` × the start price or better. Food, wood and
+  // nets only; nobody's house or labour is for sale until they say so.
+  STALL: [{ keep: 20, min: 0.8 }, { keep: 25, min: 0.8 }, { keep: 1, min: 0.8 }, null, null],
+
+  // The shopping list everyone starts with (agents change theirs with set_buy): every round,
+  // bid for whatever is held short of `target`, at up to `max` × the start price.
+  SHOP: [{ target: 20, max: 1.25 }, { target: 15, max: 1.25 }, null, null, null],
+
   // The labour market. A villager may sell their NEXT shift (one unit of labour) in the
   // round's auction; the buyer has a hired hand next round, working in whatever job the
   // buyer does then, at the buyer's skill times HAND_EFFICIENCY. A hired fisher needs one

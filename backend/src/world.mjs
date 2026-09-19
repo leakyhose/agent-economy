@@ -59,6 +59,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     memory: [],
     traits: { patience: +rnd().toFixed(2), risk: +rnd().toFixed(2) },
     skills: talents(i),
+    // The market stall: a standing sale plan per good, { keep, min } — every round whatever is
+    // held above `keep` is offered at `min` (cents) or better, until the agent changes it.
+    // Producers everywhere bring their goods to market without deciding to each morning.
+    sale: GOODS.map((_, g) => CFG.STALL[g] ? { keep: CFG.STALL[g].keep, min: Math.round(CFG.START_PRICES[g] * CFG.STALL[g].min) } : null),
+    // The shopping list: a standing purchase plan per good, { target, max } — every round the
+    // agent bids for whatever it holds short of `target`, at up to `max` (cents). Households buy
+    // their necessities by habit, not by remembering to each morning.
+    shop: GOODS.map((_, g) => CFG.SHOP[g] ? { target: CFG.SHOP[g].target, max: Math.round(CFG.START_PRICES[g] * CFG.SHOP[g].max) } : null),
     hired: null,                                    // this round's shift was sold last round: { wage } (cents)
     hands: 0,                                       // hired hands working for this agent this round
     wagesEarned: 0, wagesPaid: 0, shiftsHired: 0, handsUsed: 0,   // over the run
@@ -101,7 +109,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // ---- reservations: what an agent has promised to its orders -----------------
   // During a decision, the orders posted so far; after it, this round's orders.
   const ordersOf = a => a.draft ?? a.orders;
-  W.reservedCash = a => ordersOf(a).filter(o => o.side === 'buy').reduce((s, o) => s + o.qty * o.limit, 0);
+  // A bid for a house holds no cash back: nobody stops eating while they wait for a builder.
+  // Houses clear last, on whatever cash is left by then (round() trims every bid to the cash there is).
+  W.reservedCash = a => ordersOf(a).filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((s, o) => s + o.qty * o.limit, 0);
   W.reservedGood = (a, g) => ordersOf(a).filter(o => o.side === 'sell' && o.good === g).reduce((s, o) => s + o.qty, 0);
   W.availCash = a => a.cash - W.reservedCash(a);
   W.availGood = (a, g) => a.goods[g] - W.reservedGood(a, g);
@@ -196,7 +206,54 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     a.activity = a.hired ? { task: 'hired', place: CFG.TASKS.hired.place } : null;
   };
   // ok: the agent answered in time. Otherwise it has no orders this round.
-  W.endDecision = (a, ok) => { a.orders = ok ? a.draft : []; a.draft = null; };
+  // Then the stall: for every good with a sale plan and no sell order of the agent's own this
+  // round, what is held above the reserve is offered at the plan's minimum — answered or not.
+  W.endDecision = (a, ok) => {
+    a.orders = ok ? a.draft : []; a.draft = null;
+    a.sale.forEach((plan, g) => {
+      if (!plan || a.orders.some(o => o.good === g && o.side === 'sell')) return;
+      const bids = a.orders.filter(o => o.good === g && o.side === 'buy');
+      if (bids.some(o => o.limit >= plan.min) || (g === LABOUR && bids.length)) return;   // never trade with yourself
+      const qty = g === LABOUR ? Math.min(1, W.sellable(a, g)) : Math.floor(W.sellable(a, g) - plan.keep);
+      if (qty < 1) return;
+      const o = { agent: a.id, side: 'sell', good: g, qty, limit: plan.min, seq: ++W.seq, stall: true };
+      a.orders.push(o);
+      emit('order', { agent: a.id, name: a.name, side: 'sell', good: GOODS[g], qty, price: plan.min, seq: o.seq, stall: true });
+    });
+  };
+  // The shopping list, after the stall: bid for what is short of the target, as far as free cash goes.
+  // (Food's target is never less than two meals at the agent's lifestyle.)
+  const endStall = W.endDecision;
+  W.endDecision = (a, ok) => {
+    endStall(a, ok);
+    a.shop.forEach((plan, g) => {
+      if (!plan || a.orders.some(o => o.good === g)) return;          // the agent's own order for it, or its stall is selling it
+      const target = g === FOOD ? Math.max(plan.target, 2 * a.lifestyle * CFG.MEAL) : plan.target;
+      const free = a.cash - a.orders.filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((t, o) => t + o.qty * o.limit, 0);
+      const qty = Math.min(target - W.owned(a, g), Math.floor(free / plan.max));
+      if (qty < 1) return;
+      const o = { agent: a.id, side: 'buy', good: g, qty, limit: plan.max, seq: ++W.seq, shop: true };
+      a.orders.push(o);
+      emit('order', { agent: a.id, name: a.name, side: 'buy', good: GOODS[g], qty, price: plan.max, seq: o.seq, shop: true });
+    });
+  };
+  W.setBuy = (a, g, target, max) => {
+    target = Math.floor(Number(target)); max = Math.round(Number(max));
+    if (g === LABOUR || g === HOUSES) return 'The shopping list is for food, wood and nets; bid for labour or a house with place_order.';
+    if (!(target >= 0) || !(max >= 1)) return 'target must be 0 or more and max_price positive.';
+    a.shop[g] = target ? { target, max } : null;
+    emit('shop_plan', { agent: a.id, name: a.name, good: GOODS[g], target, max });
+    return null;
+  };
+  W.setSale = (a, g, keep, min) => {
+    if (g === LABOUR) keep = 0;
+    keep = Math.floor(Number(keep)); min = Math.round(Number(min));
+    if (!(keep >= 0) || !(min >= 1)) return 'keep must be 0 or more and min_price positive.';
+    a.sale[g] = { keep, min };
+    emit('sale_plan', { agent: a.id, name: a.name, good: GOODS[g], keep, min });
+    return null;
+  };
+  W.stopSale = (a, g) => { a.sale[g] = null; emit('sale_plan', { agent: a.id, name: a.name, good: GOODS[g], off: true }); return null; };
 
   W.placeOrder = (a, side, g, qty, limit, reason) => {
     qty = Math.floor(qty); limit = Math.round(limit);
@@ -211,7 +268,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       const asked = a.draft.filter(o => o.good === LABOUR && o.side === 'buy').reduce((t, o) => t + o.qty, 0);
       if (side === 'buy' && asked + qty > CFG.MAX_HANDS) return `You can hire at most ${CFG.MAX_HANDS} hands for a round${asked ? ` (you have already bid for ${asked})` : ''}.`;
     }
-    if (side === 'buy' && qty * limit > W.availCash(a))
+    if (side === 'buy' && g === HOUSES && qty * limit > a.cash) return `You have ${(a.cash / 100).toFixed(2)} coins: bid at most that for a house.`;
+    if (side === 'buy' && g !== HOUSES && qty * limit > W.availCash(a))
       return `Not enough free cash: that order needs ${(qty * limit / 100).toFixed(2)}, you have ${(Math.max(0, W.availCash(a)) / 100).toFixed(2)} free — bid at most that in total.`;
     if (side === 'sell' && qty > W.sellable(a, g))
       return g === LABOUR ? 'You have already offered your next shift.'
@@ -690,7 +748,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // How each of the agent's orders did. Then they expire: nothing stands into the next round.
       const lines = a.orders.map(o => {
         const n = GOODS[o.good], sell = o.side === 'sell', l = ladder[o.good];
-        const head = `your ${o.qty} ${n} ${sell ? 'ask' : 'bid'} at ${(o.limit / 100).toFixed(2)}`;
+        const head = `your ${o.stall ? 'stall\'s ' : o.shop ? 'shopping list\'s ' : ''}${o.qty} ${n} ${sell ? 'ask' : 'bid'} at ${(o.limit / 100).toFixed(2)}`;
         if (!o.sentQty) return `${head}: not sent — you no longer had the ${sell ? n : 'cash'}.`;
         return `${head}: ${o.sentQty < o.qty ? `only ${o.sentQty} sent, ` : ''}${o.filled} ${sell ? 'sold' : 'bought'}` +
           (o.filled ? ` at ${(l.price / 100).toFixed(2)}.` : ` — ${l.offered} were offered, ${l.wanted} wanted.`);
