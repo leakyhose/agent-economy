@@ -1,11 +1,47 @@
 # Agentic World — Design
 
 **Date:** 2026-09-19
-**Status:** Awaiting review
+**Status:** Active — revised 2026-09-19 11:10 EDT after scope pivot
 
 A programmable world engine. Users define the rules, AI agents inhabit the world
 and make autonomous decisions, and Solana provides persistent identity,
 ownership, assets, payments, markets, and coordination.
+
+---
+
+## 0. Amendment — 2026-09-19, 11:10 EDT
+
+This spec was first written assuming a greenfield multi-week build. It is not.
+A prototype existed (`reference/agent-economy`, kept read-only) and the work is
+a **Hack the North 2026 submission due Sunday 2026-09-20, 08:00 EDT** — about 21
+hours from the pivot.
+
+The user chose to build the general-purpose world engine from scratch rather
+than extend the prototype, with the deadline understood. Sections below stand
+except where this amendment overrides them.
+
+### Overridden decisions
+
+| Original | Now | Why |
+|---|---|---|
+| Six Anchor programs (§8) | **One generic `world` program** — ledger + batch auction, generic over goods and agent count | Six programs is days of Rust. One generic ledger is also the more honest design for a world-agnostic engine. |
+| Postgres in Docker (§1) | **JSONL event log + in-memory state**, behind the same `Repository` port | Compose is overhead we cannot afford today. The port is unchanged, so Postgres slots in later. |
+| Next.js (§5) | **Vite + React** | Faster to running. It is a telemetry dashboard, not a website. |
+| Devnet | **Local validator** | Public devnet is ~100 req/10s and airdrops were failing during setup. The prototype's CONTEXT.md reached the same conclusion independently. |
+
+### Unchanged, and load-bearing
+
+The three decisions this project actually rests on survive the pivot intact:
+world vocabulary never enters the engine (§2), rules are declarative data (§3),
+and the agent layer cannot reach the wallet (§4). Cutting scope did not cost any
+of them.
+
+### Build reality
+
+Phase 0 landed at commit `b169abe`: workspace, the `@aw/types` contract, and
+both world fixtures. Phase 1 is four parallel agents in git worktrees on
+branches `track/kernel`, `track/agents`, `track/solana`, `track/web`, each
+depending only on `@aw/types`. Integration and the acceptance test follow.
 
 ---
 
