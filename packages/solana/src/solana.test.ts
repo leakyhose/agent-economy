@@ -1,15 +1,24 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import type { WorldDefinition } from '@aw/types';
 import { clearAuction, fills, sortAsks, sortBids, type Order } from './auction.ts';
-import { clusterFromEnv, explorerUrl, makeExplorer } from './cluster.ts';
+import { chainOf, clusterFromEnv, explorerUrl, makeExplorer } from './config.ts';
 import { endowmentsFor, mapWorldGoods, modalEndowment, rosterFromWorld } from './goods.ts';
-import { clearAuctionIx, settleIx } from './instructions.ts';
-import { LEDGER_BYTES, MAX_ORDERS_PER_BOOK, discriminator, loadIdl } from './program.ts';
-import { NullSettlementQueue } from './queue.ts';
+import {
+  LEDGER_BYTES,
+  MAX_ORDERS_PER_BOOK,
+  clearAuctionIx,
+  discriminator,
+  initializeIx,
+  liquidateIx,
+  loadIdl,
+  settleIx,
+} from './ix.ts';
+import { distressThresholdFor } from './client.ts';
+import { NullSettlementQueue } from './settlement.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const load = (f: string) =>
@@ -149,13 +158,57 @@ describe('the auction mirror', () => {
 
 describe('the wire format', () => {
   it('matches the account size the program computes', () => {
-    expect(LEDGER_BYTES).toBe(12_920);
+    expect(LEDGER_BYTES).toBe(12_928);
   });
 
-  it('computes Anchor discriminators that match the built IDL', () => {
-    // `loadIdl` throws on any mismatch; this pins one by hand as well.
+  it('computes Anchor discriminators by hand', () => {
     expect([...discriminator('initialize')]).toEqual([175, 175, 109, 31, 13, 152, 155, 237]);
-    expect(() => loadIdl(join(ROOT, 'target/idl/world.json'))).not.toThrow();
+  });
+
+  it('agrees with the built IDL, when there is one', () => {
+    // The IDL is a build artifact and is gitignored, so on a fresh clone it is simply
+    // absent until `anchor build` runs. That is not a failure — but when it is there,
+    // `loadIdl` cross-checks every discriminator and must not throw.
+    const idl = join(ROOT, 'target/idl/world.json');
+    if (!existsSync(idl)) return;
+    expect(() => loadIdl(idl)).not.toThrow();
+  });
+
+  it('encodes the permissionless instruction with no authority account', () => {
+    const ix = liquidateIx(PublicKey.default, {
+      ledger: PublicKey.default,
+      caller: PublicKey.unique(),
+      agent: 7,
+      good: 2,
+    });
+    expect(ix.data.length).toBe(11);
+    expect(ix.data.readUInt16LE(8)).toBe(7);
+    expect(ix.data.readUInt8(10)).toBe(2);
+    // Two accounts: the ledger, and whoever is calling. No authority, by design.
+    expect(ix.keys).toHaveLength(2);
+    expect(ix.keys[1]?.isSigner).toBe(true);
+  });
+
+  it('encodes initialize with the relief pool and distress threshold', () => {
+    const ix = initializeIx(
+      PublicKey.default,
+      { ledger: PublicKey.default, authority: PublicKey.default },
+      {
+        numAgents: 25,
+        numGoods: 4,
+        startCash: 5000,
+        startGoods: [0, 6, 0, 0, 0, 0, 0, 0],
+        distressThreshold: 500,
+        reliefPool: 24,
+      },
+    );
+    expect(ix.data.length).toBe(8 + 4 + 1 + 8 + 32 + 8 + 2);
+    expect(ix.data.readUInt32LE(8)).toBe(25);
+    expect(ix.data.readUInt8(12)).toBe(4);
+    expect(ix.data.readBigUInt64LE(13)).toBe(5000n);
+    expect(ix.data.readUInt32LE(21 + 4)).toBe(6); // start_goods[1] = food
+    expect(ix.data.readBigUInt64LE(53)).toBe(500n);
+    expect(ix.data.readUInt16LE(61)).toBe(24);
   });
 
   it('fits 96 orders and refuses a book that would not', () => {
@@ -187,6 +240,35 @@ describe('the wire format', () => {
     expect(ix.data.readUInt16LE(12)).toBe(513);
     expect(ix.data.readUInt8(14)).toBe(3);
     expect(ix.data.readInt32LE(15)).toBe(-7);
+  });
+});
+
+describe('the chain block, read from the world file', () => {
+  it('declares the sandbox tokens the sandbox asks for', () => {
+    const tokens = chainOf(sandbox)?.tokens ?? {};
+    expect(Object.keys(tokens)).toEqual(['SOL', 'food', 'wood', 'tools']);
+    expect(tokens['SOL']).toMatchObject({ symbol: 'WORLD', decimals: 4, fixedSupply: true });
+    expect(tokens['food']).toMatchObject({ symbol: 'FOOD', decimals: 0 });
+    // food is not fixed supply: the world can grow more of it, which is the point.
+    expect(tokens['food']?.fixedSupply).toBeUndefined();
+  });
+
+  it('declares the kingdom tokens the kingdom asks for', () => {
+    const tokens = chainOf(kingdom)?.tokens ?? {};
+    expect(Object.keys(tokens)).toEqual(['gold', 'food', 'wood', 'iron']);
+    expect(tokens['gold']).toMatchObject({ symbol: 'GOLD', decimals: 2, fixedSupply: true });
+    expect(tokens['food']?.symbol).toBe('GRAIN');
+    expect(tokens['wood']?.symbol).toBe('TIMBR');
+    // `land` is a pda_record asset, not a fungible token, so it has no mint and
+    // settles through the ledger instead.
+    expect(tokens['land']).toBeUndefined();
+    expect(mapWorldGoods(kingdom).indexOf('land')).toBe(4);
+  });
+
+  it('derives the distress threshold from what the world sells', () => {
+    // The cheapest thing on any market: wood in both worlds, at 300 and 250.
+    expect(distressThresholdFor(sandbox, 'SOL')).toBe(300);
+    expect(distressThresholdFor(kingdom, 'gold')).toBe(250);
   });
 });
 

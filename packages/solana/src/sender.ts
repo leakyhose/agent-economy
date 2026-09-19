@@ -1,10 +1,38 @@
 import {
   Connection,
+  Keypair,
+  PublicKey,
   Transaction,
-  type Signer,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { BlockhashCache } from './cluster.ts';
+import { BlockhashCache } from './config.ts';
+
+/**
+ * Who pays for a transaction and who signs it.
+ *
+ * The sender never receives a `Keypair`. It hands the built transaction to `sign` and
+ * gets it back signed, which keeps every private key inside whatever produced the
+ * `Signing` — in practice the wallet service. It matters because the sender is the one
+ * object everything else in the package holds a reference to; if keys flowed through
+ * here, "only the wallet touches keys" would be a comment rather than a fact.
+ */
+export interface Signing {
+  feePayer: PublicKey;
+  sign(tx: Transaction): void | Promise<void>;
+}
+
+/**
+ * A `Signing` from keypairs the caller already holds — an ephemeral mint or ledger
+ * account, or a stranger's key in a test. Not a way to get keys *out* of the wallet.
+ */
+export function signingWith(...keypairs: Keypair[]): Signing {
+  const first = keypairs[0];
+  if (!first) throw new Error('signingWith needs at least one keypair');
+  return {
+    feePayer: first.publicKey,
+    sign: (tx) => tx.partialSign(...keypairs),
+  };
+}
 
 /** A program error: the transaction was well-formed and the program said no. */
 export class ProgramRejection extends Error {
@@ -43,12 +71,23 @@ function isTransient(err: unknown): boolean {
   );
 }
 
-/** Pull the useful line out of a Solana error, which buries it in the logs. */
+/**
+ * Pull the useful line out of a Solana error, which buries it in the logs.
+ *
+ * Anchor writes `Error Message: ...`; the SPL token program writes
+ * `Program log: Error: ...`; everything else leaves only the raw message, which for a
+ * failed simulation is three lines of boilerplate before anything informative.
+ */
 function describe(err: unknown): { message: string; logs: string[] } {
   const e = err as { message?: string; logs?: string[]; transactionLogs?: string[] };
   const logs = e.transactionLogs ?? e.logs ?? [];
-  const reason = logs.find((l) => l.includes('Error Message')) ?? e.message ?? String(err);
-  return { message: reason, logs };
+  const anchor = logs.find((l) => l.includes('Error Message'));
+  if (anchor) return { message: anchor.split('Error Message:').pop()!.trim(), logs };
+  const program = logs.find((l) => l.startsWith('Program log: Error'));
+  if (program) return { message: program.replace('Program log: ', '').trim(), logs };
+  const custom = logs.find((l) => l.includes('failed: custom program error'));
+  if (custom) return { message: custom.trim(), logs };
+  return { message: (e.message ?? String(err)).split('\n')[0]!.trim(), logs };
 }
 
 export interface SenderOptions {
@@ -90,7 +129,7 @@ export class TxSender {
 
   async send(
     instructions: readonly TransactionInstruction[],
-    signers: readonly Signer[],
+    signing: Signing,
   ): Promise<string> {
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
@@ -101,10 +140,10 @@ export class TxSender {
         const tx = new Transaction({
           blockhash,
           lastValidBlockHeight,
-          feePayer: signers[0]?.publicKey,
+          feePayer: signing.feePayer,
         });
         for (const ix of instructions) tx.add(ix);
-        tx.sign(...signers);
+        await signing.sign(tx);
 
         const signature = await this.#connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: false,

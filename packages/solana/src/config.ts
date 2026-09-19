@@ -1,4 +1,24 @@
-import { Connection, type Commitment } from '@solana/web3.js';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Connection, PublicKey, type Commitment } from '@solana/web3.js';
+import type { ChainConfig, WorldDefinition } from '@aw/types';
+import { loadIdl } from './ix.ts';
+
+/**
+ * A world file as it is actually shipped.
+ *
+ * Both world JSONs carry a `chain` block and `ChainConfig` exists in `@aw/types` to
+ * describe it, but `WorldDefinition` does not yet declare the field — so reading it
+ * needs this narrowing rather than a cast at every call site. When `world.ts` grows
+ * `chain?: ChainConfig`, this alias becomes a no-op and can go.
+ */
+export type ChainedWorld = WorldDefinition & { chain?: ChainConfig };
+
+/** The world's chain block, if it declared one. */
+export function chainOf(world: WorldDefinition): ChainConfig | undefined {
+  return (world as ChainedWorld).chain;
+}
 
 /** Where the chain is, and what to call it in a URL. */
 export interface ClusterConfig {
@@ -101,4 +121,29 @@ export function makeExplorer(
 
 export function connect(cfg: ClusterConfig): Connection {
   return new Connection(cfg.rpcUrl, cfg.commitment);
+}
+
+/** The repository root, found from this file rather than from `process.cwd()`. */
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+/** Where `anchor build` leaves the IDL. */
+export const IDL_PATH = join(REPO_ROOT, 'target/idl/world.json');
+
+/**
+ * The deployed `world` program.
+ *
+ * `AW_PROGRAM_ID` wins if set, so a deployment elsewhere needs no rebuild. Otherwise
+ * the address comes from the IDL, which also cross-checks our hand-computed
+ * instruction discriminators against the ones Anchor emitted.
+ */
+export function resolveProgramId(env: NodeJS.ProcessEnv = process.env): PublicKey {
+  const override = env['AW_PROGRAM_ID'];
+  if (override) return new PublicKey(override);
+  if (!existsSync(IDL_PATH)) {
+    throw new Error(
+      `no program id: ${IDL_PATH} is missing and AW_PROGRAM_ID is unset. ` +
+        `Run \`anchor build\` and \`solana program deploy\` first.`,
+    );
+  }
+  return loadIdl(IDL_PATH).programId;
 }
