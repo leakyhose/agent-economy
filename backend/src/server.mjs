@@ -15,6 +15,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const coins = c => (c / 100).toFixed(2);
 
 async function makeBrain() {
+  if (CFG.BRAIN === 'openai') {
+    if (process.env.OPENAI_API_KEY) return (await import('./brains/openai.mjs')).openaiBrain();
+    console.warn('\n  BRAIN=openai but no OPENAI_API_KEY in the repo-root .env. Using the stub.\n');
+  }
   if (CFG.BRAIN === 'claude') {
     if (process.env.ANTHROPIC_API_KEY) return (await import('./brains/claude.mjs')).claudeBrain();
     console.warn('\n  BRAIN=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');

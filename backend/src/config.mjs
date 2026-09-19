@@ -1,19 +1,27 @@
 // Every dial in one place. Override any of them with an env var.
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '../..');
-try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* no .env yet */ }
+// The project's .env WINS over the shell, so a stale key exported in ~/.zshrc can't
+// silently shadow the one meant for this project. (process.loadEnvFile won't override.)
+try {
+  for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m) process.env[m[1]] = m[2];
+  }
+} catch { /* no .env yet */ }
 const env = process.env;
 
 export const GOODS = ['food', 'wood', 'nets'];
 export const FOOD = 0, WOOD = 1, NETS = 2;
 
 export const CFG = {
-  AGENTS:      +env.AGENTS      || 100,
-  BRAIN:        env.BRAIN        || 'stub',            // stub | claude
-  MODEL:        env.MODEL        || 'claude-haiku-4-5',
+  AGENTS:      +env.AGENTS      || 10,
+  BRAIN:        env.BRAIN        || 'stub',            // stub | openai | claude
+  MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : 'gpt-5.6-luna'),
   TICK_MS:     +env.TICK_MS     || 500,               // one game tick
   ROUND_TICKS: +env.ROUND_TICKS || 6,                 // market clears every N ticks
   EAT_TICKS:   +env.EAT_TICKS   || 12,                // each agent eats 1 food every N ticks

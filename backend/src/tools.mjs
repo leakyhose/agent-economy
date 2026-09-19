@@ -5,19 +5,24 @@ import { CFG, GOODS, FOOD, WOOD, NETS } from './config.mjs';
 const coins = c => (c / 100).toFixed(2);
 const GOOD_INDEX = { food: FOOD, wood: WOOD, net: NETS, nets: NETS };
 
+const REASON = {
+  type: 'object', additionalProperties: false, required: ['reason'],
+  properties: { reason: { type: 'string', description: 'Why, in one short sentence, in your own voice.' } },
+};
+
 export const TOOL_DEFS = [
   { name: 'gather_food',
     description: `Spend your next shift fishing at the docks. Yields ${CFG.TASKS.gather_food.yield} food, or ${CFG.TASKS.gather_food.netYield} if you own a net. Takes about ${CFG.TASKS.gather_food.ticks * CFG.TICK_MS / 1000}s.`,
-    input_schema: { type: 'object', properties: {}, additionalProperties: false } },
+    input_schema: REASON },
   { name: 'gather_wood',
     description: `Spend your next shift cutting wood in the forest. Yields ${CFG.TASKS.gather_wood.yield} wood. Wood is used to craft nets.`,
-    input_schema: { type: 'object', properties: {}, additionalProperties: false } },
+    input_schema: REASON },
   { name: 'craft_net',
     description: `Spend your next shift crafting a fishing net from ${CFG.TASKS.craft_net.wood} wood. A net doubles your catch. Nets can tear.`,
-    input_schema: { type: 'object', properties: {}, additionalProperties: false } },
+    input_schema: REASON },
   { name: 'rest',
     description: 'Do nothing until the next market round.',
-    input_schema: { type: 'object', properties: {}, additionalProperties: false } },
+    input_schema: REASON },
   { name: 'place_order',
     description: 'Post a limit order to the next market round. All orders clear together at ONE price per good, set by supply and demand. A buy fills only if that price is at or below your price; a sell only if at or above. Unfilled orders expire after the round. You may place several orders.',
     input_schema: {
@@ -72,6 +77,7 @@ export function makeTools(W, a) {
       const err = W.startActivity(a, task);
       if (err) return err;
       acted.activity = name;
+      if (input.reason) a.thought = String(input.reason).slice(0, 240);
       return name === 'rest' ? 'You rest until the next market round.'
         : `You head to the ${CFG.TASKS[task].place}. Back in about ${CFG.TASKS[task].ticks * CFG.TICK_MS / 1000}s.`;
     }
