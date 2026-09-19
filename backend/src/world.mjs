@@ -57,7 +57,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     prices: [...initial.lastPrice],
     priceHistory: [], volumes: none(),
     pending: [], book: emptyBook(), inflight: null,
-    events: [], roundBusy: false, lastRound: null, lastBook: null,
+    events: [], roundBusy: false, lastRound: null, lastBook: null, settlersSupply: null,
     loanOps: [], opsInflight: [],                    // borrow/repay requests for the next round / being sent now
     bankLog: [],                                     // every loan, repayment and foreclosure, for the dashboard
     slot: 0,                                         // the chain's clock, read every round
@@ -538,6 +538,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
     // the chain is the truth — replace the mirror
     const L = await chain.fetch();
+    // what the SETTLERS mint itself says exists. The program checks this against the
+    // books inside every instruction that can move it, so this is a read, not a guard.
+    W.settlersSupply = await chain.settlersSupply();
     W.slot = L.slot; W.slotAt = Date.now();
     if (mid0 !== null && L.books.dividendsPaid > mid0) {
       const total = L.books.dividendsPaid - mid0;
@@ -626,6 +629,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                             equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired, books: L.books, dividend,
                             // chain-side sums, so every round's invariants can be checked from the log
                             sumCash: sum(x => x.cash), sumDebt: sum(x => x.debt), sumPrincipal: sum(x => x.principal),
+                            settlers: W.settlersSupply,
                             // every agent: principal ≤ debt, and no debt ⇒ no principal and nothing locked
                             slotsOk: L.slots.every(x => x.principal <= x.debt && (x.debt || (!x.principal && x.locked.every(q => !q)))),
                             goodsTotal: GOODS.map((_, g) => sum(x => x.goods[g] + x.locked[g]) + L.bank.goods[g]), settled,

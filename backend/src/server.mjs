@@ -77,6 +77,7 @@ async function start() {
     startedAt: new Date().toISOString(), brain: brain.name,
     program: PROGRAM_ID.toBase58(), ledger: chain.ledger.publicKey.toBase58(),
     keeper: chain.keeper.publicKey.toBase58(),
+    mint: chain.mint.toBase58(), vault: chain.vault.toBase58(),
     config: { ...CFG, RPC: undefined },
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
@@ -84,6 +85,7 @@ async function start() {
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
   console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
+  console.log(`SETTLERS  ${chain.mint.toBase58()}   (mint authority: itself — no key for it exists)`);
 
   const alive = () => sim && sim.gen === myGen;
   async function agentLoop(a) {
@@ -114,6 +116,7 @@ async function stop() {
   fs.writeFileSync(path.join(s.dir, 'final.json'), JSON.stringify({
     stoppedAt: new Date().toISOString(), rounds: s.W.round, transactions: s.chain.txCount(),
     llm: s.brain.stats(), chain: L,
+    mint: s.chain.mint.toBase58(), settlersSupply: await s.chain.settlersSupply(),
   }, null, 2));
   s.log.end();
   console.log(`saved ${path.relative(ROOT, s.dir)}/`);
@@ -148,6 +151,8 @@ function state() {
     doing,
     chain: { program: PROGRAM_ID.toBase58(), ledger: chain.ledger.publicKey.toBase58(),
              explorer: explorer('address', chain.ledger.publicKey.toBase58()),
+             mint: chain.mint.toBase58(), mintExplorer: explorer('address', chain.mint.toBase58()),
+             settlers: W.settlersSupply,
              transactions: chain.txCount(), lastRound: W.lastRound },
     llm: brain.stats(),
     agents: W.agents.map(a => ({
@@ -228,7 +233,10 @@ if (CFG.RUN_SECONDS) {
     ['bad debt ⇒ bank cash 0', !b.badDebt || !L.bank.cash],
     ['per agent: principal ≤ debt; no debt ⇒ nothing owed or locked', L.slots.every(x => x.principal <= x.debt && (x.debt || (!x.principal && !lockedValue(x, L.lastPrice))))],
   ];
+  const settlers = await chain.settlersSupply();
+  inv.push(['SETTLERS supply = Σ cash + bank cash', settlers === cash + L.bank.cash]);
   console.log(`\ninvariants: ${inv.map(([k, v]) => `${k} ${ok(v)}`).join('; ')}`);
+  console.log(`SETTLERS ${chain.mint.toBase58()}: ${coins(settlers)} in existence, all of it minted by the bank's rules`);
   console.log(`bank: equity ${coins(L.equity)} (seed ${coins(b.bankSeed)}), lending cap ${coins(L.lendingCap)}, interest ${coins(b.interestIncome)}, ` +
     `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}, ` +
     `dividends ${coins(b.dividendsPaid)}; ${W.autoRepaid} collected at the deadline; foreclosures ${W.marginCalls} margin call, ${W.overdue} overdue`);

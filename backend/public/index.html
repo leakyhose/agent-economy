@@ -332,6 +332,8 @@ async function refresh() {
       ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
       ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}<br>` : '') +
     `solana: ${s.chain.transactions} transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}…</a>` +
+    ` · <a target="_blank" href="${s.chain.mintExplorer}" title="SETTLERS — the mint's authority is itself, a program address: no key that could mint one exists">SETTLERS ${s.chain.mint.slice(0, 8)}…</a>` +
+    (s.chain.settlers != null ? ` (${(s.chain.settlers / 100).toFixed(2)} in existence)` : '') +
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '');
 
   events.innerHTML = s.events.map(e => e.type === 'error'

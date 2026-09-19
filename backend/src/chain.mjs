@@ -26,7 +26,15 @@ const SLOT = 72;                       // cash u64, goods [u32;5], locked [u32;5
 const HEADER = 8 + 360;                // discriminator + everything before slots (see Ledger in lib.rs)
 const LEDGER_SIZE = HEADER + MAX_AGENTS * SLOT;
 const MAX_ORDERS_PER_TX = 96;          // ~1220 bytes: the legacy transaction ceiling
+// An auction selling the bank's seized goods also carries the mint, its vault and the
+// token program: 3 more account keys, ~99 bytes, so fewer orders fit in that one call.
+const MAX_ORDERS_BANK_TX = 84;
 const MAX_DELTAS_PER_TX = 120;
+
+// The SPL Token program, and the SETTLERS mint's decimals. Cash is held in cents and the
+// mint has 2 decimals, so one token base unit is one cent: no conversion, anywhere.
+export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+export const SETTLERS_DECIMALS = 2;
 
 export const explorer = (kind, id) =>
   `https://explorer.solana.com/${kind}/${id}?cluster=custom&customUrl=${encodeURIComponent(CFG.RPC)}`;
@@ -39,6 +47,12 @@ export async function connectChain() {
   // A stranger with no authority over the ledger. It forecloses loans and pays dividends,
   // to prove on every call that `liquidate` and `pay_dividend` really are open to anyone.
   const keeper = Keypair.generate();
+  // The coin. Both are PDAs of this ledger, so neither has a private key: the mint is
+  // its own mint and freeze authority, and it owns the vault that holds every SETTLER.
+  const [mint] = PublicKey.findProgramAddressSync(
+    [Buffer.from('settlers'), ledger.publicKey.toBuffer()], PROGRAM_ID);
+  const [vault] = PublicKey.findProgramAddressSync(
+    [Buffer.from('vault'), ledger.publicKey.toBuffer()], PROGRAM_ID);
   let txCount = 0;
 
   async function send(ix, extraSigners = [], signers = [authority, ...extraSigners]) {
@@ -58,6 +72,17 @@ export async function connectChain() {
     { pubkey: ledger.publicKey, isSigner: false, isWritable: true },
     { pubkey: authority.publicKey, isSigner: true, isWritable: false },
   ];
+  // The three accounts every instruction that mints or burns must carry.
+  const coinKeys = () => [
+    { pubkey: mint, isSigner: false, isWritable: true },
+    { pubkey: vault, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+  ];
+  // Anchor reads an absent optional account as the program's own id, which is already in
+  // the transaction — so leaving the coin off an ordinary auction costs 3 bytes, not 96.
+  const noCoinKeys = () => Array.from({ length: 3 }, () =>
+    ({ pubkey: PROGRAM_ID, isSigner: false, isWritable: false }));
+  const writeMintKeys = () => [...writeKeys(), ...coinKeys()];
 
   // prices: opening last price per good (N_GOODS of them), in cents. bankSeed: the bank's opening cash.
   // terms: { ltvBps, rateBps, ratePeriodSlots, penaltyBps, kappaBps, marginBps,
@@ -80,6 +105,7 @@ export async function connectChain() {
       programId: PROGRAM_ID, data: d, keys: [
         { pubkey: authority.publicKey, isSigner: true, isWritable: true },
         { pubkey: ledger.publicKey, isSigner: true, isWritable: true },
+        ...coinKeys(),
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
     }), [ledger]);
@@ -114,7 +140,12 @@ export async function connectChain() {
       return b;
     };
     const data = Buffer.concat([DISC.clear_auction, Buffer.from([good]), enc(bids), enc(asks)]);
-    return send(new TransactionInstruction({ programId: PROGRAM_ID, data, keys: writeKeys() }));
+    // Only a bank sale can destroy coins here, so only then does the mint ride along.
+    const bankSelling = asks.some(o => o.agent === BANK);
+    return send(new TransactionInstruction({
+      programId: PROGRAM_ID, data,
+      keys: [...writeKeys(), ...(bankSelling ? coinKeys() : noCoinKeys())],
+    }));
   }
 
   // ---- the bank ---------------------------------------------------------------
@@ -126,29 +157,30 @@ export async function connectChain() {
     DISC.borrow.copy(d, 0);
     d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10); d.writeBigUInt64LE(BigInt(termSlots), 18);
     collateral.forEach((q, g) => d.writeUInt32LE(q, 26 + g * 4));
-    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeKeys() }));
+    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
   }
   // Interest accrued to the chain's slot is paid first. Leaving < FORGIVE_BELOW owing closes the loan.
   async function repay(agent, amount) {
     const d = Buffer.alloc(8 + 2 + 8);
     DISC.repay.copy(d, 0);
     d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10);
-    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeKeys() }));
+    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
   }
   // Signed and paid for by the keeper alone — the authority is not on these transactions.
-  const anyone = (name, arg) => {
+  const anyone = (name, arg, coin = false) => {
     const d = Buffer.alloc(8 + (arg === undefined ? 0 : 2));
     DISC[name].copy(d, 0);
     if (arg !== undefined) d.writeUInt16LE(arg, 8);
     return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: [
       { pubkey: ledger.publicKey, isSigner: false, isWritable: true },
       { pubkey: keeper.publicKey, isSigner: true, isWritable: false },
+      ...(coin ? coinKeys() : []),
     ] }), [], [keeper]);
   };
   // Collect or foreclose: allowed once overdue or under margin (see liquidatable()). An overdue
   // loan whose debtor has the cash is simply repaid from it — no penalty, collateral released
   // (see collects()); otherwise it's a foreclosure with the penalty.
-  const liquidate = agent => anyone('liquidate', agent);
+  const liquidate = agent => anyone('liquidate', agent, true);
   // Pay half the bank's equity above its capital requirement to every agent equally. A no-op without a surplus.
   const payDividend = () => anyone('pay_dividend');
 
@@ -203,10 +235,19 @@ export async function connectChain() {
     return out;
   }
 
+  // What the SPL mint itself says exists, in cents. The program checks this against
+  // `supply + bank.cash` after every instruction that can move either, so a mismatch
+  // here means a transaction that should have failed did not.
+  async function settlersSupply() {
+    const acct = await conn.getAccountInfo(mint, 'confirmed');
+    return acct ? Number(acct.data.readBigUInt64LE(36)) : null;   // SPL mint layout: supply at 36
+  }
+
   return {
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
     slot: () => conn.getSlot('confirmed'),
-    MAX_ORDERS_PER_TX, LEDGER_SIZE, txCount: () => txCount,
+    mint, vault, settlersSupply,
+    MAX_ORDERS_PER_TX, MAX_ORDERS_BANK_TX, LEDGER_SIZE, txCount: () => txCount,
   };
 }
 
