@@ -28,7 +28,7 @@ const ALL_TOOLS = [
     description: 'Spend this round\'s shift crafting a fishing net from wood (how much wood depends on your crafting skill).',
     input_schema: REASON },
   { name: 'build_house',
-    description: `Spend this round's shift building a house. Starting one uses up ${H.wood} wood divided by your crafting skill, all at once; ` +
+    description: `Spend this round's shift building a house. Starting one uses up ${H.wood} wood, the same for everyone, all at once; ` +
       `it then takes ${H.shifts} building shifts to finish. You can do other work in between and call build_house again to continue. ` +
       `Only one build at a time, but you may own and sell as many finished houses as you like. ` +
       `An unfinished house gives nothing, and cannot be sold or pledged.`,
@@ -110,12 +110,15 @@ export function makeTools(W, a) {
       const now = W.prices[i], then = h[0]?.prices[i] ?? now, n = Math.max(0, h.length - 1);
       const d = then ? Math.round((now - then) / then * 100) : 0;
       const trend = d && n ? ` (${d > 0 ? '+' : ''}${d}% over ${rounds(n)})` : '';
-      // A house has never sold, so it has no price — saying "reference price 70.00" would
-      // invent one, and that invented number used to back a third of the village's credit.
-      // What it costs to make is the only honest anchor until one actually changes hands.
+      // Nothing that has never sold has a price — "reference price 25.00" invents one, and
+      // that invented net price anchored a quarter of the village's net bids at a third of
+      // what a net is worth to a fisher (it also used to back a third of the village's
+      // credit). What it costs to make is the only honest anchor until one changes hands.
+      const make = i === NETS ? ` — a net takes ${W.netWood(a)} wood and a shift`
+        : i === HOUSES ? ` — a house takes ${W.houseWood(a)} wood and ${W.buildShifts} building shifts` : '';
       const price = W.traded(i) ? `last price ${coins(now)}${trend}`
-        : CFG.START_PRICES[i] > 1 ? `reference price ${coins(now)}${trend}`
-        : `no trades yet${i === HOUSES ? ` — a house takes ${W.houseWood(a)} wood and ${W.buildShifts} building shifts` : ''}`;
+        : !make && CFG.START_PRICES[i] > 1 ? `reference price ${coins(now)}${trend}`
+        : `no trades yet${make}`;
       const sale = W.bankAsk(i);
       const bank = sale ? ` The bank is selling ${sale.qty} seized ${g} at ${coins(sale.price)}, ${pct100(CFG.BANK_SALE_STEP)}% lower each round they go unsold.` : '';
       const L = CFG.LADDER ? W.lastLadder?.[i] : null, b = W.lastBook?.[i];
@@ -137,7 +140,7 @@ export function makeTools(W, a) {
     return log.saw;
   }
   function describe() {
-    const F = CFG.TASKS.gather_food, sk = t => W.skill(a, t), n1 = x => +x.toFixed(1);
+    const F = CFG.TASKS.gather_food, sk = t => +W.skill(a, t).toFixed(2), n1 = x => +x.toFixed(1);
     const nets = W.usableNets(a);
     const now = W.round + 1;                     // the round being decided
     // what one shift of each job yields for this agent
@@ -155,23 +158,36 @@ export function makeTools(W, a) {
     // Make or buy: the one comparison that breaks "I'll just make it myself". A wide skill
     // draw means an agent's best shift usually buys far more of the other good than a shift
     // spent making it would yield.
-    const fishV = fish * W.prices[FOOD], cutV = cut * W.prices[WOOD], best = fishV >= cutV;
-    const earn = Math.max(fishV, cutV), other = best ? WOOD : FOOD;
-    const makeBuy = `Make or buy: your best shift is ${best ? 'fishing' : 'woodcutting'} — ${n1(best ? fish : cut)} ${GOODS[best ? FOOD : WOOD]}, ` +
-      `${coins(earn)} at market, which buys ${Math.floor(earn / W.prices[other])} ${GOODS[other]}; ` +
-      `a shift ${best ? 'cutting wood' : 'fishing'} yourself would get you only ${n1(best ? cut : fish)}.`;
+    const fishV = fish * W.prices[FOOD], cutV = cut * W.prices[WOOD];
+    const makeBuy = `At last prices a fishing shift of yours sells for ${coins(fishV)} (buys ${Math.floor(fishV / W.prices[WOOD])} wood), ` +
+      `a woodcutting shift for ${coins(cutV)} (buys ${Math.floor(cutV / W.prices[FOOD])} food).`;
+
+    // Unfilled bids for something this agent can make: what making one to SELL would earn.
+    // The net and house lines only ever said what one does for YOU, so a crafting specialist
+    // who barely fishes read "a net is worthless" — 562 net bids, 1 ask, 0 trades in 112 rounds.
+    const wantedBy = i => {
+      const L = CFG.LADDER ? W.lastLadder?.[i] : null, b = W.lastBook?.[i];
+      const want = L ? L.wanted : b?.bidQty ?? 0, top = L ? L.bids.top[0]?.[0] : b?.bestBid;
+      if (!want || !top) return '';
+      const off = L ? L.offered : b ? b.askQty : 0;
+      return ` Wanted: ${want} bid for, up to ${coins(top)}, ${off ? `${off} offered` : 'none offered'}.`;
+    };
+    const nw = W.netWood(a), netWant = wantedBy(NETS);
 
     const parts = w => ['eating', 'warmth', 'house'].map(k => `${k} ${signed(w[k])}`).join(', ');
     const recent = a.wbRecent.reduce((s, r) => { for (const k in s) s[k] += r[k]; return s; }, { eating: 0, warmth: 0, house: 0 });
 
     const hw = W.houseWood(a), shiftsLeft = W.buildShifts - (a.building?.done ?? 0), U = CFG.HOUSE_UPKEEP;
     const unpaid = houses - a.upkeepPaid;
+    // Agents sat on forty houses' worth of wood and called a house something to buy later:
+    // the line only ever quoted a price. It now states what they already hold, and sizes the
+    // payoff against a second helping of food — the other standing way to spend on wellbeing.
+    const pays = `${signed(W.houseWB(houses + 1) - W.houseWB(houses))} a round, against ${signed(WB.EAT[2] - WB.EAT[1])} for a second helping of food, for ${U} wood upkeep.`;
     const houseTxt = (houses ? `You own ${houses} house${houses === 1 ? '' : 's'}: ${signed(W.houseWB(houses))} a round for ${houses * U} wood upkeep` +
-        (unpaid > 0 ? `, but you couldn't pay upkeep on ${unpaid} last round, so ${unpaid === 1 ? 'it' : 'they'} paid nothing` : '') +
-        `; one more would add ${signed(W.houseWB(houses + 1) - W.houseWB(houses))}. ` : '') +
+        (unpaid > 0 ? `, but you couldn't pay upkeep on ${unpaid} last round, so ${unpaid === 1 ? 'it' : 'they'} paid nothing` : '') + '. ' : '') +
       (a.building ? `Your unfinished house: ${a.building.done} of ${W.buildShifts} building shifts done, ${shiftsLeft} to go (build_house continues it).`
-        : `${houses ? 'Another' : 'A'} house: ${hw} wood (crafting x${sk('craft_net')}, you have ${wood}) + ${W.buildShifts} shifts, or buy one` +
-          (houses ? '.' : ` → ${signed(W.houseWB(1))} a round, ${U} wood upkeep.`));
+        : wood >= hw ? `You already hold the wood for ${houses ? 'another' : 'a'} house (${hw} of your ${wood}): ${W.buildShifts} building shifts and it pays ${pays}`
+        : `${houses ? 'Another' : 'A'} house: ${hw} wood (you have ${wood}) + ${W.buildShifts} building shifts, or buy one; it pays ${pays}`) + wantedBy(HOUSES);
 
     // the bank: nothing at all unless it lends or the agent owes it
     const credit = W.bank.terms.ltvBps > 0, rate = W.ratePerRound(), ratePct = `≈${+(rate * 100).toFixed(2)}% a round`;
@@ -193,12 +209,15 @@ export function makeTools(W, a) {
       `You are ${a.name}. This is round ${now}.`,
       `Wellbeing so far: ${a.wellbeing.toFixed(1)} (${parts(a.wbParts)}).` +
         (a.wbRecent.length ? ` Last ${rounds(a.wbRecent.length)}: ${parts(recent)}.` : ''),
-      `You eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food a round (${signed(WB.EAT[a.lifestyle])} a meal, ${WB.EAT[0]} for one you can't fill) ` +
+      `You eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food a round (1 helping ${signed(WB.EAT[1])}, 2 ${signed(WB.EAT[2])}, 3 ${signed(WB.EAT[3])}, none ${WB.EAT[0]}) ` +
         `and hold ${food} food: ${meals} helping${meals === 1 ? '' : 's'}.${glut}`,
       `One shift for you now: fishing ${n1(fish)} food (skill x${sk('gather_food')}${nets ? ', with your net' : ''}), ` +
         `woodcutting ${n1(cut)} wood (x${sk('gather_wood')}).`,
       makeBuy,
-      nets ? '' : `A net adds ${NET_GAIN}%: ${n1(noNet)} → ${n1(withNet)} food/shift; craft one from ${W.netWood(a)} wood (crafting x${sk('craft_net')}, you have ${wood}) or buy one.`,
+      // a net you own still matters if others are bidding for one: that is the crafter's trade
+      `A net adds ${NET_GAIN}% to a fisher's catch for about ${Math.round(1 / CFG.NET_WEAR)} fishing shifts` +
+        (nets ? ' (you have one)' : ` (yours: ${n1(noNet)} → ${n1(withNet)} food/shift)`) +
+        `. Making one costs you ${nw} wood (crafting x${sk('craft_net')}) and a shift; you can also buy or sell one.` + netWant,
       houseTxt,
       `Cash: ${coins(a.cash)} coins. You hold: ${GOODS.map((g, i) => i > WOOD && !W.owned(a, i) ? '' : `${g} ${W.owned(a, i)}${a.locked[i] ? ` (${a.locked[i]} pledged)` : ''}`).filter(Boolean).join(', ')}.`,
       loanTxt,
@@ -208,7 +227,7 @@ export function makeTools(W, a) {
       `Market (round ${W.round}):\n${marketText()}`,
       a.fills ? `Your orders in round ${a.fills.round}:\n- ${a.fills.lines.join('\n- ')}` : '',
       a.memory.length ? `Recently:\n- ${a.memory.join('\n- ')}` : '',
-      'Choose this round\'s shift.',
+      `This round: post any market orders, set your lifestyle${credit ? ', borrow or repay' : ''}, and choose your shift.`,
     ].filter(Boolean).join('\n');
   }
 
@@ -246,14 +265,17 @@ export function makeTools(W, a) {
       if (err) return no(err);
       acted.activity = name;
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
-      if (name === 'build_house') return `You work on your house this round (${a.building.done} of ${W.buildShifts} building shifts done before this one).`;
-      return `You head to the ${CFG.TASKS[name].place} for this round's shift.`;
+      // The turn stays open after a shift (see the brains): say so, or a model that answers
+      // one call at a time never posts an order.
+      const still = ' Your shift is set. You can still post market orders, change your lifestyle, borrow or repay this round.';
+      if (name === 'build_house') return `You work on your house this round (${a.building.done} of ${W.buildShifts} building shifts done before this one).${still}`;
+      return `You head to the ${CFG.TASKS[name].place} for this round's shift.${still}`;
     }
     if (name === 'set_lifestyle') {
       const err = W.setLifestyle(a, input.level);
       if (err) return no(err);
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
-      return `From now on you eat ${a.lifestyle} food per meal.`;
+      return `From now on you eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food per meal.`;
     }
     if (name === 'place_order') {
       const g = GOOD_INDEX[input.good];

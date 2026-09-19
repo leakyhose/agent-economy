@@ -50,35 +50,56 @@ export const CFG = {
   // Every job takes one shift, and a shift is one round. Quantities are deliberately
   // coarse-grained (~15 a shift, a meal 5 food): at a skill of 0.2 a shift still yields
   // something, so a weak agent is poor at a job, not shut out of it.
-  // Both gathering jobs yield 15 at skill 1.0 and both goods open at 1.00, so a shift is
-  // worth the same either way and an agent's choice is about skill, not about the job.
+  // Both gathering jobs yield the same at skill 1.0 and both goods open at 1.00, so a shift
+  // is worth the same either way and an agent's choice is about skill, not about the job.
+  // 10, not 15: at 15 the village could meet its needs with ~19.5 of its 30 shifts, and the
+  // slack showed up as 32-46% of all food rotting and 22,000 wood nobody could use. At 10
+  // the same needs take ~29.5 shifts (about 17 fishing, 10 woodcutting, 2.5 crafting), so
+  // output is scarce enough to be worth selling, and growth has to come from skill (LEARN).
   TASKS: {
-    gather_food: { yield: 15, netYield: 21, place: 'docks' },   // one fisher feeds ~3 people at lifestyle 1
-    gather_wood: { yield: 15,               place: 'forest' },  // one woodcutter keeps ~6 fires lit
+    gather_food: { yield: 10, netYield: 14, place: 'docks' },   // one fisher feeds ~2 people at lifestyle 1
+    gather_wood: { yield: 10,               place: 'forest' },  // one woodcutter keeps ~4 fires lit
+    // 20 wood, divided by crafting skill: a 2.0 crafter pays 10 (~10.00) plus a shift, and
+    // sells into bids that ran to 40.00. Crafting to sell already paid — what stopped it was
+    // the observation, not the margin.
     craft_net:   { wood: 20,                place: 'workshop' },
-    // A house: the wood (divided by crafting skill, like a net) is used up when the build
-    // starts, and the house exists on-chain from then on, unfinished, so it can be pledged
-    // for a construction loan. It gives nothing and can't be sold until `shifts` building
+    // A house: the wood is used up when the build starts, and the house exists on-chain
+    // from then on, unfinished, so it can be pledged for a construction loan. It gives nothing and can't be sold until `shifts` building
     // shifts are done; a build left for other work waits, unfinished, until resumed.
-    build_house: { wood: 150, shifts: 8,   place: 'building site' },
+    // 60 wood, flat for everyone (see W.houseWood), + 3 shifts ≈ 105.00 all in, against
+    // +1.5 wellbeing a round — worth ~7.50 at what a helping of food costs — so it pays back
+    // in ~14 rounds, and lands on the 90-145 agents actually bid for a house. At 150 wood
+    // divided by crafting skill + 8 shifts it was 340-520 for +1.0, and 8 shifts was 8
+    // separate chances to defer: 1 house was built in 97 rounds.
+    build_house: { wood: 60, shifts: 3,    place: 'building site' },
     idle:        {                        place: 'square' },
   },
   // Talent, drawn at birth: three skills, one per job, scaled so every villager's three
   // add up to 3.0. The spread is wide on purpose — it is the only reason an agent can't
   // just make everything himself — and the fixed total means being good at one job costs
   // you another, while nobody is bad at everything. A skill multiplies what a shift
-  // yields; for craft_net it divides the wood a net or a house costs. Nothing assigns a
-  // job: agents see their skills and choose, so roles have to emerge.
+  // yields; for craft_net it divides the wood a net costs. Nothing assigns a job: agents
+  // see their skills and choose, so roles have to emerge.
   // TILT is how lopsided the draw is before scaling (1 = flat, higher = sharper
   // specialists); FLOOR is the hard minimum, and the ceiling follows from it at
   // 3.0 − 2 × FLOOR. At TILT 2 the middle 90% of skills land between 0.2 and 2.4.
+  // Learning by doing, the only source of growth: labour is fixed at one shift each and the
+  // village sits at its allocation ceiling from round 1, so real output can only rise if
+  // people get better at what they do. Every shift worked multiplies that job's skill by
+  // (1 + LEARN), up to LEARN_CAP times the skill the agent was born with. 0.3% a shift is
+  // ~+35% over 100 rounds for someone who sticks to one job — which also rewards sticking.
+  LEARN: env.LEARN === '0' ? 0 : (+env.LEARN || 0.003),
+  LEARN_CAP: +env.LEARN_CAP || 1.4,
   SKILL_TILT: +env.SKILL_TILT || 2,
   SKILL_FLOOR: +env.SKILL_FLOOR || 0.2,
-  // ...except that dividing a 150-wood house by a 0.2 skill would ask for 750 wood. Only
-  // where crafting divides a bill is it clamped to this band, so the best builder is 4×
-  // cheaper than the worst and no one faces a bill the village can't cut in a lifetime.
+  // ...except that dividing a net's wood by a 0.2 skill would ask for 100 wood, so that one
+  // bill is clamped to this band: the best crafter is 4x cheaper than the worst, and no one
+  // is priced out of a net entirely.
   CRAFT_CLAMP: [0.5, 2.0],
-  NET_WEAR: 0.15,          // chance a (free) net breaks on each fishing shift; a pledged net is held by the chain and doesn't
+  // Chance a (free) net breaks on each fishing shift; a pledged net is held by the chain and
+  // doesn't. This is the crafter's whole trade: ~17 fishing shifts a round over a ~6.7-shift
+  // life is ~2.5 nets a round of standing demand. Lowering it would remove that.
+  NET_WEAR: 0.15,
   // Share of an agent's FREE stock that rots every market round: food, wood, nets, boats, houses.
   // Only food rots: it is the reason to sell a surplus instead of hoarding it. Coins never
   // spoil, so holding money is the way to store value.
@@ -95,7 +116,7 @@ export const CFG = {
     // Per meal period, by house owned: the first pays 1.0, the second 0.6, and so on; the
     // last figure repeats for every house beyond. Diminishing, but never nothing — so a
     // builder always has someone left to sell to, and houses are a lasting want.
-    HOUSE: [1.0, 0.6, 0.4, 0.2],
+    HOUSE: [1.5, 0.8, 0.5, 0.3],
   },
   LIFESTYLE_START: 1,           // meals' worth of food per meal (1–3) until an agent sets its own
 

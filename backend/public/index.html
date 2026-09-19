@@ -55,6 +55,7 @@
 
 <div class="top">
   <h1>agent-economy</h1>
+  <a href="/">← Island view</a>
   <button id="btn" onclick="toggle()">…</button>
   <span id="status"></span>
 </div>
@@ -196,7 +197,9 @@ function lines(id, title, series, opts = {}) {
     h.forEach((_, i) => { let acc = 0; series.forEach((s, k) => { const v = vals[k][i]; if (!v) return;
       body += `<rect x="${x(i) - bw / 2}" y="${y(acc + v)}" width="${bw}" height="${y(acc) - y(acc + v)}" fill="${s.color}"/>`; acc += v; }); });
   } else {
-    series.forEach((s, k) => { body += `<path d="${vals[k].map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="${s.width ?? 2}" stroke-linejoin="round" ${s.dash ? 'stroke-dasharray="4 3"' : ''}/>`; });
+    series.forEach((s, k) => { const d = vals[k].map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      if (s.area) body += `<path d="${d} L${x(h.length - 1).toFixed(1)},${y(lo)} L${x(0).toFixed(1)},${y(lo)} Z" fill="${s.color}" opacity="0.12"/>`;
+      body += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width ?? 2}" stroke-linejoin="round" ${s.dash ? 'stroke-dasharray="4 3"' : ''}/>`; });
   }
   const refLine = ref == null ? '' : `<line x1="${PAD}" x2="${W - 4}" y1="${y(ref)}" y2="${y(ref)}" stroke="#aaa" stroke-dasharray="4 3"/>` +
     (Math.min(Math.abs(y(ref) - y(lo)), Math.abs(y(ref) - y(hi))) < fs + 2 ? '' :   // no label when it would sit on an axis label
@@ -209,6 +212,8 @@ function lines(id, title, series, opts = {}) {
     <line x1="${PAD}" x2="${W - 4}" y1="${y(hi)}" y2="${y(hi)}" stroke="#eee"/><line x1="${PAD}" x2="${W - 4}" y1="${y(lo)}" y2="${y(lo)}" stroke="#ccc"/>
     <text x="${PAD - 4}" y="${y(hi) + 3}" text-anchor="end" font-size="${fs}" fill="#888">${fmt(hi)}</text>
     <text x="${PAD - 4}" y="${y(lo) + 3}" text-anchor="end" font-size="${fs}" fill="#888">${fmt(lo)}</text>
+    ${opts.grid ? [1 / 3, 2 / 3].map(f => { const v = lo + (hi - lo) * f; return `<line x1="${PAD}" x2="${W - 4}" y1="${y(v)}" y2="${y(v)}" stroke="#f0f0f0"/>` +
+      `<text x="${PAD - 4}" y="${y(v) + 3}" text-anchor="end" font-size="${fs}" fill="#aaa">${fmt(v)}</text>`; }).join('') : ''}
     ${refLine}${body}
     <text x="${PAD}" y="${top + PH + fs + 3}" font-size="${fs}" fill="#888">round ${h[0].round}</text>
     <text x="${W - 4}" y="${top + PH + fs + 3}" text-anchor="end" font-size="${fs}" fill="#888">round ${h.at(-1).round}</text>
@@ -293,10 +298,14 @@ function tiles() {
 // ---- the headline charts
 function bigCharts() {
   const h = last.history, b = last.bank;
-  lines('k-gdp', 'GDP per round', [
-    { name: 'gdp', color: '#bbb', get: x => x.gdp, width: 1.5 },
-    { name: '10-round avg', color: '#2458a6', get: x => x.gdp10, width: 3 },
-  ], { ...BIG, fmt: v => v.toFixed(1), note: 'fish, wood, nets, houses made, valued at market prices' });
+  const g0 = h.slice(0, 5).reduce((t, x) => t + (x.realGdp ?? x.gdp), 0) / Math.min(5, h.length), gNow = h.at(-1).gdp10;
+  const chg = g0 ? (gNow / g0 - 1) * 100 : 0;
+  lines('k-gdp', 'real GDP per round', [
+    { name: '3-round avg', color: '#9db4d8', get: x => x.gdp3, width: 1.2 },
+    { name: '10-round avg', color: '#2458a6', get: x => x.gdp10, width: 3, area: true },
+  ], { ...BIG, zero: false, grid: true, ref: g0, fmt: v => v.toFixed(0),
+       sub: h.length > 5 ? `<b style="color:${chg >= 0 ? '#1a7f37' : '#b00'}">${chg >= 0 ? '▲ +' : '▼ '}${chg.toFixed(1)}%</b> vs the first rounds (dashed line)` : '',
+       note: 'everything made this round — fish, wood, nets, houses — valued at fixed opening prices, so price changes don\'t show up as growth' });
 
   lines('k-money', 'money & credit', [
     { name: 'money supply', color: '#2458a6', get: x => x.supply, width: 3 },
@@ -347,8 +356,8 @@ function detailCharts() {
 function econ() {
   const h = last.history;
   if (!h.length || h[0].gdp === undefined || h[0].supply === undefined) return;
-  const gdp10 = rolling(x => x.gdp, 10), emp5 = rolling(x => x.employment, 5), wb5 = rolling(x => x.wbRound, 5);
-  h.forEach((x, i) => { x.gdp10 = gdp10[i]; x.emp5 = emp5[i] * 100; x.wb5 = wb5[i]; });
+  const gdp10 = rolling(x => x.realGdp ?? x.gdp, 10), gdp3 = rolling(x => x.realGdp ?? x.gdp, 3), emp5 = rolling(x => x.employment, 5), wb5 = rolling(x => x.wbRound, 5);
+  h.forEach((x, i) => { x.gdp10 = gdp10[i]; x.gdp3 = gdp3[i]; x.emp5 = emp5[i] * 100; x.wb5 = wb5[i]; });
   tiles(); bigCharts();
   if (detailsOpen()) detailCharts();
 }

@@ -138,7 +138,9 @@ if (rejected.length) {
   console.log('  rejections: ' + Object.entries(why).map(([k, v]) => `"${k}" x${v}`).join('; '));
 }
 const noAct = decisions.filter(d => !d.actions.some(x => ['gather_food', 'gather_wood', 'craft_net', 'build_house', 'rest'].includes(x.tool)));   // rest: old runs
-if (noAct.length) console.log(`decisions that never chose a shift (sat idle): ${noAct.length} (${pct(noAct.length, decisions.length)})`);
+if (noAct.length) { const n = decisions.length, acts = decisions.map(d => (d.actions ?? []).length);
+  console.log(`actions per decision: avg ${(acts.reduce((s, x) => s + x, 0) / Math.max(1, n)).toFixed(2)}   a lone shift and nothing else: ${pct(acts.filter(x => x === 1).length, n)} of decisions   (the market died at 79%: orders need room in the turn)`); }
+console.log(`decisions that never chose a shift (sat idle): ${noAct.length} (${pct(noAct.length, decisions.length)})`);
 
 hr('needs, waste and money');
 const hungryRounds = rounds.map(r => r.agents?.filter(a => a.hunger > 0).length ?? 0);
@@ -161,6 +163,10 @@ if (rounds[0]?.metrics) {
   // gross output, so wood that went into nets and houses is counted twice.
   const M = rounds.map(r => r.metrics), q = Math.max(1, Math.ceil(M.length / 4));
   const made = G.map(g => M.reduce((s, m) => s + (m.made[g] ?? 0), 0));
+  // real GDP (output at fixed opening prices): the growth number. Runs before it was logged have none.
+  if (M.some(m => m.realGdp != null))
+    console.log(`REAL GDP per round by quarter: ` + [0, 1, 2, 3].map(k => M.slice(k * q, (k + 1) * q)).filter(x => x.length)
+      .map(x => coins(avg(x.map(m => m.realGdp ?? 0)))).join(' → ') + `   (nominal, at market prices, below)`);
   console.log(`GDP ${coins(M.reduce((s, m) => s + m.gdp, 0))} over ${M.length} rounds; per round by quarter of the run: ` +
     [0, 1, 2, 3].map(k => M.slice(k * q, (k + 1) * q)).filter(x => x.length).map(x => coins(avg(x.map(m => m.gdp)))).join(' → '));
   console.log(`  made: ${perGood((n, g) => `${n} ${made[g]}`)}`);

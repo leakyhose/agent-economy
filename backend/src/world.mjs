@@ -36,6 +36,11 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     return { gather_food: k[0], gather_wood: k[1], craft_net: k[2] };
   };
 
+  // Fixed prices for real GDP, in cents: the opening price of each good, and for a house
+  // (which opens with no price) what it takes to make — its wood plus its shifts of gathering.
+  const REAL_PRICES = CFG.START_PRICES.map((p, g) => g === HOUSES
+    ? CFG.TASKS.build_house.wood * CFG.START_PRICES[WOOD] + CFG.TASKS.build_house.shifts * CFG.TASKS.gather_wood.yield * CFG.START_PRICES[WOOD]
+    : p > 1 ? p : 0);
   const none = () => GOODS.map(() => 0);
   const list = q => q.map((n, g) => n ? `${n} ${n === 1 ? GOODS[g].replace(/s$/, '') : GOODS[g]}` : '').filter(Boolean).join(' and ');
   const agents = initial.slots.map((s, i) => ({
@@ -125,7 +130,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // counted as the unfinished one first, so a free finished house stays sellable.
   const holdable = (a, g) => a.goods[g] - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
   W.sellable = (a, g) => holdable(a, g) - W.reservedGood(a, g);
-  W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.craftSkill(a)));
+  // A house costs the same wood for everyone. Dividing it by crafting skill was perverse:
+  // the three skills sum to 3.0, so the agents with the wood are the ones with the worst
+  // crafting, and they were quoted 300 wood while agents holding none were quoted 75.
+  W.houseWood = () => CFG.TASKS.build_house.wood;
 
   // ---- wellbeing: the goal ------------------------------------------------------
   const credit = (a, part, x) => { a.wellbeing += x; a.wbParts[part] += x; a.wbNow[part] += x; };
@@ -330,19 +338,29 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     }
     a.shifts[task] = (a.shifts[task] ?? 0) + 1;
     W.shiftsNow[task === 'idle' ? 'idle' : 'worked']++;
+    // Learning by doing: a shift worked makes the agent a little better at that job, up to
+    // LEARN_CAP times the skill it was born with. It is the economy's only source of growth.
+    if (CFG.LEARN && a.skills[task] != null) {
+      a.skills0 ??= { ...a.skills };
+      a.skills[task] = Math.min(a.skills0[task] * CFG.LEARN_CAP, a.skills[task] * (1 + CFG.LEARN));
+    }
   }
 
-  // A meal: eat as many meals' worth as the lifestyle calls for, and count the meal
-  // period's wellbeing — the food, the fire, the houses. Meals are whole (CFG.MEAL food
-  // each): a scrap below one is no meal, so it stays in the larder rather than being
-  // eaten for nothing. Food committed to a sale is eaten too (the agent's asks shrink):
-  // asking high doesn't keep food from the table.
+  // A meal: eat what the lifestyle calls for, or whatever there is, and count the meal
+  // period's wellbeing — the food, the fire, the houses. Part of a helping counts in
+  // proportion (wellbeing is read off WB.EAT along a straight line between whole helpings):
+  // when meals had to be whole, 70% of hungry agent-rounds had 1-4 food in the larder and
+  // got nothing for it. Less than one full helping still counts as going hungry. Food
+  // committed to a sale is eaten too (the agent's asks shrink): asking high doesn't keep
+  // food from the table.
   function eat(a) {
     const WB = CFG.WELLBEING;
-    const n = Math.max(0, Math.min(a.lifestyle, Math.floor(a.goods[FOOD] / CFG.MEAL)));
-    if (n) { addDelta(a, FOOD, -n * CFG.MEAL); a.hunger = 0; }
-    else { a.hunger++; if (a.hunger === 1 || a.hunger % 3 === 0) remember(a, `You went hungry (${a.hunger} missed meal${a.hunger > 1 ? 's' : ''}).`); }
-    credit(a, 'eating', WB.EAT[n]);
+    const ate = Math.max(0, Math.min(a.lifestyle * CFG.MEAL, a.goods[FOOD]));
+    const n = ate / CFG.MEAL, lo = Math.floor(n), hi = Math.ceil(n);
+    if (ate) addDelta(a, FOOD, -ate);
+    if (n >= 1) a.hunger = 0;
+    else { a.hunger++; if (a.hunger === 1 || a.hunger % 3 === 0) remember(a, `You went hungry (${a.hunger} meal${a.hunger > 1 ? 's' : ''} short of a full helping).`); }
+    credit(a, 'eating', WB.EAT[lo] + (n - lo) * (WB.EAT[hi] - WB.EAT[lo]));
     credit(a, 'warmth', a.cold ? WB.COLD : WB.WARM);
     // Upkeep: every house owned wants HOUSE_UPKEEP wood a round. Unpaid, it still stands —
     // it just pays nothing this round. The fire comes first: warmth is worth more than a
@@ -730,6 +748,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   function metrics(L, fills, bookStats, made, shifts) {
     const p = L.lastPrice, n = agents.length;
     const gdp = made.reduce((s, q, g) => s + q * p[g], 0);
+    // Real GDP: the same output at FIXED prices, so the chart shows what was made and not
+    // what inflation did to its price tag (nominal GDP once rose tenfold on flat output).
+    const realGdp = made.reduce((s, q, g) => s + q * REAL_PRICES[g], 0);
     const priceIndex = CFG.PRICE_BASKET.reduce((s, w, g) => s + w * p[g], 0) / START_BASKET;
     const then = W.priceHistory.at(-CFG.INFLATION_ROUNDS)?.priceIndex;
     const unsold = bookStats.map((b, g) => Math.max(0, b.askQty + b.bankQty - fills[g]));
@@ -739,7 +760,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const wb = agents.reduce((s, a) => s + a.wellbeing, 0);
     const wbRound = (wb - wbBefore) / n; wbBefore = wb;
     return {
-      made: [...made], gdp, priceIndex: +priceIndex.toFixed(4), inflation: then ? +(priceIndex / then - 1).toFixed(4) : null,
+      made: [...made], gdp, realGdp, priceIndex: +priceIndex.toFixed(4), inflation: then ? +(priceIndex / then - 1).toFixed(4) : null,
       shifts: { ...shifts }, employment: all ? +(shifts.worked / all).toFixed(3) : null,
       unsold, slack, slackShare: offeredValue ? +(slack / offeredValue).toFixed(3) : null,
       wellbeing: +(wb / n).toFixed(2), wbRound: +wbRound.toFixed(3),
