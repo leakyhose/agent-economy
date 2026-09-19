@@ -108,9 +108,10 @@
       this.orbit = { r: 150, theta: -0.46, phi: 0.92, tr: 150, ttheta: -0.46, tphi: 0.92 };
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-      // A high-DPI full-screen procedural water shader is expensive. Capping the
-      // backing buffer keeps orbit controls responsive without visibly softening the UI.
-      renderer.setPixelRatio(Math.min(1, window.devicePixelRatio || 1));
+      // Restore the high-density surface that makes the water read as water rather
+      // than a flat blue plane. The expensive CPU work from the old scene (pin
+      // projection and terrain lookups every frame) remains throttled below.
+      renderer.setPixelRatio(Math.min(1.8, window.devicePixelRatio || 1));
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.setClearColor(0x0b4a64, 1);
@@ -133,7 +134,7 @@
       scene.add(sun);
 
       // ---- terrain ----
-      const SIZE = 340, SEG = 180;
+      const SIZE = 340, SEG = 330;
       const geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
       geo.rotateX(-Math.PI / 2);
       const pos = geo.attributes.position;
@@ -207,8 +208,65 @@
       scene.add(trees);
       scene.add(trunks);
 
+      // ---- ground cover and mountain outcrops --------------------------------
+      // Both use instancing: hundreds of distinct tufts and rocks, one draw each.
+      // They add the small-scale detail that vertex colours alone cannot show.
+      const grassGeo = new THREE.ConeGeometry(0.42, 1.7, 4);
+      grassGeo.translate(0, 0.84, 0);
+      const grass = new THREE.InstancedMesh(grassGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), 1500);
+      const grassCol = new THREE.Color();
+      let grassPlaced = 0;
+      for (let i = 0; i < 64000 && grassPlaced < 1500; i++) {
+        const x = (hash2(i * 1.11, 38.7) - 0.5) * 205;
+        const z = (hash2(i * 1.93, 21.4) - 0.5) * 205;
+        const hgt = height(x, z);
+        const slope = Math.abs(hgt - height(x + 1.2, z)) + Math.abs(hgt - height(x, z + 1.2));
+        if (hgt < 2.1 || hgt > 19 || slope > 2.55 || hash2(i * 3.7, 14.9) > 0.052) continue;
+        const s = 0.42 + hash2(i * 5.1, 3.2) * 0.75;
+        tp.set(x, hgt - 0.06, z);
+        sc.set(s * (0.75 + hash2(i, 31) * 0.55), s * (0.65 + hash2(i, 33) * 0.8), s);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash2(i, 35) * 6.28);
+        m4.compose(tp, q, sc);
+        grass.setMatrixAt(grassPlaced, m4);
+        grassCol.setHSL(0.22 + hash2(i, 37) * 0.12, 0.42 + hash2(i, 39) * 0.22, 0.26 + hash2(i, 41) * 0.16);
+        grass.setColorAt(grassPlaced, grassCol);
+        grassPlaced++;
+      }
+      grass.count = grassPlaced;
+      grass.instanceMatrix.needsUpdate = true;
+      if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
+      scene.add(grass);
+
+      const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+      rockGeo.translate(0, 0.7, 0);
+      const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), 180);
+      const rockCol = new THREE.Color();
+      let rockPlaced = 0;
+      for (let i = 0; i < 36000 && rockPlaced < 180; i++) {
+        const x = (hash2(i * 2.17, 57.3) - 0.5) * 155;
+        const z = (hash2(i * 3.41, 71.6) - 0.5) * 155;
+        const hgt = height(x, z);
+        const slope = Math.abs(hgt - height(x + 1.6, z)) + Math.abs(hgt - height(x, z + 1.6));
+        if (hgt < 15 || (slope < 1.45 && hgt < 27) || hash2(i * 4.7, 19.2) > 0.035) continue;
+        const s = 0.7 + hash2(i, 45) * 2.25;
+        tp.set(x, hgt - 0.45, z);
+        sc.set(s * (0.65 + hash2(i, 47) * 0.45), s * (0.5 + hash2(i, 49) * 0.7), s * (0.65 + hash2(i, 51) * 0.4));
+        q.setFromEuler(new THREE.Euler(hash2(i, 53) * 0.35, hash2(i, 55) * 6.28, hash2(i, 59) * 0.35));
+        m4.compose(tp, q, sc);
+        rocks.setMatrixAt(rockPlaced, m4);
+        rockCol.setHSL(0.07 + hash2(i, 61) * 0.05, 0.18 + hash2(i, 63) * 0.14, 0.25 + hash2(i, 65) * 0.17);
+        rocks.setColorAt(rockPlaced, rockCol);
+        rockPlaced++;
+      }
+      rocks.count = rockPlaced;
+      rocks.castShadow = true;
+      rocks.receiveShadow = true;
+      rocks.instanceMatrix.needsUpdate = true;
+      if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
+      scene.add(rocks);
+
       // ---- water: shader surface with waves, depth shading and shoreline foam ----
-      const HMAP = 160;
+      const HMAP = 256;
       const hdata = new Uint8Array(HMAP * HMAP * 4);
       for (let j = 0; j < HMAP; j++) {
         for (let k = 0; k < HMAP; k++) {
@@ -261,6 +319,18 @@
           varying vec3 vWorld;
           varying vec2 vWave;
 
+          float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float noise(vec2 p){
+            vec2 i = floor(p), f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1,0)), u.x),
+                       mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x), u.y);
+          }
+          float fbm(vec2 p){
+            float s = 0.0, a = 0.5;
+            for (int i = 0; i < 4; i++) { s += a * noise(p); p *= 2.03; a *= 0.5; }
+            return s;
+          }
           float terrainAt(vec2 xz){
             vec2 uv = xz / uSize + 0.5;
             if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return -40.0;
@@ -273,26 +343,29 @@
             float mid = smoothstep(10.0, 34.0, depth);
             vec3 col = mix(mix(uShallow, uMid, shore), uDeep, mid);
 
-            // The vertex waves already carry two smooth wave fields. Reusing them
-            // avoids the former 20 procedural-noise evaluations per pixel per frame.
-            float ripple = 0.5 + 0.5 * sin(xz.x * 0.11 + xz.y * 0.075 + uTime * 1.35);
-            vec3 nrm = normalize(vec3(vWave.x * 0.16, 1.0, vWave.y * 0.16));
+            // Two scrolling fractal fields give the old water its fine choppy
+            // highlights and keep the foam from reading as a uniform ring.
+            float n1 = fbm(xz * 0.19 + vec2(uTime * 0.16, uTime * 0.11));
+            float n2 = fbm(xz * 0.46 - vec2(uTime * 0.23, uTime * 0.19));
+            float e = 0.55;
+            float hxa = fbm((xz + vec2(e, 0.0)) * 0.19 + vec2(uTime * 0.16, uTime * 0.11));
+            float hza = fbm((xz + vec2(0.0, e)) * 0.19 + vec2(uTime * 0.16, uTime * 0.11));
+            vec3 nrm = normalize(vec3((n1 - hxa) * 5.0, 1.0, (n1 - hza) * 5.0));
 
             // lighting: diffuse tint + sharp sun glint + fresnel sky
             vec3 viewDir = normalize(uCam - vWorld);
             vec3 halfv = normalize(uSun + viewDir);
             float spec = pow(max(dot(nrm, halfv), 0.0), 220.0) * 1.5;
-            float sparkle = pow(max(dot(nrm, halfv), 0.0), 40.0) * 0.14 * (0.55 + ripple * 0.45);
+            float sparkle = pow(max(dot(nrm, halfv), 0.0), 40.0) * 0.14 * (0.4 + n2);
             float fres = pow(1.0 - max(dot(nrm, viewDir), 0.0), 3.0);
-            col += vec3(0.10, 0.14, 0.18) * (ripple - 0.5) * 0.7;
+            col += vec3(0.10, 0.14, 0.18) * (n1 - 0.5) * 1.1;
             col = mix(col, vec3(0.62, 0.84, 0.92), fres * 0.28);
             col += vec3(1.0, 0.97, 0.88) * (spec + sparkle);
 
             // shoreline foam: band over shallow ground, broken up by noise and swell
             float band = 1.0 - smoothstep(0.0, 4.2, depth);
-            float swell = 0.5 + 0.5 * sin(depth * 2.1 - uTime * 2.2 + ripple * 3.0);
-            float crossWave = 0.5 + 0.5 * sin(xz.x * 0.31 - xz.y * 0.27 - uTime * 1.1);
-            float foam = band * smoothstep(0.42, 0.82, swell * (0.7 + crossWave * 0.35));
+            float swell = 0.5 + 0.5 * sin(depth * 2.1 - uTime * 2.2 + n1 * 5.0);
+            float foam = band * smoothstep(0.35, 0.85, swell * (0.55 + 0.7 * fbm(xz * 0.7 + uTime * 0.08)));
             foam += (1.0 - smoothstep(0.0, 0.7, depth)) * 0.55;
             col = mix(col, uFoam, clamp(foam, 0.0, 0.9));
 
@@ -302,7 +375,7 @@
         transparent: true,
         depthWrite: true
       });
-      const water = new THREE.Mesh(new THREE.PlaneGeometry(1100, 1100, 80, 80), waterMat);
+      const water = new THREE.Mesh(new THREE.PlaneGeometry(1100, 1100, 150, 150), waterMat);
       water.rotation.x = -Math.PI / 2;
       water.position.y = SEA;
       water.receiveShadow = false;
