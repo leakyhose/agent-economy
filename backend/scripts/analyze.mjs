@@ -14,7 +14,7 @@ const ev = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split(
 const coins = c => (c / 100).toFixed(2);
 const rounds = ev.filter(e => e.type === 'round');
 // older runs had 3 or 4 goods (no boats, no houses), a bank without equity, no metrics; read what the run has
-const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'].slice(0, rounds[0]?.prices.length ?? final?.chain.lastPrice.length ?? 3);
+const GOODS = ['food', 'wood', 'nets', meta.config.HAND_EFFICIENCY ? 'labour' : 'boats', 'houses'].slice(0, rounds[0]?.prices.length ?? final?.chain.lastPrice.length ?? 3);
 const G = GOODS.map((_, g) => g);                       // every slot, incl. the dead boat slot (index order = the chain's)
 const SHOWN = G.filter(g => GOODS[g] !== 'boats');      // boats are never made or shown; old runs logged zeros for them
 const perGood = f => SHOWN.map(g => f(GOODS[g], g)).join('  ');
@@ -295,7 +295,10 @@ if (meta.agents[0]?.skills) {
   const endCash = final?.chain.slots.map(s => s.cash) ?? last.map(a => a.cash);
   const rows = meta.agents.map(a => {
     const mine = decisions.filter(d => d.agent === a.id);
-    return { a, best: bestAt(a.id), share: mine.filter(d => d.activity === bestAt(a.id)).length / Math.max(1, mine.length), cash: endCash[a.id] ?? 0 };
+    // a builder's craft is nets and houses alike; a shift sold to an employer is nobody's own choice of job
+    const own = mine.filter(d => d.activity !== 'hired'), best = bestAt(a.id);
+    const at = d => d.activity === best || (best === 'craft_net' && d.activity === 'build_house');
+    return { a, best, share: own.filter(at).length / Math.max(1, own.length), cash: endCash[a.id] ?? 0 };
   });
   const avgCash = xs => avg(xs.map(r => r.cash));
   const spec = rows.filter(r => r.share >= 0.5), gen = rows.filter(r => r.share < 0.5);
@@ -324,3 +327,36 @@ for (const d of decisions.filter((_, i) => i % Math.max(1, Math.floor(decisions.
   console.log(`${name(d.agent).padEnd(9)} ${String(d.activity).padEnd(12)} ${d.thought}`);
 
 if (final) console.log(`\n${final.transactions} Solana transactions   llm ${final.llm.calls ?? 0} calls, $${(final.llm.cost ?? 0).toFixed(3)}`);
+
+
+// ---- how much like a real economy is it? Each line is a stylised fact about real economies
+// and whether this run shows it. Targets are loose on purpose: ten villagers are not a country.
+if (rounds.at(-1)?.metrics && GOODS[3] === 'labour') {
+  hr('realism scorecard');
+  const L = 3, ms = rounds.map(r => r.metrics), half = ms.slice(Math.floor(ms.length / 2));
+  const sum = (xs, f) => xs.reduce((t, x) => t + (f(x) ?? 0), 0);
+  const gdp = sum(ms, m => m.gdp), sales = sum(ms, m => m.sales), wages = sum(ms, m => m.wages);
+  const shifts = sum(ms, m => m.shifts.worked + m.shifts.idle), hired = sum(ms, m => m.shifts.hired);
+  const pi = ms.map(m => m.priceIndex), lastA = rounds.at(-1).agents;
+  const rows = meta.agents.map(a => { const own = decisions.filter(d => d.agent === a.id && d.activity !== 'hired'), b = bestAt(a.id);
+    return own.filter(d => d.activity === b || (b === 'craft_net' && d.activity === 'build_house')).length / Math.max(1, own.length); });
+  const loans = rounds.flatMap(r => r.bank?.loans ?? []).filter(l => l.kind === 'borrow' && l.ok);
+  const employers = lastA.filter(a => a.wagesPaid > 0).length, workers = lastA.filter(a => a.wagesEarned > 0).length;
+  const real = r => r.metrics.made.reduce((t, q, g) => t + q * (meta.config.START_PRICES[g] ?? 0), 0);   // output at start prices
+  const q = Math.max(1, Math.floor(rounds.length / 4)), realFirst = avg(rounds.slice(0, q).map(real)), realLast = avg(rounds.slice(-q).map(real));
+  const hungry = avg(rounds.map(r => r.agents.filter(a => a.hunger > 0).length)) / meta.agents.length;
+  const line = (ok, what, got, want) => console.log(`${ok ? 'PASS' : 'MISS'}  ${what.padEnd(44)} ${String(got).padEnd(22)} want ${want}`);
+  const p = x => `${Math.round(x * 100)}%`;
+  line(sales / gdp >= 0.5, 'output sold through the market', p(sales / gdp), '>= 50%   (subsistence village: ~5%)');
+  line(avg(rows) >= 0.7, 'own shifts spent at best skill', p(avg(rows)), '>= 70%');
+  line(hired / shifts >= 0.15, 'shifts worked for a wage', `${p(hired / shifts)} (2nd half ${p(sum(half, m => m.shifts.hired) / Math.max(1, sum(half, m => m.shifts.worked + m.shifts.idle)))})`, '>= 15%');
+  line(employers >= 1 && workers >= 2, 'employers / wage earners', `${employers} / ${workers} of ${meta.agents.length}`, 'some of each');
+  line(wages / gdp > 0.05 && wages / gdp < 0.7, 'wages as a share of output', p(wages / gdp), '5–70%');
+  line(Math.max(...pi) <= 1.6 && Math.min(...pi) >= 0.6, 'price level stays put', `${Math.min(...pi).toFixed(2)}–${Math.max(...pi).toFixed(2)}`, '0.6–1.6 of the start');
+  line(ms.at(-1).gini >= 0.3 && ms.at(-1).gini <= 0.75, 'wealth inequality (gini)', ms.at(-1).gini.toFixed(2), '0.30–0.75');
+  line(realLast >= realFirst * 0.95, 'real output holds or grows', `${coins(realFirst)} → ${coins(realLast)} a round`, 'last quarter >= first');
+  line(ms.at(-1).housesBuilt >= meta.agents.length / 2, 'investment: houses built', ms.at(-1).housesBuilt, `>= ${meta.agents.length / 2}`);
+  line(loans.length >= 2, 'credit is used', `${loans.length} loans, ${coins(sum(loans, l => l.amount))}`, '>= 2 loans');
+  line(hungry <= 0.1, 'people are fed', `${p(hungry)} hungry on average`, '<= 10%');
+  console.log(`wage ${coins(ms[0].wage)} → ${coins(ms.at(-1).wage)}   hands hired ${sum(rounds, r => r.volumes[L])}   wages paid ${coins(wages)}   goods sold ${coins(sales)}   output ${coins(gdp)}`);
+}
