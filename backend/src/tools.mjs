@@ -1,12 +1,12 @@
 // The tools an agent can call. Both brains — the free stub and Claude — act ONLY
 // through these, so swapping brains changes nothing else in the system.
-import { CFG, GOODS, FOOD, WOOD, NETS, BOATS, HOUSES } from './config.mjs';
+import { CFG, GOODS, FOOD, WOOD, NETS, HOUSES } from './config.mjs';
 import { FIRE_SALE_BPS } from './chain.mjs';
 
 const coins = c => (c / 100).toFixed(2);
-const GOOD_INDEX = { food: FOOD, wood: WOOD, net: NETS, nets: NETS, boat: BOATS, boats: BOATS, house: HOUSES, houses: HOUSES };
+const GOOD_INDEX = { food: FOOD, wood: WOOD, net: NETS, nets: NETS, house: HOUSES, houses: HOUSES };
 const B = CFG.BANK, WB = CFG.WELLBEING, pct = x => Math.round(x * 100);
-const H = CFG.TASKS.build_house, TERMS = B.TERM_ROUNDS;
+const H = CFG.TASKS.build_house, TERM = B.TERM_ROUNDS;
 const rounds = n => `${n} round${n === 1 ? '' : 's'}`;
 const pct100 = x => +(x * 100).toFixed(1);
 const signed = x => `${x >= 0 ? '+' : ''}${+x.toFixed(1)}`;
@@ -18,7 +18,7 @@ const REASON = {
 
 const ALL_TOOLS = [
   { name: 'gather_food',
-    description: 'Spend this round\'s shift fishing. Your catch depends on your fishing skill and how full the lake is; a net doubles it.',
+    description: 'Spend this round\'s shift fishing. Your catch depends on your fishing skill; a net doubles it.',
     input_schema: REASON },
   { name: 'gather_wood',
     description: 'Spend this round\'s shift cutting wood. How much you cut depends on your woodcutting skill.',
@@ -29,10 +29,7 @@ const ALL_TOOLS = [
   { name: 'build_house',
     description: `Spend this round's shift building a house. Starting one uses up ${H.wood} wood divided by your crafting skill, all at once; ` +
       `it then takes ${H.shifts} building shifts to finish. You can do other work in between and call build_house again to continue. One house at a time. ` +
-      `An unfinished house gives nothing and cannot be sold${B.CREDIT ? ', but it can be pledged to the bank' : ''}.`,
-    input_schema: REASON },
-  { name: 'rest',
-    description: `Rest for this round's shift: ${signed(WB.REST)} wellbeing.`,
+      `An unfinished house gives nothing, and cannot be sold or pledged.`,
     input_schema: REASON },
   { name: 'set_lifestyle',
     description: `Choose how much you eat at every meal (one a round) from now on: 1, 2 or 3 food ` +
@@ -54,28 +51,26 @@ const ALL_TOOLS = [
       required: ['side', 'good', 'quantity', 'price'],
       properties: {
         side:     { type: 'string', enum: ['buy', 'sell'] },
-        good:     { type: 'string', enum: ['food', 'wood', 'net', 'boat', 'house'] },
+        good:     { type: 'string', enum: ['food', 'wood', 'net', 'house'] },
         quantity: { type: 'integer', minimum: 1 },
         price:    { type: 'number', description: 'coins per unit' },
         reason:   { type: 'string', description: 'Optional: why this price, in a few words.' },
       },
     } },
   { name: 'borrow',
-    description: `Borrow newly minted coins from the village bank against pledged wood, nets, boats and/or houses (finished or not; food is not accepted). ` +
+    description: `Borrow newly minted coins from the village bank against pledged wood, nets and/or finished houses (food is not accepted). ` +
       `You may owe at most ${pct(B.LTV)}% of the collateral's value at last prices. Pledged goods stay in use (you fish with a pledged net, live in a pledged house) and don't rot, ` +
       `but can't be sold, burned or pledged again until the loan is repaid. Interest accrues for the time you hold the loan (your situation shows the rate per round), so repaying early costs less. ` +
-      `Term: ${TERMS.join(', ')} rounds; borrowing again adds to the open loan and keeps its due round. ` +
-      `At the deadline the debt is taken from your cash, with no penalty. If your cash can't cover it — or earlier, if your debt passes ${pct(B.MARGIN)}% of the collateral's value — ` +
-      `the loan is foreclosed: a ${pct(B.PENALTY)}% penalty, and the bank seizes as much collateral as it still needs, valued at ${FIRE_SALE_BPS / 100}% of its last price, and returns the rest.`,
+      `Every loan runs ${TERM} rounds; borrowing again adds to the open loan and keeps its due round. ` +
+      `At the deadline the debt is taken from your cash, with no penalty. If your cash can't cover it, the loan is foreclosed: a ${pct(B.PENALTY)}% penalty, ` +
+      `and the bank seizes as much collateral as it still needs, valued at ${FIRE_SALE_BPS / 100}% of its last price, and returns the rest.`,
     input_schema: {
-      type: 'object', additionalProperties: false, required: ['amount', 'term_rounds', 'wood', 'nets', 'boats', 'reason'],
+      type: 'object', additionalProperties: false, required: ['amount', 'wood', 'nets', 'reason'],
       properties: {
         amount: { type: 'number', description: 'coins to borrow' },
-        term_rounds: { type: 'integer', enum: TERMS, description: 'rounds until the loan is due (ignored when adding to an open loan)' },
         wood:   { type: 'integer', minimum: 0, description: 'wood to pledge' },
         nets:   { type: 'integer', minimum: 0, description: 'nets to pledge' },
-        boats:  { type: 'integer', minimum: 0, description: 'boats to pledge' },
-        houses: { type: 'integer', minimum: 0, description: 'houses to pledge, finished or not (optional)' },
+        houses: { type: 'integer', minimum: 0, description: 'finished houses to pledge (optional)' },
         reason: REASON.properties.reason,
       },
     } },
@@ -92,10 +87,10 @@ const ALL_TOOLS = [
 // With credit switched off the bank lends nothing, so its tools are not offered at all.
 export const TOOL_DEFS = ALL_TOOLS.filter(d => B.CREDIT || (d.name !== 'borrow' && d.name !== 'repay'));
 
-const ACTIVITIES = new Set(['gather_food', 'gather_wood', 'craft_net', 'build_house', 'rest']);
+const ACTIVITIES = new Set(['gather_food', 'gather_wood', 'craft_net', 'build_house']);
 // A call missing a required argument is refused rather than run with made-up values.
 // A missing reason, or a pledge count (0 is what it means), is not worth a refusal.
-const DEFAULTABLE = new Set(['reason', 'wood', 'nets', 'boats', 'houses']);
+const DEFAULTABLE = new Set(['reason', 'wood', 'nets', 'houses']);
 const REQUIRED = Object.fromEntries(ALL_TOOLS.map(d => [d.name, (d.input_schema.required ?? []).filter(k => !DEFAULTABLE.has(k))]));
 
 export function makeTools(W, a) {
@@ -136,24 +131,22 @@ export function makeTools(W, a) {
   }
   function describe() {
     const F = CFG.TASKS.gather_food, sk = t => W.skill(a, t), n1 = x => +x.toFixed(1);
-    const weak = (a.hunger >= 3 ? CFG.HUNGRY_PENALTY : 1) * (a.cold >= 2 ? CFG.COLD_PENALTY : 1);
-    const share = W.lakeShare(), nets = W.usableNets(a), lakePct = Math.round(share * 100);
+    const nets = W.usableNets(a);
     const now = W.round + 1;                     // the round being decided
-    // what one shift of each job yields for this agent at today's lake
-    const noNet = F.yield * sk('gather_food') * weak * share, withNet = F.netYield * sk('gather_food') * weak * share;
-    const cut = CFG.TASKS.gather_wood.yield * sk('gather_wood') * weak;
+    // what one shift of each job yields for this agent
+    const noNet = F.yield * sk('gather_food') * W.catch(), withNet = F.netYield * sk('gather_food') * W.catch();
+    const cut = CFG.TASKS.gather_wood.yield * sk('gather_wood');
     const wood = W.availGood(a, WOOD), food = W.availGood(a, FOOD), house = W.hasHouse(a);
     const rot = (a.rotted ?? []).map((q, g) => q ? `${q} ${GOODS[g]}` : '').filter(Boolean).join(' and ');
 
     // food held against food eaten: how much of it rots before it is eaten, at this lifestyle
     let left = food, waste = 0;
-    while (left >= 1) { left -= Math.min(a.lifestyle, left); const r = CFG.SPOIL[FOOD] * Math.max(0, left - (house ? CFG.HOUSE_STORE : 0)); waste += r; left -= r; }
+    while (left >= 1) { left -= Math.min(a.lifestyle, left); const r = CFG.SPOIL[FOOD] * left; waste += r; left -= r; }
     const meals = Math.floor(food / a.lifestyle);
     const glut = waste >= 3 && waste >= food / 3 ? ` About ${Math.round(waste)} of it will rot before you eat it.` : '';
 
-    const parts = w => ['eating', 'warmth', 'house', 'rest'].map(k => `${k} ${signed(w[k])}`).join(', ');
-    const recent = a.wbRecent.reduce((s, r) => { for (const k in s) s[k] += r[k]; return s; }, { eating: 0, warmth: 0, house: 0, rest: 0 });
-    const wealth = W.wealth(a);
+    const parts = w => ['eating', 'warmth', 'house'].map(k => `${k} ${signed(w[k])}`).join(', ');
+    const recent = a.wbRecent.reduce((s, r) => { for (const k in s) s[k] += r[k]; return s; }, { eating: 0, warmth: 0, house: 0 });
 
     const hw = W.houseWood(a), shiftsLeft = W.buildShifts - (a.building?.done ?? 0);
     const houseTxt = a.building ? `Your unfinished house: ${a.building.done} of ${W.buildShifts} building shifts done, ${shiftsLeft} to go (build_house continues it).`
@@ -161,7 +154,7 @@ export function makeTools(W, a) {
       : `A house for you: ${hw} wood (you have ${wood}) + ${W.buildShifts} building shifts → ${signed(WB.HOUSE)} wellbeing a round.`;
 
     // the bank: nothing at all unless it lends or the agent owes it
-    const bank = W.bank, credit = bank.terms.ltvBps > 0, rate = W.ratePerRound(), ratePct = `≈${+(rate * 100).toFixed(2)}% a round`;
+    const credit = W.bank.terms.ltvBps > 0, rate = W.ratePerRound(), ratePct = `≈${+(rate * 100).toFixed(2)}% a round`;
     let loanTxt = '';
     if (a.debt) {
       const owed = W.debtNow(a), due = a.dueRound, value = W.collateralValue(a.locked);
@@ -170,31 +163,27 @@ export function makeTools(W, a) {
         (due == null ? '' : now > due ? 'OVERDUE: the bank acts on it when this round settles. '
           : now === due ? 'Due at the end of this round. ' : `Due at the end of round ${due} (${rounds(due - now)} after this one). `) +
         (a.cash >= owed ? 'Your cash covers it. ' : `Your cash does not cover it: if it still doesn't at the deadline, you are foreclosed with a ${pct(B.PENALTY)}% penalty. `) +
-        `Pledged: ${lockedTxt} (worth ${coins(value)}; margin call if your debt passes ${coins(value * bank.terms.marginBps / 10_000)}).`;
+        `Pledged: ${lockedTxt} (worth ${coins(value)}).`;
     } else if (credit) {
       const lim = W.loanLimits(a, W.freePledge(a));
-      loanTxt = `No loan. The bank would lend you up to ${coins(Math.min(lim.collateral, lim.bank))} against your free goods, at ${ratePct}.`;
+      loanTxt = `No loan. The bank would lend you up to ${coins(Math.min(lim.collateral, lim.bank))} against your free goods, for ${rounds(W.termRounds())} at ${ratePct}.`;
     }
 
     return [
       `You are ${a.name}. This is round ${now}.`,
       `Wellbeing so far: ${a.wellbeing.toFixed(1)} (${parts(a.wbParts)}).` +
         (a.wbRecent.length ? ` Last ${rounds(a.wbRecent.length)}: ${parts(recent)}.` : ''),
-      `Net worth: ${coins(wealth)} coins = ${(wealth / 100 / WB.COINS_PER_POINT).toFixed(1)} points at the end. Score if the run ended now: ${W.score(a).toFixed(1)}.`,
       `A meal of 1 food gives ${signed(WB.EAT[1])} wellbeing, 2 give ${signed(WB.EAT[2])}, 3 give ${signed(WB.EAT[3])}, none ${WB.EAT[0]}. ` +
         `You eat ${a.lifestyle} per meal and hold ${food} food: ${meals} meal${meals === 1 ? '' : 's'}.${glut}`,
-      `The lake is ${lakePct}% full, so catches are ${lakePct}% of normal.`,
       `One shift for you now: fishing ${n1(nets ? withNet : noNet)} food (skill x${sk('gather_food')}${nets ? ', with your net' : ''}), ` +
-        `woodcutting ${n1(cut)} wood (x${sk('gather_wood')}), resting ${signed(WB.REST)} wellbeing.`,
+        `woodcutting ${n1(cut)} wood (x${sk('gather_wood')}).`,
       nets ? `Your net doubles your catch: ${n1(noNet)} → ${n1(withNet)} food/shift.`
         : `A net doubles your catch: ${n1(noNet)} → ${n1(withNet)} food/shift; craft one from ${W.netWood(a)} wood (you have ${wood}) or buy one.`,
       houseTxt,
       `Cash: ${coins(a.cash)} coins. You hold: ${GOODS.map((g, i) => i > WOOD && !W.owned(a, i) ? '' : `${g} ${W.owned(a, i)}${a.locked[i] ? ` (${a.locked[i]} pledged)` : ''}`).filter(Boolean).join(', ')}.`,
       loanTxt,
-      credit && a.dividends ? `Bank dividends you have received so far: ${coins(a.dividends)}.` : '',
-      // same thresholds as finish() in world.mjs
-      a.hunger ? `You are ${a.hunger >= 3 ? 'HUNGRY' : 'hungry'}: ${a.hunger} missed meal${a.hunger === 1 ? '' : 's'} in a row. At 3 or more, your fishing and woodcutting yield half.` : '',
-      a.cold ? `You are ${a.cold >= 2 ? 'COLD' : 'cold'}: ${a.cold} missed fire${a.cold === 1 ? '' : 's'} in a row. At 2 or more, your fishing and woodcutting yield half.` : '',
+      a.hunger ? `You are hungry: ${a.hunger} missed meal${a.hunger === 1 ? '' : 's'} in a row.` : '',
+      a.cold ? `You are cold: ${a.cold} missed fire${a.cold === 1 ? '' : 's'} in a row.` : '',
       rot ? `Since your last turn: ${rot} rotted.` : '',
       `Market (round ${W.round}):\n${marketText()}`,
       a.fills ? `Your orders in round ${a.fills.round}:\n- ${a.fills.lines.join('\n- ')}` : '',
@@ -215,7 +204,7 @@ export function makeTools(W, a) {
     if (refused) {
       acted.failed = true;
       const what = name === 'place_order' ? `place_order ${input.side} ${input.quantity} ${input.good}`
-        : name === 'borrow' ? `borrow ${input.amount} for ${input.term_rounds} rounds` : name === 'repay' ? `repay ${input.amount}` : name;
+        : name === 'borrow' ? `borrow ${input.amount}` : name === 'repay' ? `repay ${input.amount}` : name;
       W.remember(a, `Rejected: ${what} — ${refused}`);
     }
     log.actions.push({ tool: name, input, result, ...(refused ? { rejected: true } : {}) });
@@ -233,13 +222,12 @@ export function makeTools(W, a) {
   function run(name, input) {
     if (ACTIVITIES.has(name)) {
       if (acted.activity) return `You already chose to ${acted.activity} this round.`;
-      const task = name === 'rest' ? 'idle' : name;
-      const err = W.startActivity(a, task, { rest: name === 'rest' });
+      const err = W.startActivity(a, name);
       if (err) return no(err);
       acted.activity = name;
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
       if (name === 'build_house') return `You work on your house this round (${a.building.done} of ${W.buildShifts} building shifts done before this one).`;
-      return name === 'rest' ? 'You rest this round.' : `You head to the ${CFG.TASKS[task].place} for this round's shift.`;
+      return `You head to the ${CFG.TASKS[name].place} for this round's shift.`;
     }
     if (name === 'set_lifestyle') {
       const err = W.setLifestyle(a, input.level);
@@ -257,9 +245,9 @@ export function makeTools(W, a) {
     }
     if (name === 'borrow') {
       const pledge = GOODS.map(() => 0);
-      pledge[WOOD] = Math.floor(input.wood ?? 0); pledge[NETS] = Math.floor(input.nets ?? 0); pledge[BOATS] = Math.floor(input.boats ?? 0);
+      pledge[WOOD] = Math.floor(input.wood ?? 0); pledge[NETS] = Math.floor(input.nets ?? 0);
       pledge[HOUSES] = Math.floor(input.houses ?? 0);
-      const err = W.requestBorrow(a, Number(input.amount) * 100, pledge, input.term_rounds);
+      const err = W.requestBorrow(a, Number(input.amount) * 100, pledge);
       if (err) return no(err);
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
       const op = W.loanOps.at(-1);
@@ -279,17 +267,17 @@ export function makeTools(W, a) {
     return {
       cash: a.cash, availCash: W.availCash(a), hunger: a.hunger, cold: a.cold,
       // free (sellable) goods; netsUsable and house count pledged ones too
-      food: W.availGood(a, FOOD), wood: W.availGood(a, WOOD), nets: W.availGood(a, NETS), boats: W.availGood(a, BOATS), houses: W.sellable(a, HOUSES),
-      netsUsable: W.usableNets(a), house: W.hasHouse(a), lifestyle: a.lifestyle, lake: W.lakeShare(), wellbeing: a.wellbeing,
+      food: W.availGood(a, FOOD), wood: W.availGood(a, WOOD), nets: W.availGood(a, NETS), houses: W.sellable(a, HOUSES),
+      netsUsable: W.usableNets(a), house: W.hasHouse(a), lifestyle: a.lifestyle, wellbeing: a.wellbeing,
       // a house under construction: shifts done (null = none), and the wood a new one takes
-      building: a.building?.done ?? null, unfinishedFree: a.building && !a.locked[HOUSES] ? 1 : 0, houseWood: W.houseWood(a),
-      credit: W.bank.terms.ltvBps > 0, terms: W.termRounds(), debtNow: W.debtNow(a),
+      building: a.building?.done ?? null, houseWood: W.houseWood(a),
+      credit: W.bank.terms.ltvBps > 0, debtNow: W.debtNow(a),
       // share of what was offered that sold, last 5 rounds (1 when nothing was offered)
       sellThrough: Object.fromEntries(GOODS.map((g, i) => { const r = W.recentSales(i); return [g, r.offered ? Math.min(1, r.sold / r.offered) : 1]; })),
       prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
       skills: a.skills, netWood: W.netWood(a), debt: a.debt, dueIn: W.roundsUntilDue(a),
       maxLoan: W.maxLoan(a, W.freePledge(a)),
-      yields: { food: CFG.TASKS.gather_food.yield * W.skill(a, 'gather_food') * W.lakeShare(), wood: CFG.TASKS.gather_wood.yield * W.skill(a, 'gather_wood') },
+      yields: { food: CFG.TASKS.gather_food.yield * W.skill(a, 'gather_food') * W.catch(), wood: CFG.TASKS.gather_wood.yield * W.skill(a, 'gather_wood') },
     };
   }
 

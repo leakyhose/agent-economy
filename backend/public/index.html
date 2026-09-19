@@ -87,7 +87,7 @@
       <div class="chart" id="k-held"></div><div class="chart" id="k-slack"></div>
     </div>
     <div class="small">
-      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
+      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c4"></div>
     </div>
     <h3>round log</h3>
     <div class="box" id="events" style="margin-top:0"></div>
@@ -95,7 +95,7 @@
     <div class="scroll"><table>
       <thead><tr>
         <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
-        <th class="n">wood</th><th class="n">nets</th><th class="n">boats</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
+        <th class="n">wood</th><th class="n">nets</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
         <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>standing orders</th><th>last thought</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -108,6 +108,7 @@ const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
 const GN = ['food', 'wood', 'nets', 'boats', 'houses'];   // good index -> name, same order as the chain
 const GC = ['#2f7fc1', '#8a5a2b', '#7b4fb0', '#333', '#c77700'];   // one colour per good, used everywhere
+const SHOWN = [0, 1, 2, 4];          // boats (3) are a dead on-chain slot: never made, never shown
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 let running = false;
@@ -250,7 +251,7 @@ const TILES = [
     val: m => m.emp5.toFixed(0) + '%', spark: x => x.emp5,
     full: () => lines('tile-chart', 'employment %', [
       { name: 'worked, 5-round avg', color: '#1a7f37', get: x => x.emp5 },
-    ], { ...BIG, ph: 100, w: 1000, note: 'worked / all shifts finished (incl. rest)' }) },
+    ], { ...BIG, ph: 100, w: 1000, note: 'worked / all shifts finished; the remainder sat idle' }) },
   { id: 'gini', label: 'inequality', sub: 'Gini', color: '#7b4fb0',
     val: m => m.gini.toFixed(2), spark: x => x.gini,
     full: () => lines('tile-chart', 'inequality (Gini, net worth)', [
@@ -263,19 +264,13 @@ const TILES = [
       { name: 'being built', color: '#c77700', get: x => x.building },
       { name: 'built (total)', color: '#2458a6', get: x => x.housesBuilt, dash: true },
     ], { ...BIG, ph: 100, w: 1000, note: `out of ${last.agents.length} agents` }) },
-  { id: 'lake', label: 'lake level', sub: 'fish', color: '#2a9dbf',
-    val: m => Math.round((m.lake ?? 0) * 100) + '%', spark: x => x.lake ?? 0,
-    full: () => lines('tile-chart', 'the fish lake, % full', [
-      { name: 'stock', color: '#2a9dbf', get: x => (x.lake ?? 0) * 100 },
-    ], { ...BIG, ph: 100, w: 1000, note: 'one shared lake: overfishing lowers everyone\'s catch' }) },
   { id: 'bank', label: 'bank capital', sub: 'equity', color: '#2458a6',
     val: m => m.equity.toFixed(1), spark: x => x.equity,
     full: () => lines('tile-chart', 'bank capital (totals)', [
       { name: 'equity', color: '#2458a6', get: x => x.equity },
-      { name: 'dividends', color: '#1a7f37', get: x => x.dividends },
       { name: 'written off', color: '#b00', get: x => x.writtenOff },
       { name: 'bad debt', color: '#b00', get: x => x.badDebt, dash: true },
-    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(1), note: 'dividends, write-offs: running totals' }) },
+    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(1), note: 'write-offs: a running total' }) },
 ];
 $('tiles').innerHTML = TILES.map(t => `<div class="tile" id="t-${t.id}" title="click for the full chart"></div>`).join('');
 TILES.forEach(t => { $('t-' + t.id).onclick = () => { openTile = openTile === t.id ? null : t.id; tiles(); }; });
@@ -314,11 +309,11 @@ function bigCharts() {
   // every good as % of its first-round price, so one chart reads for all five; hover shows actual prices
   const base = GN.map((_, g) => h.find(x => x.prices[g] > 0)?.prices[g] ?? 1);
   const now = h.at(-1)?.prices ?? [];
-  lines('k-prices', 'prices', GN.map((n, g) => ({
-    name: n, color: GC[g], get: x => x.prices[g] / base[g] * 100,
+  lines('k-prices', 'prices', SHOWN.map(g => ({
+    name: GN[g], color: GC[g], get: x => x.prices[g] / base[g] * 100,
     label: () => now.length ? `${now[g].toFixed(2)} <span class="${now[g] > base[g] ? 'up' : now[g] < base[g] ? 'down' : 'muted'}">${pct(now[g] / base[g] - 1)}</span>` : '',
   })), { ...BIG, zero: false, ref: 100, fmt: v => v.toFixed(0) + '%',
-         tip: k => GN.map((n, g) => `${n} ${h[k].prices[g].toFixed(2)}`).join('  '),
+         tip: k => SHOWN.map(g => `${GN[g]} ${h[k].prices[g].toFixed(2)}`).join('  '),
          note: '% of each good\'s round-1 price (dashed = 100%); hover for prices in coins' });
 
   lines('k-jobs', 'what agents are doing', [
@@ -326,7 +321,7 @@ function bigCharts() {
     { name: 'wood', color: '#8a5a2b', get: x => x.doing.gather_wood },
     { name: 'craft', color: '#7b4fb0', get: x => x.doing.craft_net },
     { name: 'build', color: '#c77700', get: x => x.doing.build_house ?? 0 },
-    { name: 'rest', color: '#bbb', get: x => x.doing.idle },
+    { name: 'idle', color: '#bbb', get: x => x.doing.idle },
   ], { ...BIG, stacked: true, note: 'agents on each job, per round' });
 }
 
@@ -336,18 +331,17 @@ function detailCharts() {
   lines('k-fore', 'loans come due (total)', [
     { name: 'collected', color: '#1a7f37', get: x => x.autoRepaid ?? 0 },
     { name: 'foreclosed overdue', color: '#c77700', get: x => x.overdue },
-    { name: 'margin call', color: '#b00', get: x => x.marginCalls },
   ], { note: 'collected = from cash when due, no penalty' });
   lines('k-needs', 'hungry / cold agents', [
     { name: 'hungry', color: '#b00', get: x => x.hungry },
     { name: 'cold', color: '#2a9dbf', get: x => x.cold },
   ], { note: `out of ${last.agents.length} agents` });
-  lines('k-held', 'goods held by agents', GN.map((n, g) => ({ name: n, color: GC[g], get: x => x.held[g] ?? 0 })),
+  lines('k-held', 'goods held by agents', SHOWN.map(g => ({ name: GN[g], color: GC[g], get: x => x.held[g] ?? 0 })),
     { note: 'rising = glut piling up, falling = scarcity' });
   lines('k-slack', 'slack: offered, unsold', [
     { name: 'value', color: '#c77700', get: x => x.slack },
   ], { fmt: v => v.toFixed(1), note: `last round ${m.slackShare == null ? '—' : Math.round(m.slackShare * 100) + '%'} of the value offered didn't sell` });
-  GN.forEach((_, g) => chart(g));
+  SHOWN.forEach(g => chart(g));
 }
 
 function econ() {
@@ -383,20 +377,19 @@ function wealth() {
 function bankFeed() {
   const words = { borrow: '#c77700', repay: '#1a7f37', collected: '#1a7f37', foreclosed: '#b00' };
   const items = last.bankFeed.map(f => `<div style="color:${f.ok === false ? '#888' : words[f.kind]}">r${f.round} · ${f.name} ` + (
-    f.kind === 'borrow' ? `${f.ok === false ? 'refused: borrow' : 'borrowed'} ${f.amount.toFixed(2)}${f.term ? ` for ${f.term} rounds` : ' (top-up)'}${f.construction ? ' · construction loan' : ''}`
+    f.kind === 'borrow' ? `${f.ok === false ? 'refused: borrow' : 'borrowed'} ${f.amount.toFixed(2)}${f.term ? ` for ${f.term} rounds` : ' (top-up)'}`
     : f.kind === 'repay' ? `${f.ok === false ? 'refused: repay' : 'repaid'} ${f.amount.toFixed(2)}`
     : f.kind === 'collected' ? `loan due: ${f.amount.toFixed(2)} collected from cash, no penalty`
-    : `<b>FORECLOSED</b> (${f.reason === 'margin' ? 'margin call' : 'overdue'}) on ${(f.debt ?? 0).toFixed(2)}: ${f.amount.toFixed(2)} cash taken` +
+    : `<b>FORECLOSED</b> (overdue) on ${(f.debt ?? 0).toFixed(2)}: ${f.amount.toFixed(2)} cash taken` +
       (f.seized?.some(q => q) ? `, seized ${goodsList(f.seized)}` : '') + (f.refund ? `, refunded ${f.refund.toFixed(2)}` : '') +
       (f.returned?.some(q => q) ? `, returned ${goodsList(f.returned)}` : '')) +
     (f.sig ? ` <a target="_blank" href="${txUrl(f.sig)}">tx ↗</a>` : '') +
     `</div>`).join('');
-  const b = last.bank, d = b.lastDividend;
+  const b = last.bank;
   $('bankfeed').innerHTML = `<div class="head"><b>the bank</b><span class="muted">keeper ${b.keeper.slice(0, 8)}… signs foreclosures, not the server</span></div>` +
     `<div style="line-height:1.5">owed <b>${b.debt.toFixed(2)}</b> of cap ${b.lendingCap.toFixed(2)} · equity <b>${b.equity.toFixed(2)}</b> (must keep ${b.capitalRequired.toFixed(2)})<br>` +
-    `due loans: <span class="up">${b.autoRepaid} collected</span> · <span class="down">${b.marginCalls} margin call · ${b.overdue} overdue foreclosures</span><br>` +
-    `written off ${b.books.writtenOff.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)} · dividends ${b.dividends.toFixed(2)}` +
-    (d ? ` (r${d.round}: ${(d.perAgent / 100).toFixed(2)} each)` : '') +
+    `due loans: <span class="up">${b.autoRepaid} collected</span> · <span class="down">${b.overdue} overdue foreclosures</span><br>` +
+    `written off ${b.books.writtenOff.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)}` +
     (b.creditOn ? '' : `<br><span class="down">credit is switched off: the chain refuses every loan</span>`) +
     (b.goods.some(q => q) ? `<br>seized, for sale: ${goodsList(b.goods)}` : '') + `</div>` +
     `<div class="feed">${items || '<div style="color:#888">no loans yet</div>'}</div>`;
@@ -425,7 +418,7 @@ function agentTable() {
   $('allbtn').textContent = showAll ? 'top 10 only' : `show all ${ag.length}`;
   rows.innerHTML = shown.map(a =>
     `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
-    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td><td class="n">${a.boats}</td>` +
+    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
     `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/3` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
     `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
     `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
@@ -449,11 +442,11 @@ function details() {
       (s.decide.timeouts ? `, <span class="hungry">${s.decide.timeouts} timed out</span> and kept their last job` : '') + '<br>' : '') +
     `prices: ${prices}<br>` +
     `doing: ${doing}<br>` +
-    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · boats ${s.totals.boats} · ` +
+    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · ` +
     `houses ${s.totals.houses} lived in, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
     `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
     `bank: income: interest ${s.bank.books.interestIncome.toFixed(2)} · penalties ${s.bank.books.penalties.toFixed(2)} · sales ${s.bank.books.recovered.toFixed(2)} · ` +
-    (s.bank.creditOn ? `terms ${s.bank.terms.join('/')} rounds` : 'credit off') + '<br>' +
+    (s.bank.creditOn ? `loans run ${s.bank.terms} rounds` : 'credit off') + '<br>' +
     (s.metrics ? `economy (last round): GDP ${s.metrics.gdp.toFixed(2)} · price index ${s.metrics.priceIndex.toFixed(2)}` +
       ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
       ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}` : '');

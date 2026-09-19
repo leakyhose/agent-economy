@@ -48,8 +48,7 @@ function broadcast(e) {
       ` | gdp ${coins(e.metrics.gdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
       (e.decide ? ` | waited ${(e.decide.slowest / 1000).toFixed(1)}s${e.decide.timeouts ? ` (${e.decide.timeouts} timed out)` : ''}` : '') +
       (e.collected.length ? ` | collected ${e.collected.map(f => f.name).join(', ')}` : '') +
-      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => `${f.name} (${f.reason})`).join(', ')}` : '') +
-      (e.bank.dividend ? ` | dividend ${coins(e.bank.dividend.perAgent)} each` : '') + ` | ${e.txs} tx ${e.ms}ms` +
+      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => f.name).join(', ')}` : '') + ` | ${e.txs} tx ${e.ms}ms` +
       (st.calls ? ` | llm ${st.calls} calls $${st.cost.toFixed(3)}` : ''));
   }
   if (e.type === 'error') console.error(`  ! ${e.message}`);
@@ -70,6 +69,8 @@ async function start() {
   await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, CFG.START_PRICES,
     Math.round(B.SEED * money), {
       ltvBps: B.CREDIT ? bps(B.LTV) : 0, rateBps: bps(B.RATE_PER_MIN), ratePeriodSlots: minute,
+      // marginBps 10000 is the loosest lib.rs allows (ltv_bps <= margin_bps <= 10000); the
+      // keeper never cites a margin call anyway, so the chain's margin path is dead.
       penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA), marginBps: bps(B.MARGIN),
       termUnitSlots: 1, maxTermUnits: 65_535, equityFloor: Math.round(B.EQUITY_FLOOR * money),
     });
@@ -169,11 +170,10 @@ function state() {
             creditOn: W.bank.terms.ltvBps > 0, ratePerMin: W.ratePerMin(), ratePerRound: W.ratePerRound(), terms: W.termRounds(), autoRepaid: W.autoRepaid,
             equity: W.bank.equity / 100, lendingCap: W.bank.lendingCap / 100, capitalRequired: W.bank.capitalRequired / 100,
             books: Object.fromEntries(Object.entries(W.bank.books).map(([k, v]) => [k, v / 100])),
-            dividends: W.bank.books.dividendsPaid / 100, lastDividend: W.bank.lastDividend,
-            marginCalls: W.marginCalls, overdue: W.overdue,
+            overdue: W.overdue,
             keeper: chain.keeper.publicKey.toBase58() },
     totals: { money: sum(a => a.cash) / 100, food: sum(a => a.goods[0]), wood: sum(a => a.goods[1]),
-              nets: sum(a => a.goods[2]), boats: sum(a => a.goods[3]), houses: W.agents.filter(a => W.hasHouse(a)).length,
+              nets: sum(a => a.goods[2]), houses: W.agents.filter(a => W.hasHouse(a)).length,
               building: W.agents.filter(a => a.building).length, housesBuilt: W.housesBuilt, hungry: W.agents.filter(a => a.hunger > 0).length,
               cold: W.agents.filter(a => a.cold >= 2).length },
     doing,
@@ -183,7 +183,7 @@ function state() {
     llm: brain.stats(),
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: a.skills, cash: a.cash / 100,
-      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], boats: a.goods[3], houses: W.owned(a, HOUSES), house: W.hasHouse(a),
+      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.owned(a, HOUSES), house: W.hasHouse(a),
       building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
@@ -195,7 +195,7 @@ function state() {
     // live market: price history for the charts, last round's order book, recent trades
     history: W.priceHistory.map(h => ({ ...h, prices: h.prices.map(p => p / 100),
       supply: h.supply / 100, debt: h.debt / 100, badDebt: h.badDebt / 100, equity: h.equity / 100,
-      lendingCap: h.lendingCap / 100, dividends: h.dividends / 100, writtenOff: h.writtenOff / 100,
+      lendingCap: h.lendingCap / 100, writtenOff: h.writtenOff / 100,
       gdp: h.gdp / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 })),
     // every loan, repayment and foreclosure, newest first
     bankFeed: W.bankLog.slice(-14).reverse().map(f => ({ ...f, amount: f.amount / 100, ...(f.debt ? { debt: f.debt / 100 } : {}),
@@ -265,12 +265,12 @@ if (CFG.RUN_SECONDS) {
   ];
   console.log(`\ninvariants: ${inv.map(([k, v]) => `${k} ${ok(v)}`).join('; ')}`);
   console.log(`bank: equity ${coins(L.equity)} (seed ${coins(b.bankSeed)}), lending cap ${coins(L.lendingCap)}, interest ${coins(b.interestIncome)}, ` +
-    `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}, ` +
-    `dividends ${coins(b.dividendsPaid)}; ${W.autoRepaid} collected at the deadline; foreclosures ${W.marginCalls} margin call, ${W.overdue} overdue`);
+    `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}; ` +
+    `${W.autoRepaid} collected at the deadline, ${W.overdue} foreclosed overdue`);
   const m = W.priceHistory.at(-1) ?? {};
   console.log(`houses built ${W.housesBuilt}, being built ${W.agents.filter(a => a.building).length}, homeowners ${m.homeowners}   ` +
     `GDP ${coins(W.priceHistory.reduce((s, h) => s + h.gdp, 0))} over the run   avg wellbeing ${m.wellbeing}   price index ${m.priceIndex}   wealth gini ${m.gini}`);
-  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${sumS(x => x.goods[2])}   boats ${sumS(x => x.goods[3])}`);
+  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${sumS(x => x.goods[2])}`);
   console.log(`richest ${rich.slice(0, 3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   console.log(`poorest ${rich.slice(-3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   const st = brain.stats(); if (st.calls) console.log(`llm ${st.calls} calls, ${st.errors} errors, $${st.cost.toFixed(3)}`);

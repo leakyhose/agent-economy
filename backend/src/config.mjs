@@ -5,18 +5,20 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '../..');
-// The project's .env WINS over the shell, so a stale key exported in ~/.zshrc can't
-// silently shadow the one meant for this project. (process.loadEnvFile won't override.)
+// The project's .env wins over the shell for SECRETS, so a stale key exported in ~/.zshrc
+// can't silently shadow the one meant for this project. Every other dial goes the usual
+// way round, so `BRAIN=stub node src/server.mjs` beats the BRAIN in .env.
 try {
   for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
-    if (m) process.env[m[1]] = m[2];
+    if (m && (/_API_KEY$/.test(m[1]) || process.env[m[1]] === undefined)) process.env[m[1]] = m[2];
   }
 } catch { /* no .env yet */ }
 const env = process.env;
 
 // Order is fixed: it is the on-chain layout (lib.rs N_GOODS = 5). Houses are built
-// (build_house); boats exist as goods (owned, traded, pledged) but nothing builds them yet.
+// (build_house); boats are a dead on-chain slot — nothing makes them and agents are never
+// shown them, but index 3 has to stay so the JS arrays line up with the ledger.
 export const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'];
 export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
@@ -26,7 +28,7 @@ export const CFG = {
   MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : 'gpt-5.6-luna'),
   // Time is counted in rounds. Every round, all agents decide at once (the clock waits
   // for the slowest, up to DECIDE_TIMEOUT_MS), then everyone works one shift, eats one
-  // meal, fires burn, goods rot, the lake regrows and the market clears on-chain.
+  // meal, fires burn, goods rot and the market clears on-chain.
   DECIDE_TIMEOUT_MS: +env.DECIDE_TIMEOUT_MS || 8000,   // an agent that hasn't answered by then keeps its last job and posts no orders
   // cents. A house (~70 coins) can't be bought outright from this, so buying or
   // building one needs savings or a loan.
@@ -58,64 +60,45 @@ export const CFG = {
   SKILL_RANGE: [0.5, 1.5],
   NET_WEAR: 0.05,          // chance a (free) net breaks on each fishing shift; a pledged net is held by the chain and doesn't
   // Share of an agent's FREE stock that rots every market round: food, wood, nets, boats, houses.
-  // Coins never spoil — so holding money is the way to store value, and surplus
-  // goods have to be sold before they rot.
-  SPOIL: [0.10, 0.02, 0, 0, 0],
-  HUNGRY_PENALTY: 0.5,     // hungry agents gather half as much
-  COLD_PENALTY: 0.5,       // so do cold ones (2+ missed fires); both together = a quarter
+  // Only food rots: it is the reason to sell a surplus instead of hoarding it. Coins never
+  // spoil, so holding money is the way to store value.
+  SPOIL: [0.10, 0, 0, 0, 0],
 
-  // The goal: the best life. Wellbeing is counted every meal period (every round), per
-  // agent, and at the end net worth is added at COINS_PER_POINT. Diminishing: a second
-  // food per meal is worth less than the first, a third less again. Calibrated so the
-  // choices are close at opening prices: one extra food (5.00) buys +0.6 then +0.4,
-  // against 0.5 for keeping the 5 coins; a rest shift (+1.0) is worth about what an
-  // average fishing shift earns (2 food ≈ 10 coins ≈ 1 point).
+  // The goal: the best life — total wellbeing over the run, and nothing else. It is counted
+  // every meal period (every round), per agent. Diminishing: a second food per meal is worth
+  // less than the first, a third less again. Calibrated so the choices are close at opening
+  // prices: one extra food (5.00) buys +0.6 then +0.4.
   WELLBEING: {
     EAT: [-2, 1.0, 1.6, 2.0],   // per meal, by food eaten: none (a missed meal), 1, 2, 3
     WARM: 0.5,                  // per meal period while the fire is lit
     COLD: -1,                   // per meal period while it is out
     HOUSE: 1.5,                 // per meal period while you own a house (pledged or not)
-    REST: 1.0,                  // per rest shift the agent chose
-    COINS_PER_POINT: 10,        // at the end, every 10 coins of net worth = 1 point
   },
   LIFESTYLE_START: 1,           // food per meal (1–3) until an agent sets its own
-  HOUSE_WARMTH: 2,              // a house makes firewood last this many times longer
-  HOUSE_STORE: 10,              // a (finished) house keeps this much of its owner's free food from rotting
 
-  // The fish lake: one shared stock. A shift's catch = base yield × skill × (2 with a
-  // net) × stock / capacity, and the catch leaves the lake. It regrows logistically every
-  // round: + REGROWTH × stock × (1 − stock / capacity), fastest at half full
-  // (REGROWTH × capacity / 4 a round). Capacity scales with the village. At 30 agents:
-  // capacity 1800, and the most it can sustain is 48 fish a round — everyone eating
-  // ~1.6 food a meal (before rot), not 3. (A round is one meal; REGROWTH was 0.08 when a
-  // round was 3/4 of a meal, and is scaled so the lake feeds the same per meal.) The lake
-  // settles where catch = regrowth: 30 agents fishing every shift without nets (~60 a round
-  // from a full lake) hold it near 69%; with nets (~120) near 38%. Left alone it refills
-  // from 20% to 90% in ~34 rounds.
-  LAKE: {
-    CAPACITY: +env.LAKE_CAPACITY || 60,    // fish per villager
-    REGROWTH: +env.LAKE_REGROWTH || 0.107, // logistic growth rate, per round
-    START:    +env.LAKE_START    || 1.0,   // share of capacity at the start
-    FLOOR: 0.05,                           // regrowth never falls below that of a lake this full (fish swim in from the river)
-  },
+  // Fishing conditions: a plain multiplier on what a fishing shift catches. There is no
+  // lake stock any more — this is the "bad fishing season" dial the panel will pull mid-run.
+  CATCH: +env.CATCH || 1.0,
 
   // The village bank, enforced on-chain. It is the ONLY way new coins come into being:
   // it mints them as a loan against pledged goods, and burns the principal when repaid.
   // A public bank: its terms are policy (set here, later by the central-bank panel), not
-  // chosen to make a profit. Interest and penalties go to its capital; what it holds
-  // beyond the capital it must keep is paid out to every agent equally as a dividend.
+  // chosen to make a profit. Interest and penalties go to its capital.
   BANK: {
     // Credit on/off. CREDIT=0 is the no-credit regime: LTV 0, so the chain lends nothing.
     CREDIT: env.CREDIT !== '0',
     LTV: env.CREDIT === '0' ? 0 : (+env.BANK_LTV || 0.60),   // a loan may be at most 60% of the collateral's value
-    MARGIN: 0.80,          // margin call (anyone may foreclose) once debt > 80% of the collateral at last prices
-    PENALTY: 0.10,         // added to the debt at foreclosure (late or margin), to the bank's capital
+    // Margin calls are off: the keeper forecloses overdue loans only. The chain still knows
+    // how (the instruction is unchanged), so this is set as loose as lib.rs allows
+    // (ltv_bps <= margin_bps <= 10_000) and world.mjs's keeper never cites it.
+    MARGIN: 1.0,
+    PENALTY: 0.10,         // added to the debt at foreclosure, to the bank's capital
     RATE_PER_MIN: +env.BANK_RATE || 0.05,   // interest per minute of real time, charged pro-rata per slot for the time the loan is held
-    // The borrower picks the term in rounds. The chain counts slots: a new loan is sent with
+    // Every loan runs the same term. The chain counts slots: a new loan is sent with
     // TERM_SLACK × term × the measured slots per round, so its on-chain deadline comes no
-    // later than the promised round; the keeper collects at the promised round, not before
-    // (unless a margin call). Agents see interest per round at the measured round length.
-    TERM_ROUNDS: [10, 20, 30],
+    // later than the promised round; the keeper collects at the promised round, not before.
+    // Agents see interest per round at the measured round length.
+    TERM_ROUNDS: 30,
     TERM_SLACK: 0.8,
     // The bank's opening equity, as a share of the starting money. With KAPPA 0.10 it can
     // lend 10× its equity, so 0.10 lets debt reach the whole starting money supply
@@ -124,8 +107,8 @@ export const CFG = {
     // defaults can cause.
     SEED: 0.10,
     KAPPA: 0.10,           // capital ratio: all loans together <= equity / KAPPA
-    // Equity never paid out, as a share of the starting money: the seed plus a 10%
-    // buffer, so the bank pays out only profit beyond KAPPA × loans + this.
+    // Capital the bank must hold beyond KAPPA × loans, as a share of the starting money:
+    // the seed plus a 10% buffer.
     EQUITY_FLOOR: 0.11,
   },
   SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
