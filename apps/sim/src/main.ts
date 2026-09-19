@@ -4,7 +4,10 @@
 // built in parallel. The wiring lives here and only here.
 import { resolve } from 'node:path';
 import { Engine, JsonlRepository, computeMetrics, loadWorldFile } from '@aw/engine';
-import { createAgent, makeLens, type Agent, type EngineKind } from '@aw/agents';
+import {
+  createAgent, createProvider, makeLens,
+  type Agent, type EngineKind, type ProviderKind,
+} from '@aw/agents';
 import type { ActionProposal, SimEvent } from '@aw/types';
 import { CFG } from './config.ts';
 
@@ -38,6 +41,16 @@ async function main() {
   // deals the engines round-robin so the population actually trades with itself.
   const lens = makeLens(world);
   const mix = CFG.BRAIN === 'mix';
+
+  // One provider shared by every agent, so the concurrency limit is a real
+  // ceiling on in-flight requests rather than one per agent.
+  const provider = createProvider({
+    kind: CFG.PROVIDER as ProviderKind,
+    model: CFG.MODEL,
+    concurrency: CFG.LLM_CONCURRENCY,
+    onFallback: (reason) => console.warn(`[sim] ${reason}`),
+  });
+  const usesModel = CFG.BRAIN === 'llm' || CFG.BRAIN === 'hybrid' || mix;
   const kinds: EngineKind[] = ['hybrid', 'utility', 'rule', 'hybrid'];
   const agents: Agent[] = [];
   let n = 0;
@@ -49,6 +62,7 @@ async function main() {
       id, lens, kind,
       seed: world.seed ^ (n * 0x9e3779b1),
       walletAddress: addresses.get(id) ?? `offchain:${id}`,
+      ...(usesModel ? { provider } : {}),
     }));
     n++;
   }
@@ -59,7 +73,7 @@ async function main() {
   }, {});
   console.log(`[sim] ${world.name}: ${agents.length} agents, ${world.markets?.length ?? 0} markets`);
   console.log(`[sim] engines: ${Object.entries(tally).map(([k, v]) => `${v}x${k}`).join(' ')}`);
-  console.log(`[sim] brain=${CFG.BRAIN}  chain=${CFG.CHAIN ? CFG.RPC : 'off'}  ws://localhost:${CFG.PORT}`);
+  console.log(`[sim] brain=${CFG.BRAIN}  model=${provider.name === 'stub' ? 'stub' : `${provider.name}/${CFG.MODEL}`}  chain=${CFG.CHAIN ? CFG.RPC : 'off'}  ws://localhost:${CFG.PORT}`);
 
   let recent: SimEvent[] = [];
   let ticks = 0;

@@ -5,16 +5,16 @@
  */
 
 import type { LLMProvider } from '@aw/types';
-import { AnthropicProvider, MissingApiKeyError, type AnthropicOptions } from './anthropic.ts';
+import { OpenAIProvider, MissingOpenAIKeyError, type OpenAIOptions } from './openai.ts';
 import { StubProvider, type StubOptions } from './stub.ts';
 
 export { StubProvider, ScriptedProvider, parsePrompt, type StubOptions } from './stub.ts';
 export {
-  AnthropicProvider,
-  MissingApiKeyError,
-  DEFAULT_MODEL,
-  type AnthropicOptions,
-} from './anthropic.ts';
+  OpenAIProvider,
+  MissingOpenAIKeyError,
+  DEFAULT_OPENAI_MODEL,
+  type OpenAIOptions,
+} from './openai.ts';
 export {
   renderPrompt,
   systemPrompt,
@@ -23,9 +23,9 @@ export {
   type RenderedPrompt,
 } from './prompt.ts';
 
-export type ProviderKind = 'stub' | 'anthropic';
+export type ProviderKind = 'stub' | 'openai';
 
-export interface ProviderOptions extends AnthropicOptions, StubOptions {
+export interface ProviderOptions extends OpenAIOptions, StubOptions {
   kind?: ProviderKind;
   /** Called instead of console.warn when the chosen provider is unavailable. */
   onFallback?: (reason: string) => void;
@@ -37,12 +37,12 @@ export interface ProviderOptions extends AnthropicOptions, StubOptions {
  */
 export function createProvider(options: ProviderOptions = {}): LLMProvider {
   const kind = options.kind ?? 'stub';
-  if (kind !== 'anthropic') return new StubProvider(options);
+  if (kind === 'stub') return new StubProvider(options);
   try {
-    return new AnthropicProvider(options);
+    return new OpenAIProvider(options);
   } catch (error) {
     const reason =
-      error instanceof MissingApiKeyError
+      error instanceof MissingOpenAIKeyError
         ? 'no API key available'
         : `provider construction failed: ${String(error)}`;
     const notify = options.onFallback ?? ((message: string) => console.warn(`[agents] ${message}`));

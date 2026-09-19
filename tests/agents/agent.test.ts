@@ -10,8 +10,8 @@ import { createAgent, createPopulation } from '../../packages/agents/src/factory
 import { makeLens } from '../../packages/agents/src/lens.ts';
 import { makeTraits } from '../../packages/agents/src/traits.ts';
 import {
-  AnthropicProvider,
-  MissingApiKeyError,
+  OpenAIProvider,
+  MissingOpenAIKeyError,
   createProvider,
 } from '../../packages/agents/src/providers/index.ts';
 import { agentIds, loadWorld, makeEvents, makeState, shakeState, WORLD_FILES } from './fixtures.ts';
@@ -194,31 +194,32 @@ describe('provider selection', () => {
   });
 
   it('refuses to build the real provider without a key, and says why', () => {
-    const previous = process.env['ANTHROPIC_API_KEY'];
-    delete process.env['ANTHROPIC_API_KEY'];
+    const previous = process.env['OPENAI_API_KEY'];
+    delete process.env['OPENAI_API_KEY'];
     try {
-      expect(() => new AnthropicProvider()).toThrow(MissingApiKeyError);
-      expect(() => new AnthropicProvider()).toThrow(/ANTHROPIC_API_KEY/);
+      expect(() => new OpenAIProvider()).toThrow(MissingOpenAIKeyError);
+      expect(() => new OpenAIProvider()).toThrow(/OPENAI_API_KEY/);
     } finally {
-      if (previous !== undefined) process.env['ANTHROPIC_API_KEY'] = previous;
+      if (previous !== undefined) process.env['OPENAI_API_KEY'] = previous;
     }
   });
 
   it('falls back to the stub rather than crashing the simulation', () => {
-    const previous = process.env['ANTHROPIC_API_KEY'];
-    delete process.env['ANTHROPIC_API_KEY'];
+    const previous = process.env['OPENAI_API_KEY'];
+    delete process.env['OPENAI_API_KEY'];
     const reasons: string[] = [];
     try {
-      const provider = createProvider({ kind: 'anthropic', onFallback: (r) => reasons.push(r) });
+      const provider = createProvider({ kind: 'openai', onFallback: (r) => reasons.push(r) });
       expect(provider.name).toBe('stub');
       expect(reasons[0]).toContain('no API key');
     } finally {
-      if (previous !== undefined) process.env['ANTHROPIC_API_KEY'] = previous;
+      if (previous !== undefined) process.env['OPENAI_API_KEY'] = previous;
     }
   });
 
   it('builds the real provider when a key is supplied, without calling out', () => {
-    const provider = new AnthropicProvider({ apiKey: 'test-key-not-used' });
-    expect(provider.name).toBe('anthropic');
+    const provider = new OpenAIProvider({ apiKey: 'test-key-not-used' });
+    expect(provider.name).toBe('openai');
+    expect(provider).toBeInstanceOf(OpenAIProvider);
   });
 });

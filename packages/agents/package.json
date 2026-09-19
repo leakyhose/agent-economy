@@ -5,6 +5,6 @@
   "main": "src/index.ts",
   "dependencies": {
     "@aw/types": "workspace:*",
-    "@anthropic-ai/sdk": "^0.68.0"
+    "openai": "^7.19.0"
   }
 }

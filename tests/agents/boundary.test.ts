@@ -33,7 +33,7 @@ function relative(path: string): string {
 }
 
 const FILES = sourceFiles();
-const ALLOWED_PACKAGES = new Set(['@aw/types', '@anthropic-ai/sdk']);
+const ALLOWED_PACKAGES = new Set(['@aw/types', 'openai']);
 
 /** Symbols that only exist where key material does. Case-sensitive on purpose:
  *  the prose in these files discusses private keys, it must not touch them. */
