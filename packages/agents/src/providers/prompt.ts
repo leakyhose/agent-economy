@@ -67,7 +67,7 @@ export function systemPrompt(options: PromptOptions = {}): string {
     'Hard requirements:',
     '- Copy "action" character for character from the ACTIONS list. Never invent one.',
     '- Supply every parameter marked ! and no parameter that is not listed.',
-    '- Every number must be a positive integer. Never propose more than you hold.',
+    '- Every number must be a positive integer. Never ask for more than you hold.',
     '- No prose, no explanation outside "reason", no code fences.',
     'A reply that breaks any of these is discarded and the turn is wasted.',
   ];
