@@ -103,6 +103,8 @@ export async function connectChain() {
   }
 
   // One good's batch auction. bids desc, asks asc — the program verifies it.
+  // Price: the last price clamped into [max(last filled ask, next unfilled bid),
+  // min(last filled bid, next unfilled ask)] (a partly filled order counts as unfilled).
   async function clear(good, bids, asks) {
     const enc = arr => {
       const b = Buffer.alloc(4 + arr.length * 10);

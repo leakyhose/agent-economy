@@ -24,32 +24,33 @@ export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
   BRAIN:        env.BRAIN        || 'stub',            // stub | openai | claude
   MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : 'gpt-5.6-luna'),
-  TICK_MS:     +env.TICK_MS     || 500,               // one game tick
-  ROUND_TICKS: +env.ROUND_TICKS || 6,                 // market clears every N ticks
-  EAT_TICKS:   +env.EAT_TICKS   || 8,                 // each agent eats 1 food every N ticks
-  STAGGER_MS:  +env.STAGGER_MS  || 6000,              // agents wake up spread over this window
+  // Time is counted in rounds. Every round, all agents decide at once (the clock waits
+  // for the slowest, up to DECIDE_TIMEOUT_MS), then everyone works one shift, eats one
+  // meal, fires burn, goods rot, the lake regrows and the market clears on-chain.
+  DECIDE_TIMEOUT_MS: +env.DECIDE_TIMEOUT_MS || 8000,   // an agent that hasn't answered by then keeps its last job and posts no orders
   // cents. A house (~70 coins) can't be bought outright from this, so buying or
   // building one needs savings or a loan.
   START_CASH:  +env.START_CASH  || 3000,
   START_FOOD:  +env.START_FOOD  || 6,
   START_WOOD:  +env.START_WOOD  || 4,
-  WARM_TICKS:  +env.WARM_TICKS  || 16,                // each agent burns 1 wood every N ticks to keep warm
-  LLM_CONCURRENCY: +env.LLM_CONCURRENCY || 12,
+  WARM_ROUNDS: +env.WARM_ROUNDS || 2,                 // each agent burns 1 wood every N rounds to keep warm (a meal is every round)
+  LLM_CONCURRENCY: +env.LLM_CONCURRENCY || 64,        // every agent decides at once each round: keep it >= AGENTS
   RUN_SECONDS: +env.RUN_SECONDS || 0,                 // 0 = run forever
   PORT:        +env.PORT        || 8787,
   RPC:          env.RPC          || 'http://127.0.0.1:8899',
   SEED:        +env.SEED        || 12345,             // same seed = same names, traits, skills
 
+  // Every job takes one shift, and a shift is one round.
   TASKS: {
-    gather_food: { ticks: 6, yield: 2, netYield: 4, place: 'docks' },   // one fisher feeds ~2 people
-    gather_wood: { ticks: 6, yield: 3,               place: 'forest' },
-    craft_net:   { ticks: 4, wood: 4,                place: 'workshop' },
+    gather_food: { yield: 2, netYield: 4, place: 'docks' },   // one fisher feeds ~2 people
+    gather_wood: { yield: 3,               place: 'forest' },
+    craft_net:   { wood: 4,                place: 'workshop' },
     // A house: the wood (divided by crafting skill, like a net) is used up when the build
     // starts, and the house exists on-chain from then on, unfinished, so it can be pledged
     // for a construction loan. It gives nothing and can't be sold until `shifts` building
     // shifts are done; a build left for other work waits, unfinished, until resumed.
-    build_house: { ticks: 6, wood: 16, shifts: 3,    place: 'building site' },
-    idle:        { ticks: 6,                          place: 'square' },
+    build_house: { wood: 16, shifts: 3,    place: 'building site' },
+    idle:        {                        place: 'square' },
   },
   // Every villager draws a random skill per job at birth (1.0 = average). It multiplies
   // what a shift yields; for craft_net it divides the wood a net costs. Nothing assigns
@@ -63,7 +64,7 @@ export const CFG = {
   HUNGRY_PENALTY: 0.5,     // hungry agents gather half as much
   COLD_PENALTY: 0.5,       // so do cold ones (2+ missed fires); both together = a quarter
 
-  // The goal: the best life. Wellbeing is counted every meal period (EAT_TICKS), per
+  // The goal: the best life. Wellbeing is counted every meal period (every round), per
   // agent, and at the end net worth is added at COINS_PER_POINT. Diminishing: a second
   // food per meal is worth less than the first, a third less again. Calibrated so the
   // choices are close at opening prices: one extra food (5.00) buys +0.6 then +0.4,
@@ -85,14 +86,15 @@ export const CFG = {
   // net) × stock / capacity, and the catch leaves the lake. It regrows logistically every
   // round: + REGROWTH × stock × (1 − stock / capacity), fastest at half full
   // (REGROWTH × capacity / 4 a round). Capacity scales with the village. At 30 agents:
-  // capacity 1800, and the most it can sustain is 36 fish a round — everyone eating
-  // ~1.6 food a meal (before rot), not 3. The lake settles where catch = regrowth:
-  // 30 agents fishing every shift without nets (~60 a round from a full lake) hold it
-  // near 58%; with nets (~120) near 17%. Left alone it refills from 20% to 90% in ~45
-  // rounds (~2.5 min).
+  // capacity 1800, and the most it can sustain is 48 fish a round — everyone eating
+  // ~1.6 food a meal (before rot), not 3. (A round is one meal; REGROWTH was 0.08 when a
+  // round was 3/4 of a meal, and is scaled so the lake feeds the same per meal.) The lake
+  // settles where catch = regrowth: 30 agents fishing every shift without nets (~60 a round
+  // from a full lake) hold it near 69%; with nets (~120) near 38%. Left alone it refills
+  // from 20% to 90% in ~34 rounds.
   LAKE: {
     CAPACITY: +env.LAKE_CAPACITY || 60,    // fish per villager
-    REGROWTH: +env.LAKE_REGROWTH || 0.08,  // logistic growth rate, per market round
+    REGROWTH: +env.LAKE_REGROWTH || 0.107, // logistic growth rate, per round
     START:    +env.LAKE_START    || 1.0,   // share of capacity at the start
     FLOOR: 0.05,                           // regrowth never falls below that of a lake this full (fish swim in from the river)
   },
@@ -108,8 +110,13 @@ export const CFG = {
     LTV: env.CREDIT === '0' ? 0 : (+env.BANK_LTV || 0.60),   // a loan may be at most 60% of the collateral's value
     MARGIN: 0.80,          // margin call (anyone may foreclose) once debt > 80% of the collateral at last prices
     PENALTY: 0.10,         // added to the debt at foreclosure (late or margin), to the bank's capital
-    RATE_PER_MIN: +env.BANK_RATE || 0.05,   // interest, charged pro-rata per slot for the time the loan is held
-    MAX_TERM_MINUTES: 3,                    // the borrower picks the term: 1, 2 or 3 minutes
+    RATE_PER_MIN: +env.BANK_RATE || 0.05,   // interest per minute of real time, charged pro-rata per slot for the time the loan is held
+    // The borrower picks the term in rounds. The chain counts slots: a new loan is sent with
+    // TERM_SLACK × term × the measured slots per round, so its on-chain deadline comes no
+    // later than the promised round; the keeper collects at the promised round, not before
+    // (unless a margin call). Agents see interest per round at the measured round length.
+    TERM_ROUNDS: [10, 20, 30],
+    TERM_SLACK: 0.8,
     // The bank's opening equity, as a share of the starting money. With KAPPA 0.10 it can
     // lend 10× its equity, so 0.10 lets debt reach the whole starting money supply
     // (30 agents × 30 coins = 900: room for ~20 house loans at 60% of 70) while losing
@@ -121,11 +128,16 @@ export const CFG = {
     // buffer, so the bank pays out only profit beyond KAPPA × loans + this.
     EQUITY_FLOOR: 0.11,
   },
-  SLOT_MS: 400,            // assumed slot time: a minute of loan term or interest is 60000 / SLOT_MS slots
+  SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
+  ROUND_MS_GUESS: 1500,    // round length assumed before the first round is measured (short is safe: see TERM_SLACK)
   START_PRICES: [500, 300, 2000, 8000, 7000],   // cents: food, wood, nets, boats, houses
-  // The price index: a fixed basket, what one villager uses in a minute at lifestyle 1
-  // (15 meals, 3.75 wood for the fire) plus a little of the durables. Index 1.00 = this
+  // The price index: a fixed basket (15 meals at lifestyle 1, some firewood, a little of the
+  // durables), unchanged since rounds became turns so runs stay comparable. Index 1.00 = this
   // basket at START_PRICES. Inflation is its change over the last INFLATION_ROUNDS.
   PRICE_BASKET: [15, 3.75, 0.1, 0, 0.02],
-  INFLATION_ROUNDS: 20,    // a minute at 3s rounds
+  INFLATION_ROUNDS: 20,
+  // D6: agents see last round's order book as a depth ladder (top levels per side).
+  // Off: best bid / cheapest ask only.
+  LADDER: env.LADDER !== '0',
+  BANK_SALE_STEP: 0.05,    // the bank's sale of seized goods starts at the last price and drops this much a round it goes unsold
 };

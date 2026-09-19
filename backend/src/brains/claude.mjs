@@ -18,7 +18,7 @@ function semaphore(n) {
 export function claudeBrain() {
   const client = new Anthropic();
   const limit = semaphore(CFG.LLM_CONCURRENCY);
-  const s = { calls: 0, inTok: 0, outTok: 0, cacheRead: 0, errors: 0, rateLimited: 0 };
+  const s = { calls: 0, inTok: 0, outTok: 0, cacheRead: 0, errors: 0, rateLimited: 0, timedOut: 0 };
 
   return {
     name: `claude (${CFG.MODEL})`,
@@ -37,18 +37,21 @@ export function claudeBrain() {
             tools: t.defs,
             cache_control: { type: 'ephemeral' },
             messages,
-          }));
+          }, { signal: t.signal }));
         } catch (e) {
+          if (t.signal?.aborted) { s.timedOut++; return; }   // the round stopped waiting
+
           if (e instanceof Anthropic.RateLimitError) { s.rateLimited++; await new Promise(r => setTimeout(r, 2000)); continue; }
           s.errors++;
           if (s.errors <= 3) console.error(`[claude] ${e.status ?? ''} ${e.message}`);
-          return;                      // agent sits out one round; server marks it idle
+          return;                      // not an answer: the agent keeps its last job and posts no orders
         }
         s.calls++;
         s.inTok += r.usage.input_tokens + (r.usage.cache_read_input_tokens ?? 0) + (r.usage.cache_creation_input_tokens ?? 0);
         s.cacheRead += r.usage.cache_read_input_tokens ?? 0;
         s.outTok += r.usage.output_tokens;
 
+        t.acted.answered = true;
         const text = r.content.filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
         if (text) a.thought = text.slice(0, 240);
         const uses = r.content.filter(b => b.type === 'tool_use');

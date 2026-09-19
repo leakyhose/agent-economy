@@ -1,65 +1,122 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agent-economy</title>
 <style>
   body { font: 13px ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
-  h1 { font-size: 15px; margin: 0 0 12px; }
+  h1 { font-size: 18px; margin: 0; display: inline; }
   button { font: inherit; padding: 4px 14px; cursor: pointer; }
+  a { color: #2458a6; }
+  .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  .top button { font-size: 15px; padding: 6px 20px; font-weight: bold; }
+  #status { font-size: 14px; }
+  #headline { color: #444; margin: 4px 0 12px; line-height: 1.6; }
   .box { border: 1px solid #ccc; padding: 8px 10px; margin: 10px 0; }
   table { border-collapse: collapse; width: 100%; }
   td, th { padding: 2px 8px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
   td.n, th.n { text-align: right; }
   td.t { white-space: normal; color: #555; }
   .hungry { color: #b00; }
-  .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; }
+  .muted { color: #666; }
+  .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; box-sizing: border-box; }
   .chart svg { display: block; width: 100%; height: auto; }
   .chart .head { display: flex; justify-content: space-between; margin-bottom: 2px; }
   .up { color: #1a7f37; } .down { color: #b00; }
+
+  /* the headline charts: two columns on a laptop, one on a narrow screen */
+  .big { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 12px; margin: 12px 0; }
+  .big .chart { width: auto; padding: 8px 12px; }
+  .big .chart .head b { font-size: 14px; }
+  .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  #cb-panel:empty { display: none; }       /* reserved: the central-bank controls go here, above money & credit */
+
+  /* the small tiles: a number and a sparkline, click to open the full chart */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 8px; margin: 12px 0 0; }
+  .tile { border: 1px solid #ccc; padding: 6px 8px; cursor: pointer; user-select: none; }
+  .tile:hover { border-color: #888; }
+  .tile.on { border-color: #2458a6; box-shadow: inset 0 -2px 0 #2458a6; }
+  .tile .lab { color: #666; font-size: 11px; display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
+  .tile .lab span:last-child { overflow: hidden; text-overflow: ellipsis; color: #999; }
+  .tile .val { font-size: 18px; font-weight: bold; margin: 2px 0; }
+  .tile svg { display: block; width: 100%; height: 26px; }
+  #tile-open { margin-top: 8px; }
+  #tile-open .chart { width: auto; }
+
+  #wealth svg { display: block; width: 100%; height: auto; }
+  #bankfeed .feed { max-height: 420px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px; }
+  #bankfeed .feed div { padding: 1px 0; }
+
+  details.more { border: 1px solid #ccc; padding: 6px 10px; margin: 12px 0; }
+  details.more > summary { cursor: pointer; font-weight: bold; padding: 2px 0; }
+  .small { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0; }
+  .scroll { overflow-x: auto; }
+  h3 { font-size: 13px; margin: 14px 0 4px; }
 </style>
 
-<h1>agent-economy</h1>
-<button id="btn" onclick="toggle()">…</button>
-<span id="status"></span>
+<div class="top">
+  <h1>agent-economy</h1>
+  <button id="btn" onclick="toggle()">…</button>
+  <span id="status"></span>
+</div>
+<div id="headline"></div>
 
-<div class="box" id="world">not running</div>
+<div id="dash" style="display:none">
+  <div class="tiles" id="tiles"></div>
+  <div id="tile-open"></div>
 
-<div id="market" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
-  <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
-  <div class="box" id="book" style="margin:0; min-width:260px; flex:1"></div>
-</div>
-<div id="macro" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
-  <div class="chart" id="k-gdp"></div><div class="chart" id="k-cpi"></div><div class="chart" id="k-emp"></div>
-  <div class="chart" id="k-slack"></div><div class="chart" id="k-wb"></div><div class="chart" id="k-gini"></div>
-  <div class="chart" id="k-houses"></div>
-</div>
-<div id="econ" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
-  <div class="chart" id="k-money"></div><div class="chart" id="k-debt"></div><div class="chart" id="k-bank"></div>
-  <div class="chart" id="k-fore"></div><div class="chart" id="k-jobs"></div>
-  <div class="chart" id="k-needs"></div><div class="chart" id="k-held"></div>
-</div>
-<div id="econ2" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
-  <div class="box" id="wealth" style="margin:0; width:540px"></div>
-  <div class="box" id="bankfeed" style="margin:0; min-width:300px"></div>
-</div>
-<div class="box" id="events"></div>
+  <div class="big">
+    <div class="chart" id="k-gdp"></div>
+    <div class="col">
+      <div id="cb-panel"></div>
+      <div class="chart" id="k-money"></div>
+    </div>
+    <div class="chart" id="k-prices"></div>
+    <div class="chart" id="k-jobs"></div>
+    <div class="chart" id="wealth"></div>
+    <div class="chart" id="bankfeed"></div>
+  </div>
 
-<table>
-  <thead><tr>
-    <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
-    <th class="n">wood</th><th class="n">nets</th><th class="n">boats</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
-    <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>last thought</th>
-  </tr></thead>
-  <tbody id="rows"></tbody>
-</table>
+  <details class="more" id="more">
+    <summary>details: order book, loans, needs, goods, per-good prices, round log, every agent</summary>
+    <div class="box" id="world"></div>
+    <div class="small">
+      <div class="box" id="book" style="margin:0; min-width:300px; flex:1"></div>
+    </div>
+    <div class="small">
+      <div class="chart" id="k-fore"></div><div class="chart" id="k-needs"></div>
+      <div class="chart" id="k-held"></div><div class="chart" id="k-slack"></div>
+    </div>
+    <div class="small">
+      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
+    </div>
+    <h3>round log</h3>
+    <div class="box" id="events" style="margin-top:0"></div>
+    <h3>agents <button id="allbtn" onclick="showAll = !showAll; agentTable()" style="font-size:11px; padding:1px 8px"></button></h3>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
+        <th class="n">wood</th><th class="n">nets</th><th class="n">boats</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
+        <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>standing orders</th><th>last thought</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </details>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
 const GN = ['food', 'wood', 'nets', 'boats', 'houses'];   // good index -> name, same order as the chain
+const GC = ['#2f7fc1', '#8a5a2b', '#7b4fb0', '#333', '#c77700'];   // one colour per good, used everywhere
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
+const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 let running = false;
 let last = null;                     // last /state, so hover can redraw without a fetch
+let showAll = false;                 // agent table: top 10 by net worth, or everyone
 const hover = GN.map(() => null);   // hovered round index per chart
+const detailsOpen = () => $('more').open;
+// a Solana explorer link for a transaction, on the same cluster as the ledger link the server gives
+const txUrl = sig => last.chain.explorer.replace(/\/address\/[^?]+/, '/tx/' + sig);
 
 // ---- a small live chart: price as a step line (it only changes when a trade clears),
 //      volume as bars underneath, hover shows the exact round.
@@ -113,17 +170,22 @@ function chart(g) {
   hit.onmouseleave = () => { hover[g] = null; chart(g); };
 }
 
-// ---- a small multi-line chart over rounds. series: [{ name, color, get(h), dash? }]
+// ---- a multi-line chart over rounds. series: [{ name, color, get(h), dash?, legend? }]
 //      stacked: draw as stacked bars instead (for counts that add up, like jobs).
+//      w / ph: size in svg units (the big charts are wider and taller, with bigger text);
+//      ref: a dashed reference level; tip(k): the hover text for round index k.
 const khover = {};
-function lines(id, title, series, { fmt = v => v.toFixed(0), stacked = false, note = '', zero = true } = {}) {
-  const el = $(id), h = last.history, W = 300, PH = 110, PAD = 40, top = 6, H = top + PH + 30;
-  const legend = series.map(s => `<span style="color:${s.color}">■ ${s.name} ${fmt(h.length ? s.get(h.at(-1)) : 0)}</span>`).join('  ');
-  const head = `<div class="head"><b>${title}</b></div><div style="font-size:11px">${legend}</div>`;
+function lines(id, title, series, opts = {}) {
+  const { fmt = v => v.toFixed(0), stacked = false, note = '', zero = true, w = 300, ph = 110, ref = null, tip: tipText = null, sub = '' } = opts;
+  const el = $(id), h = last.history, W = w, PH = ph, big = W > 400, fs = big ? 11 : 9, PAD = big ? 52 : 40, top = 6, H = top + PH + (big ? 34 : 30);
+  const legend = series.filter(s => s.legend !== false).map(s =>
+    `<span style="color:${s.color}; white-space:nowrap">■ ${s.name} ${s.label ? s.label() : fmt(h.length ? s.get(h.at(-1)) : 0)}</span>`).join('  ');
+  const head = `<div class="head"><b>${title}</b><span class="muted">${sub}</span></div><div style="font-size:${big ? 12 : 11}px">${legend}</div>`;
   if (h.length < 2) { el.innerHTML = head + '<div style="color:#888;padding:30px 0">waiting for rounds…</div>'; return; }
   const vals = series.map(s => h.map(s.get));
   const tops = stacked ? h.map((_, i) => vals.reduce((t, v) => t + v[i], 0)) : vals.flat();
-  let lo = stacked || zero ? Math.min(0, ...vals.flat()) : Math.min(...vals.flat()), hi = Math.max(zero ? 1 : lo + 1, ...tops);
+  const all = ref == null ? vals.flat() : [...vals.flat(), ref];
+  let lo = stacked || zero ? Math.min(0, ...all) : Math.min(...all), hi = Math.max(zero ? 1 : lo + 1, ...tops, ...(ref == null ? [] : [ref]));
   if (!zero) { const p = (hi - lo) * 0.1; lo -= p; hi += p; }
   const x = i => PAD + i / (h.length - 1) * (W - PAD - 4);
   const y = v => top + (hi - v) / (hi - lo) * PH;
@@ -133,167 +195,279 @@ function lines(id, title, series, { fmt = v => v.toFixed(0), stacked = false, no
     h.forEach((_, i) => { let acc = 0; series.forEach((s, k) => { const v = vals[k][i]; if (!v) return;
       body += `<rect x="${x(i) - bw / 2}" y="${y(acc + v)}" width="${bw}" height="${y(acc) - y(acc + v)}" fill="${s.color}"/>`; acc += v; }); });
   } else {
-    series.forEach((s, k) => { body += `<path d="${vals[k].map((v, i) => `${i ? 'L' : 'M'}${x(i)},${y(v)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="4 3"' : ''}/>`; });
+    series.forEach((s, k) => { body += `<path d="${vals[k].map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="${s.width ?? 2}" stroke-linejoin="round" ${s.dash ? 'stroke-dasharray="4 3"' : ''}/>`; });
   }
+  const refLine = ref == null ? '' : `<line x1="${PAD}" x2="${W - 4}" y1="${y(ref)}" y2="${y(ref)}" stroke="#aaa" stroke-dasharray="4 3"/>` +
+    (Math.min(Math.abs(y(ref) - y(lo)), Math.abs(y(ref) - y(hi))) < fs + 2 ? '' :   // no label when it would sit on an axis label
+    `<text x="${PAD - 4}" y="${y(ref) + 3}" text-anchor="end" font-size="${fs}" fill="#888">${fmt(ref)}</text>`);
   const k = khover[id];
   const tip = k == null ? '' : `<line x1="${x(k)}" x2="${x(k)}" y1="${top}" y2="${top + PH}" stroke="#999" stroke-dasharray="2 2"/>` +
-    `<text x="${x(k) > W / 2 ? x(k) - 6 : x(k) + 6}" y="${top + 10}" text-anchor="${x(k) > W / 2 ? 'end' : 'start'}" font-size="10" fill="#111">` +
-    `r${h[k].round}: ${series.map((s, j) => `${s.name} ${fmt(vals[j][k])}`).join(', ')}</text>`;
+    `<text x="${x(k) > W / 2 ? x(k) - 6 : x(k) + 6}" y="${top + fs + 1}" text-anchor="${x(k) > W / 2 ? 'end' : 'start'}" font-size="${fs + 1}" fill="#111" stroke="#fff" stroke-width="3" paint-order="stroke">` +
+    `r${h[k].round}: ${tipText ? tipText(k) : series.filter(s => s.legend !== false).map((s, j) => `${s.name} ${fmt(vals[series.indexOf(s)][k])}`).join(', ')}</text>`;
   el.innerHTML = head + `<svg viewBox="0 0 ${W} ${H}">
     <line x1="${PAD}" x2="${W - 4}" y1="${y(hi)}" y2="${y(hi)}" stroke="#eee"/><line x1="${PAD}" x2="${W - 4}" y1="${y(lo)}" y2="${y(lo)}" stroke="#ccc"/>
-    <text x="${PAD - 4}" y="${y(hi) + 3}" text-anchor="end" font-size="9" fill="#888">${fmt(hi)}</text>
-    <text x="${PAD - 4}" y="${y(lo) + 3}" text-anchor="end" font-size="9" fill="#888">${fmt(lo)}</text>
-    ${body}
-    <text x="${PAD}" y="${top + PH + 12}" font-size="9" fill="#888">round ${h[0].round}</text>
-    <text x="${W - 4}" y="${top + PH + 12}" text-anchor="end" font-size="9" fill="#888">round ${h.at(-1).round}</text>
-    <text x="${PAD}" y="${H - 2}" font-size="9" fill="#666">${note}</text>
+    <text x="${PAD - 4}" y="${y(hi) + 3}" text-anchor="end" font-size="${fs}" fill="#888">${fmt(hi)}</text>
+    <text x="${PAD - 4}" y="${y(lo) + 3}" text-anchor="end" font-size="${fs}" fill="#888">${fmt(lo)}</text>
+    ${refLine}${body}
+    <text x="${PAD}" y="${top + PH + fs + 3}" font-size="${fs}" fill="#888">round ${h[0].round}</text>
+    <text x="${W - 4}" y="${top + PH + fs + 3}" text-anchor="end" font-size="${fs}" fill="#888">round ${h.at(-1).round}</text>
+    <text x="${PAD}" y="${H - 2}" font-size="${fs}" fill="#666">${note}</text>
     ${tip}<rect x="${PAD}" y="0" width="${W - PAD}" height="${top + PH}" fill="transparent" data-k="1"/></svg>`;
-  const hit = el.querySelector('rect[data-k]');
+  const hit = el.querySelector('rect[data-k]'), redraw = () => lines(id, title, series, opts);
   hit.onmousemove = ev => { const r = hit.getBoundingClientRect();
-    khover[id] = Math.max(0, Math.min(h.length - 1, Math.round((ev.clientX - r.left) / r.width * (h.length - 1)))); econ(); };
-  hit.onmouseleave = () => { khover[id] = null; econ(); };
+    khover[id] = Math.max(0, Math.min(h.length - 1, Math.round((ev.clientX - r.left) / r.width * (h.length - 1)))); redraw(); };
+  hit.onmouseleave = () => { khover[id] = null; redraw(); };
+}
+const BIG = { w: 640, ph: 160 };
+
+// ---- a tiny sparkline for a tile
+function spark(vals, color) {
+  if (vals.length < 2) return '<svg></svg>';
+  let lo = Math.min(...vals), hi = Math.max(...vals); if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * 100).toFixed(2)},${(24 - (v - lo) / (hi - lo) * 22).toFixed(2)}`).join(' ');
+  return `<svg viewBox="0 0 100 26" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 // average of a per-round series over the last k rounds (per-round numbers are noisy)
 const rolling = (get, k) => last.history.map((_, i, h) => { const w = h.slice(Math.max(0, i - k + 1), i + 1).map(get).filter(v => v != null);
   return w.length ? w.reduce((s, v) => s + v, 0) / w.length : 0; });
 
-function macro() {
-  const h = last.history;
-  if (!h.length || h[0].gdp === undefined) return;
-  const gdp10 = rolling(x => x.gdp, 10), emp5 = rolling(x => x.employment, 5), wb5 = rolling(x => x.wbRound, 5);
-  h.forEach((x, i) => { x.gdp10 = gdp10[i]; x.emp5 = emp5[i] * 100; x.wb5 = wb5[i] * 20; });   // 20 rounds a minute
-  const m = h.at(-1), infl = m.inflation == null ? 'n/a yet' : `${m.inflation > 0 ? '+' : ''}${(m.inflation * 100).toFixed(1)}%`;
+// ---- the tiles: value, sparkline, and the full chart they open into
+let openTile = null;
+const TILES = [
+  { id: 'infl', label: 'inflation', sub: '20 rds', color: '#b00',
+    val: m => m.inflation == null ? 'n/a' : pct(m.inflation), spark: x => x.priceIndex,
+    full: () => lines('tile-chart', 'price index (1 = start)', [
+      { name: 'index', color: '#b00', get: x => x.priceIndex },
+    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(2), zero: false, ref: 1, note: 'the basket at last prices; inflation = its change over the last 20 rounds' }) },
+  { id: 'wb', label: 'wellbeing', sub: 'per round', color: '#1a7f37',
+    val: m => (m.wb5 >= 0 ? '+' : '') + (m.wb5 ?? 0).toFixed(2), spark: x => x.wb5,
+    full: () => lines('tile-chart', 'wellbeing per agent', [
+      { name: 'total so far', color: '#2458a6', get: x => x.wellbeing },
+      { name: 'per round (5-round avg)', color: '#1a7f37', get: x => x.wb5 },
+    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(1), note: 'average over agents' }) },
+  { id: 'emp', label: 'employment', sub: '5-rd avg', color: '#1a7f37',
+    val: m => m.emp5.toFixed(0) + '%', spark: x => x.emp5,
+    full: () => lines('tile-chart', 'employment %', [
+      { name: 'worked, 5-round avg', color: '#1a7f37', get: x => x.emp5 },
+    ], { ...BIG, ph: 100, w: 1000, note: 'worked / all shifts finished (incl. rest)' }) },
+  { id: 'gini', label: 'inequality', sub: 'Gini', color: '#7b4fb0',
+    val: m => m.gini.toFixed(2), spark: x => x.gini,
+    full: () => lines('tile-chart', 'inequality (Gini, net worth)', [
+      { name: 'gini', color: '#7b4fb0', get: x => x.gini },
+    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(2), note: '0 = equal; net worth at what goods sell for' }) },
+  { id: 'houses', label: 'houses built', sub: '', color: '#c77700',
+    val: m => `${m.housesBuilt ?? 0}`, spark: x => x.housesBuilt ?? 0,
+    full: () => lines('tile-chart', 'houses', [
+      { name: 'lived in', color: '#1a7f37', get: x => x.homeowners },
+      { name: 'being built', color: '#c77700', get: x => x.building },
+      { name: 'built (total)', color: '#2458a6', get: x => x.housesBuilt, dash: true },
+    ], { ...BIG, ph: 100, w: 1000, note: `out of ${last.agents.length} agents` }) },
+  { id: 'lake', label: 'lake level', sub: 'fish', color: '#2a9dbf',
+    val: m => Math.round((m.lake ?? 0) * 100) + '%', spark: x => x.lake ?? 0,
+    full: () => lines('tile-chart', 'the fish lake, % full', [
+      { name: 'stock', color: '#2a9dbf', get: x => (x.lake ?? 0) * 100 },
+    ], { ...BIG, ph: 100, w: 1000, note: 'one shared lake: overfishing lowers everyone\'s catch' }) },
+  { id: 'bank', label: 'bank capital', sub: 'equity', color: '#2458a6',
+    val: m => m.equity.toFixed(1), spark: x => x.equity,
+    full: () => lines('tile-chart', 'bank capital (totals)', [
+      { name: 'equity', color: '#2458a6', get: x => x.equity },
+      { name: 'dividends', color: '#1a7f37', get: x => x.dividends },
+      { name: 'written off', color: '#b00', get: x => x.writtenOff },
+      { name: 'bad debt', color: '#b00', get: x => x.badDebt, dash: true },
+    ], { ...BIG, ph: 100, w: 1000, fmt: v => v.toFixed(1), note: 'dividends, write-offs: running totals' }) },
+];
+$('tiles').innerHTML = TILES.map(t => `<div class="tile" id="t-${t.id}" title="click for the full chart"></div>`).join('');
+TILES.forEach(t => { $('t-' + t.id).onclick = () => { openTile = openTile === t.id ? null : t.id; tiles(); }; });
+
+function tiles() {
+  const h = last.history, m = h.at(-1);
+  if (!m) return;
+  for (const t of TILES) {
+    const el = $('t-' + t.id);
+    el.classList.toggle('on', openTile === t.id);
+    el.innerHTML = `<div class="lab"><span>${t.label}</span><span>${t.sub}</span></div>` +
+      `<div class="val">${t.val(m)}</div>${spark(h.map(t.spark), t.color)}`;
+  }
+  const t = TILES.find(t => t.id === openTile);
+  if (!t) { $('tile-open').innerHTML = ''; return; }
+  if (!$('tile-chart')) $('tile-open').innerHTML = '<div class="chart" id="tile-chart"></div>';
+  t.full();
+}
+
+// ---- the headline charts
+function bigCharts() {
+  const h = last.history, b = last.bank;
   lines('k-gdp', 'GDP per round', [
-    { name: 'gdp', color: '#bbb', get: x => x.gdp },
-    { name: '10-round avg', color: '#2458a6', get: x => x.gdp10 },
-  ], { fmt: v => v.toFixed(1), note: 'fish, wood, nets, houses made, at prices' });
-  lines('k-cpi', 'price index', [
-    { name: 'index', color: '#b00', get: x => x.priceIndex },
-    { name: 'start', color: '#aaa', get: () => 1, dash: true },
-  ], { fmt: v => v.toFixed(2), zero: false, note: `inflation, last minute: ${infl}` });
-  lines('k-emp', 'employment %', [
-    { name: 'worked, 5-round avg', color: '#1a7f37', get: x => x.emp5 },
-  ], { fmt: v => v.toFixed(0), note: 'worked / all shifts finished (incl. rest)' });
+    { name: 'gdp', color: '#bbb', get: x => x.gdp, width: 1.5 },
+    { name: '10-round avg', color: '#2458a6', get: x => x.gdp10, width: 3 },
+  ], { ...BIG, fmt: v => v.toFixed(1), note: 'fish, wood, nets, houses made, valued at market prices' });
+
+  lines('k-money', 'money & credit', [
+    { name: 'money supply', color: '#2458a6', get: x => x.supply, width: 3 },
+    { name: 'credit outstanding', color: '#c77700', get: x => x.debt, width: 3 },
+    { name: 'lending cap', color: '#c77700', get: x => x.lendingCap, dash: true, width: 1 },
+  ], { ...BIG, fmt: v => v.toFixed(0), ref: b.startSupply,
+       sub: b.creditOn ? `${(b.ratePerMin * 100).toFixed(1)}%/min ≈ ${(b.ratePerRound * 100).toFixed(2)}%/round` : 'credit switched off',
+       note: `dashed grey = starting money ${b.startSupply.toFixed(0)}; above it, loans minted the difference` });
+
+  // every good as % of its first-round price, so one chart reads for all five; hover shows actual prices
+  const base = GN.map((_, g) => h.find(x => x.prices[g] > 0)?.prices[g] ?? 1);
+  const now = h.at(-1)?.prices ?? [];
+  lines('k-prices', 'prices', GN.map((n, g) => ({
+    name: n, color: GC[g], get: x => x.prices[g] / base[g] * 100,
+    label: () => now.length ? `${now[g].toFixed(2)} <span class="${now[g] > base[g] ? 'up' : now[g] < base[g] ? 'down' : 'muted'}">${pct(now[g] / base[g] - 1)}</span>` : '',
+  })), { ...BIG, zero: false, ref: 100, fmt: v => v.toFixed(0) + '%',
+         tip: k => GN.map((n, g) => `${n} ${h[k].prices[g].toFixed(2)}`).join('  '),
+         note: '% of each good\'s round-1 price (dashed = 100%); hover for prices in coins' });
+
+  lines('k-jobs', 'what agents are doing', [
+    { name: 'fish', color: '#2f7fc1', get: x => x.doing.gather_food },
+    { name: 'wood', color: '#8a5a2b', get: x => x.doing.gather_wood },
+    { name: 'craft', color: '#7b4fb0', get: x => x.doing.craft_net },
+    { name: 'build', color: '#c77700', get: x => x.doing.build_house ?? 0 },
+    { name: 'rest', color: '#bbb', get: x => x.doing.idle },
+  ], { ...BIG, stacked: true, note: 'agents on each job, per round' });
+}
+
+// ---- the charts inside "details"
+function detailCharts() {
+  const m = last.history.at(-1);
+  lines('k-fore', 'loans come due (total)', [
+    { name: 'collected', color: '#1a7f37', get: x => x.autoRepaid ?? 0 },
+    { name: 'foreclosed overdue', color: '#c77700', get: x => x.overdue },
+    { name: 'margin call', color: '#b00', get: x => x.marginCalls },
+  ], { note: 'collected = from cash when due, no penalty' });
+  lines('k-needs', 'hungry / cold agents', [
+    { name: 'hungry', color: '#b00', get: x => x.hungry },
+    { name: 'cold', color: '#2a9dbf', get: x => x.cold },
+  ], { note: `out of ${last.agents.length} agents` });
+  lines('k-held', 'goods held by agents', GN.map((n, g) => ({ name: n, color: GC[g], get: x => x.held[g] ?? 0 })),
+    { note: 'rising = glut piling up, falling = scarcity' });
   lines('k-slack', 'slack: offered, unsold', [
     { name: 'value', color: '#c77700', get: x => x.slack },
   ], { fmt: v => v.toFixed(1), note: `last round ${m.slackShare == null ? '—' : Math.round(m.slackShare * 100) + '%'} of the value offered didn't sell` });
-  lines('k-wb', 'wellbeing per agent', [
-    { name: 'total so far', color: '#2458a6', get: x => x.wellbeing },
-    { name: 'per minute (5-round avg)', color: '#1a7f37', get: x => x.wb5 },
-  ], { fmt: v => v.toFixed(1), note: 'average over agents' });
-  lines('k-gini', 'inequality (Gini, net worth)', [
-    { name: 'gini', color: '#7b4fb0', get: x => x.gini },
-  ], { fmt: v => v.toFixed(2), note: '0 = equal; net worth at what goods sell for' });
-  lines('k-houses', 'houses', [
-    { name: 'lived in', color: '#1a7f37', get: x => x.homeowners },
-    { name: 'being built', color: '#c77700', get: x => x.building },
-    { name: 'built (total)', color: '#2458a6', get: x => x.housesBuilt, dash: true },
-  ], { note: `out of ${last.agents.length} agents` });
+  GN.forEach((_, g) => chart(g));
 }
 
 function econ() {
-  if (!last.history.length || last.history[0].supply === undefined) return;
-  macro();
-  const start = last.bank.startSupply;
-  lines('k-money', 'money in circulation', [
-    { name: 'coins', color: '#2458a6', get: h => h.supply },
-    { name: 'start', color: '#aaa', get: () => start, dash: true },
-  ], { fmt: v => v.toFixed(1), zero: false, note: 'above start = loans minted it; below = burned' });
-  lines('k-debt', 'bank loans', [
-    { name: 'owed to bank', color: '#c77700', get: h => h.debt },
-    { name: 'lending cap', color: '#aaa', get: h => h.lendingCap, dash: true },
-  ], { fmt: v => v.toFixed(1), note: last.bank.creditOn ? `credit outstanding, interest to now; ${(last.bank.ratePerMin * 100).toFixed(1)}%/min` : 'credit is switched off (LTV 0)' });
-  lines('k-bank', 'bank capital (totals)', [
-    { name: 'equity', color: '#2458a6', get: h => h.equity },
-    { name: 'dividends', color: '#1a7f37', get: h => h.dividends },
-    { name: 'written off', color: '#b00', get: h => h.writtenOff },
-    { name: 'bad debt', color: '#b00', get: h => h.badDebt, dash: true },
-  ], { fmt: v => v.toFixed(1), note: 'dividends, write-offs: running totals' });
-  lines('k-fore', 'loans come due (total)', [
-    { name: 'collected', color: '#1a7f37', get: h => h.autoRepaid ?? 0 },
-    { name: 'foreclosed overdue', color: '#c77700', get: h => h.overdue },
-    { name: 'margin call', color: '#b00', get: h => h.marginCalls },
-  ], { note: 'collected = from cash when due, no penalty' });
-  lines('k-jobs', 'what agents are doing', [
-    { name: 'fish', color: '#2f7fc1', get: h => h.doing.gather_food },
-    { name: 'wood', color: '#8a5a2b', get: h => h.doing.gather_wood },
-    { name: 'craft', color: '#7b4fb0', get: h => h.doing.craft_net },
-    { name: 'build', color: '#c77700', get: h => h.doing.build_house ?? 0 },
-    { name: 'idle', color: '#bbb', get: h => h.doing.idle },
-  ], { stacked: true, note: 'agents on each job, per round' });
-  lines('k-needs', 'hungry / cold agents', [
-    { name: 'hungry', color: '#b00', get: h => h.hungry },
-    { name: 'cold', color: '#2a9dbf', get: h => h.cold },
-  ], { note: `out of ${last.agents.length} agents` });
-  lines('k-held', 'goods held by agents', [
-    { name: 'food', color: '#2f7fc1', get: h => h.held[0] },
-    { name: 'wood', color: '#8a5a2b', get: h => h.held[1] },
-    { name: 'nets', color: '#7b4fb0', get: h => h.held[2] },
-    { name: 'boats', color: '#333', get: h => h.held[3] ?? 0 },
-    { name: 'houses', color: '#c77700', get: h => h.held[4] ?? 0 },
-  ], { note: 'rising = glut piling up, falling = scarcity' });
+  const h = last.history;
+  if (!h.length || h[0].gdp === undefined || h[0].supply === undefined) return;
+  const gdp10 = rolling(x => x.gdp, 10), emp5 = rolling(x => x.employment, 5), wb5 = rolling(x => x.wbRound, 5);
+  h.forEach((x, i) => { x.gdp10 = gdp10[i]; x.emp5 = emp5[i] * 100; x.wb5 = wb5[i]; });
+  tiles(); bigCharts();
+  if (detailsOpen()) detailCharts();
 }
 
-// ---- who's rich: cash to the right, debt to the left, net worth (cash + goods at what they sell for − debt) on the right
+// ---- who's winning: cash to the right, debt to the left, net worth (cash + goods at what they sell for − debt) on the right
 function wealth() {
   const ag = [...last.agents].sort((a, b) => b.wealth - a.wealth);
   const max = Math.max(1, ...ag.map(a => Math.max(a.cash, a.debt))), start = last.bank.startSupply / ag.length;
-  const W = 520, L = 90, mid = L + 90, R = W - 80, row = 16;
+  const W = 640, L = 96, mid = L + 90, R = W - 70, row = 15, fs = 11;
   const sx = v => v / max * (R - mid);
   const bars = ag.map((a, i) => { const yy = i * row + 14;
-    return `<text x="0" y="${yy + 10}" font-size="11">${a.name}</text>` +
-      (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 5}" fill="#c77700"/>` : '') +
-      `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 5}" fill="${a.cash - a.debt >= start ? '#1a7f37' : '#8fbf9a'}"/>` +
-      `<text x="${W}" y="${yy + 10}" font-size="11" text-anchor="end">${a.wealth.toFixed(2)}</text>`; }).join('');
-  const sLine = mid + sx(start);
-  $('wealth').innerHTML = `<b>who's winning</b> <span style="color:#666">net worth (right) = cash + goods − debt ` +
-    `(<span style="color:#c77700">■ debt</span> <span style="color:#1a7f37">■ cash</span>, dark = above starting cash)</span>` +
-    `<svg viewBox="0 0 ${W} ${ag.length * row + 20}" width="${W}" height="${ag.length * row + 20}" style="display:block;max-width:100%">${bars}` +
+    return `<text x="0" y="${yy + 10}" font-size="${fs}">${i + 1}. ${a.name}</text>` +
+      (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 4}" fill="#c77700"/>` : '') +
+      `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 4}" fill="${a.cash - a.debt >= start ? '#1a7f37' : '#8fbf9a'}"/>` +
+      `<text x="${W}" y="${yy + 10}" font-size="${fs}" text-anchor="end">${a.wealth.toFixed(2)}</text>`; }).join('');
+  const sLine = mid + sx(start), Hh = ag.length * row + 20;
+  $('wealth').innerHTML = `<div class="head"><b>who's winning</b><span class="muted">net worth →</span></div>` +
+    `<div style="font-size:12px"><span style="color:#c77700">■ debt</span>  <span style="color:#1a7f37">■ cash (dark = above starting cash)</span>  ` +
+    `<span class="muted">net worth = cash + goods − debt</span></div>` +
+    `<svg viewBox="0 0 ${W} ${Hh}">${bars}` +
     `<line x1="${sLine}" x2="${sLine}" y1="10" y2="${ag.length * row + 16}" stroke="#999" stroke-dasharray="3 3"/>` +
-    `<text x="${sLine + 3}" y="9" font-size="9" fill="#888">start ${start.toFixed(0)}</text>` +
+    `<text x="${sLine + 3}" y="9" font-size="10" fill="#888">start ${start.toFixed(0)}</text>` +
     `<line x1="${mid}" x2="${mid}" y1="10" y2="${ag.length * row + 16}" stroke="#333"/></svg>`;
 }
 
 function bankFeed() {
-  const words = { borrow: ['borrowed', '#c77700'], repay: ['repaid', '#1a7f37'], collected: ['collected', '#1a7f37'], foreclosed: ['FORECLOSED', '#b00'] };
-  const items = last.bankFeed.map(f => `<div style="color:${f.ok === false ? '#888' : words[f.kind][1]}">r${f.round} · ${f.name} ` + (
-    f.kind === 'borrow' ? `${f.ok === false ? 'refused: borrow' : 'borrowed'} ${f.amount.toFixed(2)}${f.term ? ` for ${f.term} min` : ' (top-up)'}${f.construction ? ' · construction loan' : ''}`
+  const words = { borrow: '#c77700', repay: '#1a7f37', collected: '#1a7f37', foreclosed: '#b00' };
+  const items = last.bankFeed.map(f => `<div style="color:${f.ok === false ? '#888' : words[f.kind]}">r${f.round} · ${f.name} ` + (
+    f.kind === 'borrow' ? `${f.ok === false ? 'refused: borrow' : 'borrowed'} ${f.amount.toFixed(2)}${f.term ? ` for ${f.term} rounds` : ' (top-up)'}${f.construction ? ' · construction loan' : ''}`
     : f.kind === 'repay' ? `${f.ok === false ? 'refused: repay' : 'repaid'} ${f.amount.toFixed(2)}`
-    : f.kind === 'collected' ? `collected at the deadline: ${f.amount.toFixed(2)} from cash, no penalty`
-    : `FORECLOSED (${f.reason === 'margin' ? 'margin call' : 'overdue'}) on ${(f.debt ?? 0).toFixed(2)}: ${f.amount.toFixed(2)} cash taken` +
+    : f.kind === 'collected' ? `loan due: ${f.amount.toFixed(2)} collected from cash, no penalty`
+    : `<b>FORECLOSED</b> (${f.reason === 'margin' ? 'margin call' : 'overdue'}) on ${(f.debt ?? 0).toFixed(2)}: ${f.amount.toFixed(2)} cash taken` +
       (f.seized?.some(q => q) ? `, seized ${goodsList(f.seized)}` : '') + (f.refund ? `, refunded ${f.refund.toFixed(2)}` : '') +
       (f.returned?.some(q => q) ? `, returned ${goodsList(f.returned)}` : '')) +
+    (f.sig ? ` <a target="_blank" href="${txUrl(f.sig)}">tx ↗</a>` : '') +
     `</div>`).join('');
   const b = last.bank, d = b.lastDividend;
-  $('bankfeed').innerHTML = `<b>bank</b><br>in circulation ${b.supply.toFixed(2)} (start ${b.startSupply.toFixed(2)})<br>` +
-    `equity ${b.equity.toFixed(2)} (must keep ${b.capitalRequired.toFixed(2)}) · lending cap ${b.lendingCap.toFixed(2)}<br>` +
-    `owed ${b.debt.toFixed(2)} · written off ${b.books.writtenOff.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)}<br>` +
-    `income: interest ${b.books.interestIncome.toFixed(2)} · penalties ${b.books.penalties.toFixed(2)} · sales ${b.books.recovered.toFixed(2)}<br>` +
-    `dividends paid ${b.dividends.toFixed(2)}` + (d ? ` (last r${d.round}: ${(d.perAgent / 100).toFixed(2)} each)` : '') + `<br>` +
-    (b.creditOn ? `terms: ${(b.ratePerMin * 100).toFixed(1)}% a minute, by the slot · term ${b.terms.join('/')} min<br>` : `credit is switched off: the chain refuses every loan<br>`) +
-    `due loans: ${b.autoRepaid} collected from cash · foreclosures: ${b.marginCalls} margin call · ${b.overdue} overdue<br>` +
-    `seized, for sale: ${goodsList(b.goods) || 'nothing'}<br>` +
-    `<span style="color:#666">foreclosures and dividends signed by keeper ${b.keeper.slice(0, 8)}… (not the server)</span>` +
-    `<div style="margin-top:6px"><b>loans (recent)</b>${items || '<div style="color:#888">no loans yet</div>'}</div>`;
+  $('bankfeed').innerHTML = `<div class="head"><b>the bank</b><span class="muted">keeper ${b.keeper.slice(0, 8)}… signs foreclosures, not the server</span></div>` +
+    `<div style="line-height:1.5">owed <b>${b.debt.toFixed(2)}</b> of cap ${b.lendingCap.toFixed(2)} · equity <b>${b.equity.toFixed(2)}</b> (must keep ${b.capitalRequired.toFixed(2)})<br>` +
+    `due loans: <span class="up">${b.autoRepaid} collected</span> · <span class="down">${b.marginCalls} margin call · ${b.overdue} overdue foreclosures</span><br>` +
+    `written off ${b.books.writtenOff.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)} · dividends ${b.dividends.toFixed(2)}` +
+    (d ? ` (r${d.round}: ${(d.perAgent / 100).toFixed(2)} each)` : '') +
+    (b.creditOn ? '' : `<br><span class="down">credit is switched off: the chain refuses every loan</span>`) +
+    (b.goods.some(q => q) ? `<br>seized, for sale: ${goodsList(b.goods)}` : '') + `</div>` +
+    `<div class="feed">${items || '<div style="color:#888">no loans yet</div>'}</div>`;
 }
 
-// ---- the market right now: last round's order book + the latest trades
+// ---- the market right now: last round's book before clearing (top levels a side), what cleared, the latest trades
 function book() {
-  const m = last.market;
-  const rows = m.book.map(b =>
-    `<tr><td>${b.good}</td><td class="n">${b.bids} (${b.bidQty})</td><td class="n">${b.bestBid?.toFixed(2) ?? '—'}</td>` +
-    `<td class="n">${b.bestAsk?.toFixed(2) ?? '—'}</td><td class="n">${b.asks} (${b.askQty})</td></tr>`).join('');
+  const m = last.market, lv = ls => ls.map(([p, q]) => `${(p / 100).toFixed(2)}×${q}`).join(' · ');
+  const rows = m.ladder.length ? m.ladder.map(l =>
+    `<tr><td>${l.good}</td><td class="n">${l.bids.count ? lv(l.bids.top) + (l.bids.more ? ` <span style="color:#888">+${l.bids.more}</span>` : '') : '—'}</td>` +
+    `<td class="n">${l.asks.count ? lv(l.asks.top) + (l.asks.more ? ` <span style="color:#888">+${l.asks.more}</span>` : '') : '—'}</td>` +
+    `<td class="n">${l.sold ? `${l.sold} @ ${l.price.toFixed(2)}` : '—'}</td><td class="n">${l.offered - l.sold || ''}</td>` +
+    `<td>${l.bankSale ? `bank ${l.bankSale.qty} @ ${l.bankSale.price.toFixed(2)}` : ''}</td></tr>`).join('')
+    : '<tr><td colspan="6" style="color:#888">no round yet</td></tr>';
   const trades = m.trades.map(t => `<div>r${t.round} · ${t.name} bought ${t.qty} ${t.good} @ ${t.price.toFixed(2)}</div>`).join('');
   $('book').innerHTML =
-    `<b>order book (last round)</b><table style="margin:4px 0 8px"><tr><th></th><th class="n">buy orders</th>` +
-    `<th class="n">best bid</th><th class="n">best ask</th><th class="n">sell orders</th></tr>${rows}</table>` +
+    `<b>order book, last round before clearing</b> <span style="color:#666">${m.live} of ${last.agents.length} agents had an order</span>` +
+    `<div class="scroll"><table style="margin:4px 0 8px"><tr><th></th><th class="n">bids (price×qty)</th><th class="n">asks (price×qty)</th>` +
+    `<th class="n">sold</th><th class="n">unsold</th><th>next: bank sale</th></tr>${rows}</table></div>` +
     `<b>latest trades</b>${trades || '<div style="color:#888">none yet</div>'}`;
 }
 
+function agentTable() {
+  if (!last?.agents) return;
+  const ag = [...last.agents].sort((a, b) => b.wealth - a.wealth), shown = showAll ? ag : ag.slice(0, 10);
+  $('allbtn').textContent = showAll ? 'top 10 only' : `show all ${ag.length}`;
+  rows.innerHTML = shown.map(a =>
+    `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
+    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td><td class="n">${a.boats}</td>` +
+    `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/3` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
+    `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
+    `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
+    `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
+    `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
+    `<td class="n ${a.dueIn !== null && a.dueIn <= 1 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + ' r'}</td>` +
+    `<td class="t">${a.orders.join('<br>')}</td>` +
+    `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
+  ).join('');
+}
+
+// everything inside "details": drawn only while it's open
+function details() {
+  const s = last;
+  if (!detailsOpen()) return;
+  book(); agentTable();
+  const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
+  const doing = Object.entries(s.doing).map(([k, v]) => `${k} ${v}`).join(' · ');
+  world.innerHTML =
+    (s.decide ? `last round waited ${(s.decide.slowest / 1000).toFixed(1)}s for the slowest agent (median ${(s.decide.median / 1000).toFixed(1)}s)` +
+      (s.decide.timeouts ? `, <span class="hungry">${s.decide.timeouts} timed out</span> and kept their last job` : '') + '<br>' : '') +
+    `prices: ${prices}<br>` +
+    `doing: ${doing}<br>` +
+    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · boats ${s.totals.boats} · ` +
+    `houses ${s.totals.houses} lived in, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
+    `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
+    `bank: income: interest ${s.bank.books.interestIncome.toFixed(2)} · penalties ${s.bank.books.penalties.toFixed(2)} · sales ${s.bank.books.recovered.toFixed(2)} · ` +
+    (s.bank.creditOn ? `terms ${s.bank.terms.join('/')} rounds` : 'credit off') + '<br>' +
+    (s.metrics ? `economy (last round): GDP ${s.metrics.gdp.toFixed(2)} · price index ${s.metrics.priceIndex.toFixed(2)}` +
+      ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
+      ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}` : '');
+  events.innerHTML = s.events.map(e => e.type === 'error'
+    ? `<div class="hungry">error: ${e.message}</div>`
+    : `<div>round ${e.round}: ${e.prices.map((p, i) => (p / 100).toFixed(2) + ' (' + e.volumes[i] + ')').join(' / ')} · ${e.txs} tx · ${e.ms}ms` +
+      (e.sig ? ` · <a target="_blank" href="${txUrl(e.sig)}">last tx ↗</a>` : '') + `</div>`
+  ).join('') || 'waiting for first market round…';
+}
+$('more').addEventListener('toggle', () => { if (last?.running) { details(); econ(); } });
+
 async function toggle() {
   btn.disabled = true;
-  statusEl.textContent = running ? ' stopping…' : ' starting (creating ledger on Solana)…';
+  statusEl.textContent = running ? 'stopping…' : 'starting (creating ledger on Solana)…';
   await fetch(running ? '/stop' : '/start', { method: 'POST' });
   btn.disabled = false;
   refresh();
@@ -304,52 +478,20 @@ async function refresh() {
   running = s.running;
   btn.textContent = running ? 'Stop' : 'Start simulation';
   if (!running) {
-    statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
-    world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
-    $('market').style.display = 'none'; $('macro').style.display = 'none'; $('econ').style.display = 'none'; $('econ2').style.display = 'none';
+    statusEl.textContent = `${s.config.agents} agents, brain: ${s.config.brain}`;
+    $('headline').innerHTML = 'not running'; $('dash').style.display = 'none';
     return;
   }
-  statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
-  last = s; $('market').style.display = 'flex'; $('macro').style.display = 'flex'; $('econ').style.display = 'flex'; $('econ2').style.display = 'flex';
-  GN.forEach((_, g) => chart(g)); book(); econ(); wealth(); bankFeed();
-
-  const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
-  const doing = Object.entries(s.doing).map(([k, v]) => `${k} ${v}`).join(' · ');
-  world.innerHTML =
-    `<b>round ${s.round}</b> · tick ${s.tick}<br>` +
-    `prices: ${prices}<br>` +
-    `doing: ${doing}<br>` +
-    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · boats ${s.totals.boats} · ` +
-    `houses ${s.totals.houses} lived in, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
-    `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
-    `bank: money in circulation ${s.bank.supply.toFixed(2)} (started ${s.bank.startSupply.toFixed(2)}) · ` +
-    `owed ${s.bank.debt.toFixed(2)} of cap ${s.bank.lendingCap.toFixed(2)} · equity ${s.bank.equity.toFixed(2)} · ` +
-    `dividends ${s.bank.dividends.toFixed(2)} · written off ${s.bank.books.writtenOff.toFixed(2)} · bad debt ${s.bank.badDebt.toFixed(2)}<br>` +
-    (s.foreclosures.length ? `<span class="hungry">foreclosures: ${s.foreclosures.map(f => `r${f.round} ${f.name} (${f.reason === 'margin' ? 'margin call' : 'overdue'})`).join(' · ')}</span> ` +
-      `(signed by keeper ${s.bank.keeper.slice(0, 8)}…, not the authority)<br>` : '') +
-    (s.metrics ? `economy (last round): GDP ${s.metrics.gdp.toFixed(2)} · price index ${s.metrics.priceIndex.toFixed(2)}` +
-      (s.metrics.inflation != null ? ` (${s.metrics.inflation > 0 ? '+' : ''}${(s.metrics.inflation * 100).toFixed(1)}% in a minute)` : '') +
-      ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
-      ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}<br>` : '') +
-    `solana: ${s.chain.transactions} transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}…</a>` +
-    (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '');
-
-  events.innerHTML = s.events.map(e => e.type === 'error'
-    ? `<div class="hungry">error: ${e.message}</div>`
-    : `<div>round ${e.round}: ${e.prices.map((p, i) => (p / 100).toFixed(2) + ' (' + e.volumes[i] + ')').join(' / ')} · ${e.txs} tx · ${e.ms}ms</div>`
-  ).join('') || 'waiting for first market round…';
-
-  rows.innerHTML = s.agents.map(a =>
-    `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
-    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td><td class="n">${a.boats}</td>` +
-    `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/3` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
-    `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
-    `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
-    `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
-    `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
-    `<td class="n ${a.dueIn !== null && a.dueIn <= 0 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + 's'}</td>` +
-    `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
-  ).join('');
+  last = s; $('dash').style.display = '';
+  statusEl.innerHTML = `<b>round ${s.round}</b> · running ${s.seconds}s · brain: ${s.brain} · ${s.agents.length} agents`;
+  $('headline').innerHTML =
+    `a round takes ≈${(s.roundMs / 1000).toFixed(1)}s` +
+    (s.decide?.timeouts ? ` · <span class="hungry">${s.decide.timeouts} timed out last round</span>` : '') +
+    ` · solana: <b>${s.chain.transactions}</b> transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}… ↗</a>` +
+    (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '') +
+    ` · <span class="${s.totals.hungry ? 'hungry' : 'muted'}">hungry ${s.totals.hungry}</span> · <span class="${s.totals.cold ? 'hungry' : 'muted'}">cold ${s.totals.cold}</span>` +
+    (s.foreclosures.length ? ` · <span class="hungry">latest foreclosure: r${s.foreclosures[0].round} ${s.foreclosures[0].name}</span>` : '');
+  econ(); wealth(); bankFeed(); details();
 }
 
 refresh();

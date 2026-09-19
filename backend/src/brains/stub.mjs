@@ -45,17 +45,17 @@ export function stubBrain() {
       // (a fresh view: the sell orders above committed some goods)
       // Impatient ones repay early; the rest let the bank collect at the deadline.
       const f = t.view(), term = f.terms[Math.floor(rnd() * f.terms.length)];
-      if (f.debt && f.availCash > f.debtNow && (a.traits.patience < 0.5 || f.dueIn < 5)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
+      if (f.debt && f.availCash > f.debtNow && (a.traits.patience < 0.5 || f.dueIn <= 2)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
       else if (!f.debt && f.credit && f.unfinishedFree && f.maxLoan > 100 && cash < p.food * 12) {
         // a construction loan: the unfinished house is the collateral, to eat while building
         const amount = Math.floor(f.maxLoan * 0.8) / 100;
-        t.exec('borrow', { amount, term_minutes: term, wood: 0, nets: 0, boats: 0, houses: 1, reason: 'a loan against the house I am building' });
+        t.exec('borrow', { amount, term_rounds: term, wood: 0, nets: 0, boats: 0, houses: 1, reason: 'a loan against the house I am building' });
       } else if (!f.debt && f.credit && cash < p.food * 3 && f.maxLoan > 100) {
         // pledged nets still fish, so the net goes in the pledge too
         const pledge = { wood: Math.max(0, f.wood - 3), nets: f.nets, boats: f.boats };
         const value = pledge.wood * p.wood + pledge.nets * p.nets + pledge.boats * p.boats;   // coins
         const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100;       // under LTV
-        if (amount >= 1) t.exec('borrow', { amount, term_minutes: term, ...pledge, reason: 'short of cash' });
+        if (amount >= 1) t.exec('borrow', { amount, term_rounds: term, ...pledge, reason: 'short of cash' });
       }
 
       // pick the shift
