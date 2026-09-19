@@ -53,7 +53,7 @@ use anchor_lang::solana_program::{
     system_instruction,
 };
 
-declare_id!("9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7");
+declare_id!("4ruVnoc2xFy5YJ8MAUA85mLn6ALCD4CeWsssr4JmCCWY");
 
 /// The SPL Token program. Checked by address before every call into it.
 /// TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA

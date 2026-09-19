@@ -224,6 +224,12 @@ them off.
 Verified end to end by `backend/scripts/check-settlers.sh`, which runs a village through
 every one of those paths on a validator of its own (port 8999, never 8899).
 
+**On devnet:** `backend/scripts/deploy-devnet.sh` deploys the program (~1.11 SOL of rent)
+and then walks one village through the whole monetary story slowly enough for devnet's
+rate limit — a loan, a repayment, a collection, a foreclosure, a fire sale, a dividend —
+leaving a mint anyone can open in Solana Explorer. The live simulation still runs against
+a local validator; devnet's ~10 req/s is too slow for 3-second rounds.
+
 ### Gaps
 
 - No per-agent on-chain identity — an agent is an array index, not an account.

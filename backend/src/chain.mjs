@@ -36,8 +36,15 @@ const MAX_DELTAS_PER_TX = 120;
 export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 export const SETTLERS_DECIMALS = 2;
 
+// On a public cluster the link must name it; a customUrl pointing at 127.0.0.1 resolves
+// to the reader's own machine, where nothing is listening.
+const CLUSTER = /devnet/.test(CFG.RPC) ? 'devnet'
+              : /testnet/.test(CFG.RPC) ? 'testnet'
+              : /mainnet|api\.solana\.com/.test(CFG.RPC) ? null
+              : `custom&customUrl=${encodeURIComponent(CFG.RPC)}`;
 export const explorer = (kind, id) =>
-  `https://explorer.solana.com/${kind}/${id}?cluster=custom&customUrl=${encodeURIComponent(CFG.RPC)}`;
+  `https://explorer.solana.com/${kind}/${id}${CLUSTER ? `?cluster=${CLUSTER}` : ''}`;
+export const IS_PUBLIC = CLUSTER === 'devnet' || CLUSTER === 'testnet' || CLUSTER === null;
 
 export async function connectChain() {
   const conn = new Connection(CFG.RPC, 'confirmed');
@@ -66,6 +73,19 @@ export async function connectChain() {
       const why = logs.find(l => l.includes('Error Message')) ?? e.message;
       throw new Error(`chain tx failed: ${why}`);
     }
+  }
+
+  // 0.05 SOL is thousands of liquidate/pay_dividend calls at 5,000 lamports a signature.
+  async function fundKeeper(lamports = 5e7) {
+    if (await conn.getBalance(keeper.publicKey) >= lamports) return;
+    try {
+      const sig = await conn.requestAirdrop(keeper.publicKey, lamports);
+      await conn.confirmTransaction(sig, 'confirmed');
+      return;
+    } catch { /* no faucet here: pay the keeper out of the authority's pocket */ }
+    await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({
+      fromPubkey: authority.publicKey, toPubkey: keeper.publicKey, lamports,
+    })), [authority], { commitment: 'confirmed' });
   }
 
   const writeKeys = () => [
@@ -99,8 +119,9 @@ export async function connectChain() {
     d.writeUInt16LE(terms.kappaBps, 82); d.writeUInt16LE(terms.marginBps, 84); d.writeUInt16LE(terms.maxTermUnits, 86);
     d.writeBigUInt64LE(BigInt(terms.ratePeriodSlots), 88); d.writeBigUInt64LE(BigInt(terms.termUnitSlots), 96);
     d.writeBigUInt64LE(BigInt(terms.equityFloor ?? 0), 104);
-    const sig = await conn.requestAirdrop(keeper.publicKey, 1e9);   // localnet: fees for the keeper
-    await conn.confirmTransaction(sig, 'confirmed');
+    // The keeper pays its own fees to prove liquidate really is permissionless. A local
+    // validator will airdrop; a public faucet usually won't, so fall back to a transfer.
+    await fundKeeper();
     return send(new TransactionInstruction({
       programId: PROGRAM_ID, data: d, keys: [
         { pubkey: authority.publicKey, isSigner: true, isWritable: true },
@@ -245,6 +266,7 @@ export async function connectChain() {
 
   return {
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
+    fundKeeper,
     slot: () => conn.getSlot('confirmed'),
     mint, vault, settlersSupply,
     MAX_ORDERS_PER_TX, MAX_ORDERS_BANK_TX, LEDGER_SIZE, txCount: () => txCount,

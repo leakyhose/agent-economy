@@ -14,7 +14,7 @@ RPC="http://127.0.0.1:${RPC_PORT}"
 cleanup() { kill "${VALIDATOR_PID:-}" 2>/dev/null || true; rm -rf "$LEDGER_DIR"; }
 trap cleanup EXIT
 
-PROGRAM_ID=9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7
+PROGRAM_ID=$(python3 -c "import json;print(json.load(open('chain/target/idl/chain.json'))['address'])")
 
 echo "starting a validator on ${RPC_PORT} (the dashboard's stays on 8899)"
 # The program is loaded at genesis at its declared address: chain-keypair.json is a
