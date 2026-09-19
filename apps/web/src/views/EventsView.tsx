@@ -82,7 +82,7 @@ export function EventsView() {
                 const actor = event.data?.['actor'];
                 return (
                   <tr
-                    key={event.seq}
+                    key={event.key}
                     onClick={() => {
                       if (typeof actor === 'string') {
                         select(actor);

@@ -16,7 +16,7 @@ export function Tape() {
       <div className="tape-track">
         {items.map((event, index) => (
           <span
-            key={event.seq}
+            key={event.key}
             className={index === 0 ? 'tape-item tape-new' : 'tape-item'}
             data-severity={severityOf(event, config)}
           >

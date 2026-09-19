@@ -90,7 +90,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .bar {
   display: flex;
   align-items: center;
-  gap: var(--s5);
+  /* Three live-mode controls plus the spend meter make this bar long. Tighten
+     the rhythm rather than let the tick readout fall off the right edge; the
+     bar still scrolls horizontally below the width where even that fails. */
+  gap: var(--s4);
   padding: 0 var(--s4);
   background: var(--ink-700);
   box-shadow: inset 0 1px 0 var(--edge);
@@ -207,6 +210,16 @@ select.control:hover { border-color: var(--edge); background-color: var(--ink-50
   gap: var(--s2);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Below this the elapsed-time wording is the first thing worth losing: the
+   number carries the meaning and the unit is in the world panel anyway. */
+@media (max-width: 1500px) {
+  .readout .readout-unit:last-child { display: none; }
+}
+@media (max-width: 1280px) {
+  .bar .brand-sub { display: none; }
 }
 .readout-value { font-size: var(--t-lg); letter-spacing: -0.04em; color: var(--text-0); }
 .readout-unit { font-size: var(--t-micro); color: var(--text-3); }

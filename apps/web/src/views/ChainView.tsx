@@ -87,7 +87,7 @@ export function ChainView() {
                 const to = String(event.data?.['to'] ?? '—');
                 const amount = Number(event.data?.['amount'] ?? 0);
                 return (
-                  <tr key={event.seq} onClick={() => { select(from); setView('agents'); }}>
+                  <tr key={event.key} onClick={() => { select(from); setView('agents'); }}>
                     <td className="num dim">{padTick(event.tick)}</td>
                     <td>
                       <i className="swatch" style={{ background: config.resourceById[asset]?.color ?? 'var(--text-2)' }} />

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
 import type { EntityId, SimEvent, WorldDefinition, WorldState } from '@aw/types';
 import type {
-  BrainChoice, LLMUsage, ModelChoice, OrderBook, ServerMessage, SimSource, TransportStatus,
+  BrainChoice, LLMUsage, LoggedEvent, ModelChoice, OrderBook, ServerMessage, SimSource,
+  TransportStatus,
 } from '../data/contract.ts';
 import { FixtureSource } from '../data/fixtureSource.ts';
 import { DEFAULT_ENDPOINT, LiveSource } from '../data/liveSource.ts';
@@ -12,6 +13,17 @@ import { loadManifest, loadWorld, type WorldEntry } from '../data/worlds.ts';
 import { resolveViewConfig, type ViewConfig } from '../derive/viewConfig.ts';
 
 const EVENT_CAP = 2500;
+
+/**
+ * Events arrive with a `seq` from the server, but that sequence restarts
+ * whenever a world reloads or the process restarts - and the socket reconnects
+ * by itself, so two events with the same seq can end up in one list. Every
+ * event therefore gets a key that is unique to this page's lifetime, and the
+ * views render against that rather than against anything off the wire.
+ */
+let nextKey = 1;
+const withKeys = (events: readonly SimEvent[]): LoggedEvent[] =>
+  events.map((event) => ({ ...event, key: nextKey++ }));
 const SERIES_CAP = 600;
 
 export type ViewId = 'world' | 'agents' | 'markets' | 'events' | 'chain' | 'analytics';
@@ -42,7 +54,7 @@ export interface SimStore {
   config: ViewConfig | null;
   state: WorldState | null;
   books: Record<string, OrderBook>;
-  events: SimEvent[];
+  events: LoggedEvent[];
   metrics: Record<string, number>;
   metricSeries: Series;
   priceSeries: Series;
@@ -139,12 +151,11 @@ export const useSim = create<SimStore>((set, get) => {
       case 'market':
         set({ books: message.books });
         break;
-      case 'events':
-        set((prior) => {
-          const merged = [...prior.events, ...message.events];
-          return { events: merged.length > EVENT_CAP ? merged.slice(-EVENT_CAP) : merged };
-        });
+      case 'events': {
+        const merged = [...get().events, ...withKeys(message.events)];
+        set({ events: merged.length > EVENT_CAP ? merged.slice(-EVENT_CAP) : merged });
         break;
+      }
       default:
         break;
     }
@@ -216,7 +227,14 @@ export const useSim = create<SimStore>((set, get) => {
 
     source = next;
     unsubscribe = next.subscribe(ingest);
-    unstatus = next.onStatus((status, detail) => set({ status, statusDetail: detail ?? '' }));
+    unstatus = next.onStatus((status, detail) => {
+      // Reconnecting means the far side restarted, or we lost and regained it.
+      // Either way the accumulated log belongs to a run that is gone.
+      if (status === 'open' && get().status !== 'open' && get().events.length > 0) {
+        set({ events: [], metricSeries: emptySeries, priceSeries: emptySeries });
+      }
+      set({ status, statusDetail: detail ?? '' });
+    });
     next.send({
       type: 'load',
       world: slug,

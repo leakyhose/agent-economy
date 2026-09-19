@@ -120,8 +120,14 @@ export function startServer(port: number) {
 
   // The clock. Runs forever; ticks only while the dashboard says to.
   void (async () => {
+    let lastStatus = 0;
     for (;;) {
       if (sim.running && sim.engine) {
+        // Spend and tick count change every tick, and the console shows both, so
+        // status has to stream rather than only answer commands. Once a second
+        // is often enough to read and cheap enough to ignore.
+        const now = Date.now();
+        if (now - lastStatus > 1000) { lastStatus = now; broadcast(status()); }
         await sim.step();
         // Confirmations arrive after the tick that caused them, because the queue
         // never blocks the simulation. The dashboard reads signatures off events

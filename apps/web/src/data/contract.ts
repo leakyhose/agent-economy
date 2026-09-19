@@ -116,6 +116,12 @@ export type ClientCommand =
   | { type: 'speed'; multiplier: number }
   | { type: 'load'; world: string; agents?: number; model?: string; brain?: string };
 
+/** A server event plus a key unique to this page. `seq` restarts whenever a
+ *  world reloads or the server restarts, so it cannot serve as a render key. */
+export interface LoggedEvent extends SimEvent {
+  key: number;
+}
+
 export type TransportStatus = 'offline' | 'connecting' | 'open' | 'closed' | 'error';
 
 /** Both the fixture replay and the live socket expose exactly this. */
