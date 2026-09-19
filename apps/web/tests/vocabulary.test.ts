@@ -28,6 +28,9 @@ const CONTRACT_TERMS = new Set([
   'owns', 'price', 'prices', 'rate', 'resource', 'resources', 'rule', 'rules', 'seed',
   'set', 'state', 'sum', 'tick', 'ticks', 'time', 'total', 'type', 'types', 'value',
   'gini', 'params', 'target', 'actor', 'data', 'index',
+  // ActionProposal is a frozen-contract type. It only looks world-specific
+  // because a world emits proposal_opened; the `propose` action stays banned.
+  'proposal', 'proposals',
 ]);
 
 function splitToken(id: string): string[] {

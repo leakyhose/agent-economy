@@ -1,14 +1,23 @@
 import type { Entity } from '@aw/types';
 
-export const EXPLORER_CLUSTER = 'devnet';
+/** Which cluster this deployment settles against. A local validator is not on
+ *  the public explorer, so links carry the custom RPC it needs to reach it. */
+export const EXPLORER_CLUSTER = process.env.NEXT_PUBLIC_CLUSTER ?? 'custom';
+const CUSTOM_RPC = process.env.NEXT_PUBLIC_RPC ?? 'http://127.0.0.1:8899';
+
+function clusterQuery(): string {
+  return EXPLORER_CLUSTER === 'custom'
+    ? `cluster=custom&customUrl=${encodeURIComponent(CUSTOM_RPC)}`
+    : `cluster=${EXPLORER_CLUSTER}`;
+}
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 export function explorerTx(signature: string): string {
-  return `https://explorer.solana.com/tx/${signature}?cluster=${EXPLORER_CLUSTER}`;
+  return `https://explorer.solana.com/tx/${signature}?${clusterQuery()}`;
 }
 
 export function explorerAddress(address: string): string {
-  return `https://explorer.solana.com/address/${address}?cluster=${EXPLORER_CLUSTER}`;
+  return `https://explorer.solana.com/address/${address}?${clusterQuery()}`;
 }
 
 /**

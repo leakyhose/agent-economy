@@ -1,56 +1,128 @@
-// Streams the running world to the dashboard and accepts control commands.
-// This message contract is what apps/web codes against.
+// The control server. Comes up idle and does exactly what the dashboard tells
+// it, speaking the wire contract defined in apps/web/src/data/contract.ts.
+//
+// Inbound:  { type:'load', world } | { type:'control', command } | { type:'speed', multiplier }
+// Outbound: world | state | events | metrics | chain
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { Engine, TickResult as EngineTick } from '@aw/engine';
-import type { WorldDefinition, WorldState } from '@aw/types';
+import { Simulation, availableWorlds, type Frame } from './runtime.ts';
+import { CFG } from './config.ts';
 
-export interface Broadcast extends EngineTick {
-  state: WorldState;
-  metrics: Record<string, number>;
-}
+type ClientCommand =
+  | { type: 'control'; command: 'start' | 'pause' | 'step' | 'reset' }
+  | { type: 'speed'; multiplier: number }
+  | { type: 'load'; world: string };
 
-export function startServer(port: number, ctx: { engine: Engine; world: WorldDefinition }) {
-  const http = createServer();
+export function startServer(port: number) {
+  const http = createServer((req, res) => {
+    // A tiny REST surface so the page can discover worlds before opening a socket.
+    if (req.url === '/worlds') {
+      res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify({ worlds: availableWorlds(), loaded: sim.worldName }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
   const wss = new WebSocketServer({ server: http });
   const clients = new Set<WebSocket>();
 
-  const api = {
-    running: true,
-    tickMs: ctx.world.time?.tickMs ?? 400,
-    broadcast(result: Broadcast) {
-      if (clients.size === 0) return;
-      send({ type: 'tick', tick: result.tick, state: result.state,
-             events: result.events, metrics: result.metrics });
-    },
-  };
-
-  function send(msg: unknown) {
+  const broadcast = (msg: unknown) => {
     const payload = JSON.stringify(msg);
     for (const c of clients) if (c.readyState === 1) c.send(payload);
-  }
+  };
+
+  const onFrame = (frame: Frame) => {
+    broadcast({ type: 'world', world: frame.world });
+    broadcast({ type: 'state', state: frame.state });
+    if (frame.events.length > 0) broadcast({ type: 'events', events: frame.events });
+    broadcast({ type: 'metrics', metrics: frame.metrics });
+  };
+
+  const sim = new Simulation(onFrame);
+  // Confirmation events are minted here, so they need their own sequence space.
+  let confirmSeq = 1_000_000;
+
+  const status = () => ({
+    type: 'status',
+    running: sim.running,
+    world: sim.worldName,
+    worlds: availableWorlds(),
+    tick: sim.engine?.state.tick ?? 0,
+    speed: sim.speed,
+    chain: CFG.CHAIN ? CFG.RPC : null,
+    model: CFG.PROVIDER === 'openai' ? `${CFG.PROVIDER}/${CFG.MODEL}` : 'stub',
+  });
 
   wss.on('connection', (ws: WebSocket) => {
     clients.add(ws);
-    // A fresh dashboard needs the world definition before it can render anything.
-    ws.send(JSON.stringify({ type: 'world', world: ctx.world }));
-    ws.send(JSON.stringify({ type: 'state', state: ctx.engine.state }));
+    ws.send(JSON.stringify(status()));
+    // A dashboard that connects mid-run needs the whole picture, not the next delta.
+    if (sim.world && sim.engine) {
+      ws.send(JSON.stringify({ type: 'world', world: sim.world }));
+      ws.send(JSON.stringify({ type: 'state', state: sim.engine.state }));
+    }
 
-    ws.on('message', (buf: Buffer) => {
-      let msg: { cmd?: string; n?: number; tickMs?: number };
-      try { msg = JSON.parse(String(buf)); } catch { return; }
-      switch (msg.cmd) {
-        case 'pause':  api.running = false; ctx.engine.pause(); break;
-        case 'resume': api.running = true;  ctx.engine.resume(); break;
-        case 'step':   api.running = false; ctx.engine.step(msg.n ?? 1); break;
-        case 'speed':  api.tickMs = Math.max(16, Number(msg.tickMs) || 400); break;
+    ws.on('message', async (buf: Buffer) => {
+      let msg: ClientCommand;
+      try { msg = JSON.parse(String(buf)) as ClientCommand; } catch { return; }
+      try {
+        if (msg.type === 'load') {
+          await sim.load(msg.world);
+        } else if (msg.type === 'speed') {
+          sim.setSpeed(msg.multiplier);
+        } else if (msg.type === 'control') {
+          if (msg.command === 'start') {
+            // Starting with nothing loaded should just work: pick the first world.
+            if (!sim.world) await sim.load(availableWorlds()[0] ?? CFG.WORLD);
+            sim.start();
+          } else if (msg.command === 'pause') sim.pause();
+          else if (msg.command === 'step') { sim.pause(); await sim.step(); }
+          else if (msg.command === 'reset') await sim.reset();
+        }
+      } catch (error) {
+        // A bad command must never take the server down mid-demo.
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error('[sim] command failed:', detail);
+        ws.send(JSON.stringify({ type: 'error', detail }));
       }
-      send({ type: 'control', running: api.running, tickMs: api.tickMs });
+      broadcast(status());
     });
 
     ws.on('close', () => clients.delete(ws));
   });
 
-  http.listen(port);
-  return api;
+  // The clock. Runs forever; ticks only while the dashboard says to.
+  void (async () => {
+    for (;;) {
+      if (sim.running && sim.engine) {
+        await sim.step();
+        // Confirmations arrive after the tick that caused them, because the queue
+        // never blocks the simulation. The dashboard reads signatures off events
+        // (SimEvent.signature), so they go back as events rather than as a
+        // bespoke message its contract does not define.
+        const fresh = await sim.drainSignatures();
+        if (fresh.length > 0) {
+          broadcast({
+            type: 'events',
+            events: fresh.map((signature) => ({
+              seq: confirmSeq++,
+              tick: sim.engine?.state.tick ?? 0,
+              type: 'settlement_confirmed',
+              data: { rpc: CFG.RPC },
+              signature,
+            })),
+          });
+        }
+      }
+      await new Promise((r) => setTimeout(r, Math.max(16, sim.tickMs / sim.speed)));
+    }
+  })();
+
+  http.listen(port, () => {
+    console.log(`[sim] control server on ws://localhost:${port} — idle, waiting for the dashboard`);
+    console.log(`[sim] worlds: ${availableWorlds().join(', ') || '(none found)'}`);
+  });
+
+  return { sim, broadcast };
 }

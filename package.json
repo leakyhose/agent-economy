@@ -12,11 +12,12 @@
     "test:chain": "cargo test -p world",
     "test:registry": "cargo test -p registry",
     "test:org": "cargo test -p org",
-    "dev": "npm --prefix apps/web run dev",
+    "dev": "node scripts/dev.mjs",
     "build": "npm --prefix apps/web run build",
     "typecheck:web": "npm --prefix apps/web run typecheck",
     "test:web": "npm --prefix apps/web run test",
-    "check:vocab": "npm --prefix apps/web run check:vocab"
+    "check:vocab": "npm --prefix apps/web run check:vocab",
+    "dev:web": "npm --prefix apps/web run dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
