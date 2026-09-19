@@ -7,3 +7,6 @@ target/
 *.log
 .DS_Store
 test-ledger/
+reference/
+pnpm-lock.yaml
+runs/

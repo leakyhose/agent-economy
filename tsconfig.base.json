@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "verbatimModuleSyntax": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": {
+      "@aw/types": ["./packages/types/src/index.ts"],
+      "@aw/engine": ["./packages/engine/src/index.ts"],
+      "@aw/agents": ["./packages/agents/src/index.ts"],
+      "@aw/solana": ["./packages/solana/src/index.ts"]
+    }
+  }
+}

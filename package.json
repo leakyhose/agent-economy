@@ -1,0 +1,16 @@
+{
+  "name": "agentic-world",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "tsx apps/sim/src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -b --pretty"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2",
+    "vitest": "^2.1.8",
+    "@types/node": "^22.10.2"
+  }
+}
