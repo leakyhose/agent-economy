@@ -45,7 +45,7 @@ function broadcast(e) {
       GOODS.map((g, i) => `${g} ${coins(e.prices[i])} (${e.volumes[i]})`).join('  ') +
       ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} idle ${acts.idle ?? 0}` +
       ` | hungry ${W.agents.filter(a => a.hunger > 0).length} cold ${W.agents.filter(a => a.cold >= 2).length}` +
-      ` | gdp ${coins(e.metrics.gdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
+      ` | real gdp ${coins(e.metrics.realGdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
       (e.decide ? ` | waited ${(e.decide.slowest / 1000).toFixed(1)}s${e.decide.timeouts ? ` (${e.decide.timeouts} timed out)` : ''}` : '') +
       (e.collected.length ? ` | collected ${e.collected.map(f => f.name).join(', ')}` : '') +
       (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => f.name).join(', ')}` : '') + ` | ${e.txs} tx ${e.ms}ms` +
@@ -182,7 +182,7 @@ function state() {
              transactions: chain.txCount(), lastRound: W.lastRound },
     llm: brain.stats(),
     agents: W.agents.map(a => ({
-      id: a.id, name: a.name, skills: a.skills, cash: a.cash / 100,
+      id: a.id, name: a.name, skills: Object.fromEntries(Object.entries(a.skills).map(([k, v]) => [k, +v.toFixed(2)])), cash: a.cash / 100,
       food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.houses(a), house: W.hasHouse(a),
       building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
@@ -191,12 +191,12 @@ function state() {
     })),
     events: W.events.filter(e => e.type === 'round' || e.type === 'error').slice(-15).reverse(),
     foreclosures: W.bankLog.filter(f => f.kind === 'foreclosed').slice(-8).reverse(),
-    metrics: (h => h ? { ...h, gdp: h.gdp / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 } : null)(W.priceHistory.at(-1)),
+    metrics: (h => h ? { ...h, gdp: h.gdp / 100, realGdp: (h.realGdp ?? 0) / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 } : null)(W.priceHistory.at(-1)),
     // live market: price history for the charts, last round's order book, recent trades
     history: W.priceHistory.map(h => ({ ...h, prices: h.prices.map(p => p / 100),
       supply: h.supply / 100, debt: h.debt / 100, badDebt: h.badDebt / 100, equity: h.equity / 100,
       lendingCap: h.lendingCap / 100, writtenOff: h.writtenOff / 100,
-      gdp: h.gdp / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 })),
+      gdp: h.gdp / 100, realGdp: (h.realGdp ?? 0) / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 })),
     // every loan, repayment and foreclosure, newest first
     bankFeed: W.bankLog.slice(-14).reverse().map(f => ({ ...f, amount: f.amount / 100, ...(f.debt ? { debt: f.debt / 100 } : {}),
       ...(f.refund ? { refund: f.refund / 100 } : {}), sig: sim.sigs.get(`${f.round}|${f.kind}|${f.name}`) ?? null })),

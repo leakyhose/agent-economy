@@ -65,7 +65,12 @@ export function claudeBrain() {
           ...(u === cut || !u.input || typeof u.input !== 'object' || Array.isArray(u.input)
             ? { is_error: true, content: t.badCall(u.name, JSON.stringify(u.input), u === cut ? 'it was cut off at the length limit' : 'arguments must be a JSON object') }
             : { content: t.exec(u.name, u.input) }) }));
-        if (t.acted.activity && !t.acted.failed) return;  // chose a shift, nothing refused — done
+        // Done once a shift is chosen and nothing was refused — unless the shift was the ONLY
+        // thing in the first reply. Orders used to register only if the model happened to send
+        // them in the same reply as the shift; when a wording change made it answer one call at
+        // a time, 79% of turns ended before an order could be posted and the market died. A
+        // lone shift now gets one follow-up turn (tools.mjs says so in the shift's result).
+        if (t.acted.activity && !t.acted.failed && (turn > 0 || uses.length > 1)) return;
         messages.push({ role: 'assistant', content: r.content }, { role: 'user', content: results });
       }
     },

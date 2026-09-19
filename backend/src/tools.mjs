@@ -140,7 +140,7 @@ export function makeTools(W, a) {
     return log.saw;
   }
   function describe() {
-    const F = CFG.TASKS.gather_food, sk = t => W.skill(a, t), n1 = x => +x.toFixed(1);
+    const F = CFG.TASKS.gather_food, sk = t => +W.skill(a, t).toFixed(2), n1 = x => +x.toFixed(1);
     const nets = W.usableNets(a);
     const now = W.round + 1;                     // the round being decided
     // what one shift of each job yields for this agent
@@ -158,10 +158,9 @@ export function makeTools(W, a) {
     // Make or buy: the one comparison that breaks "I'll just make it myself". A wide skill
     // draw means an agent's best shift usually buys far more of the other good than a shift
     // spent making it would yield.
-    const fishV = fish * W.prices[FOOD], cutV = cut * W.prices[WOOD], best = fishV >= cutV;
-    const earn = Math.max(fishV, cutV), other = best ? WOOD : FOOD;
-    const makeBuy = `Make or buy: your best gathering shift is ${best ? 'fishing' : 'woodcutting'}, ` +
-      `${coins(earn)} at market, which buys ${Math.floor(earn / W.prices[other])} ${GOODS[other]}.`;
+    const fishV = fish * W.prices[FOOD], cutV = cut * W.prices[WOOD];
+    const makeBuy = `At last prices a fishing shift of yours sells for ${coins(fishV)} (buys ${Math.floor(fishV / W.prices[WOOD])} wood), ` +
+      `a woodcutting shift for ${coins(cutV)} (buys ${Math.floor(cutV / W.prices[FOOD])} food).`;
 
     // Unfilled bids for something this agent can make: what making one to SELL would earn.
     // The net and house lines only ever said what one does for YOU, so a crafting specialist
@@ -188,7 +187,7 @@ export function makeTools(W, a) {
         (unpaid > 0 ? `, but you couldn't pay upkeep on ${unpaid} last round, so ${unpaid === 1 ? 'it' : 'they'} paid nothing` : '') + '. ' : '') +
       (a.building ? `Your unfinished house: ${a.building.done} of ${W.buildShifts} building shifts done, ${shiftsLeft} to go (build_house continues it).`
         : wood >= hw ? `You already hold the wood for ${houses ? 'another' : 'a'} house (${hw} of your ${wood}): ${W.buildShifts} building shifts and it pays ${pays}`
-        : `${houses ? 'Another' : 'A'} house: ${hw} wood (you have ${wood}) + ${W.buildShifts} building shifts, then it pays ${pays}`) + wantedBy(HOUSES);
+        : `${houses ? 'Another' : 'A'} house: ${hw} wood (you have ${wood}) + ${W.buildShifts} building shifts, or buy one; it pays ${pays}`) + wantedBy(HOUSES);
 
     // the bank: nothing at all unless it lends or the agent owes it
     const credit = W.bank.terms.ltvBps > 0, rate = W.ratePerRound(), ratePct = `≈${+(rate * 100).toFixed(2)}% a round`;
@@ -210,13 +209,15 @@ export function makeTools(W, a) {
       `You are ${a.name}. This is round ${now}.`,
       `Wellbeing so far: ${a.wellbeing.toFixed(1)} (${parts(a.wbParts)}).` +
         (a.wbRecent.length ? ` Last ${rounds(a.wbRecent.length)}: ${parts(recent)}.` : ''),
-      `You eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food a round and hold ${food} food: ${meals} helping${meals === 1 ? '' : 's'}.${glut}`,
+      `You eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food a round (1 helping ${signed(WB.EAT[1])}, 2 ${signed(WB.EAT[2])}, 3 ${signed(WB.EAT[3])}, none ${WB.EAT[0]}) ` +
+        `and hold ${food} food: ${meals} helping${meals === 1 ? '' : 's'}.${glut}`,
       `One shift for you now: fishing ${n1(fish)} food (skill x${sk('gather_food')}${nets ? ', with your net' : ''}), ` +
         `woodcutting ${n1(cut)} wood (x${sk('gather_wood')}).`,
       makeBuy,
       // a net you own still matters if others are bidding for one: that is the crafter's trade
-      nets && !netWant ? '' : `A net costs you ${nw} wood (≈${coins(nw * W.prices[WOOD])}, crafting x${sk('craft_net')}) and a shift` +
-        (nets ? '.' : `, and adds ${NET_GAIN}% to your catch: ${n1(noNet)} → ${n1(withNet)} food/shift.`) + netWant,
+      `A net adds ${NET_GAIN}% to a fisher's catch for about ${Math.round(1 / CFG.NET_WEAR)} fishing shifts` +
+        (nets ? ' (you have one)' : ` (yours: ${n1(noNet)} → ${n1(withNet)} food/shift)`) +
+        `. Making one costs you ${nw} wood (crafting x${sk('craft_net')}) and a shift; you can also buy or sell one.` + netWant,
       houseTxt,
       `Cash: ${coins(a.cash)} coins. You hold: ${GOODS.map((g, i) => i > WOOD && !W.owned(a, i) ? '' : `${g} ${W.owned(a, i)}${a.locked[i] ? ` (${a.locked[i]} pledged)` : ''}`).filter(Boolean).join(', ')}.`,
       loanTxt,
@@ -226,7 +227,7 @@ export function makeTools(W, a) {
       `Market (round ${W.round}):\n${marketText()}`,
       a.fills ? `Your orders in round ${a.fills.round}:\n- ${a.fills.lines.join('\n- ')}` : '',
       a.memory.length ? `Recently:\n- ${a.memory.join('\n- ')}` : '',
-      'Choose this round\'s shift.',
+      `This round: post any market orders, set your lifestyle${credit ? ', borrow or repay' : ''}, and choose your shift.`,
     ].filter(Boolean).join('\n');
   }
 
@@ -264,14 +265,17 @@ export function makeTools(W, a) {
       if (err) return no(err);
       acted.activity = name;
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
-      if (name === 'build_house') return `You work on your house this round (${a.building.done} of ${W.buildShifts} building shifts done before this one).`;
-      return `You head to the ${CFG.TASKS[name].place} for this round's shift.`;
+      // The turn stays open after a shift (see the brains): say so, or a model that answers
+      // one call at a time never posts an order.
+      const still = ' Your shift is set. You can still post market orders, change your lifestyle, borrow or repay this round.';
+      if (name === 'build_house') return `You work on your house this round (${a.building.done} of ${W.buildShifts} building shifts done before this one).${still}`;
+      return `You head to the ${CFG.TASKS[name].place} for this round's shift.${still}`;
     }
     if (name === 'set_lifestyle') {
       const err = W.setLifestyle(a, input.level);
       if (err) return no(err);
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
-      return `From now on you eat ${a.lifestyle} food per meal.`;
+      return `From now on you eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL} food per meal.`;
     }
     if (name === 'place_order') {
       const g = GOOD_INDEX[input.good];

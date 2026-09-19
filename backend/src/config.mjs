@@ -49,11 +49,15 @@ export const CFG = {
   // Every job takes one shift, and a shift is one round. Quantities are deliberately
   // coarse-grained (~15 a shift, a meal 5 food): at a skill of 0.2 a shift still yields
   // something, so a weak agent is poor at a job, not shut out of it.
-  // Both gathering jobs yield 15 at skill 1.0 and both goods open at 1.00, so a shift is
-  // worth the same either way and an agent's choice is about skill, not about the job.
+  // Both gathering jobs yield the same at skill 1.0 and both goods open at 1.00, so a shift
+  // is worth the same either way and an agent's choice is about skill, not about the job.
+  // 10, not 15: at 15 the village could meet its needs with ~19.5 of its 30 shifts, and the
+  // slack showed up as 32-46% of all food rotting and 22,000 wood nobody could use. At 10
+  // the same needs take ~29.5 shifts (about 17 fishing, 10 woodcutting, 2.5 crafting), so
+  // output is scarce enough to be worth selling, and growth has to come from skill (LEARN).
   TASKS: {
-    gather_food: { yield: 15, netYield: 21, place: 'docks' },   // one fisher feeds ~3 people at lifestyle 1
-    gather_wood: { yield: 15,               place: 'forest' },  // one woodcutter keeps ~6 fires lit
+    gather_food: { yield: 10, netYield: 14, place: 'docks' },   // one fisher feeds ~2 people at lifestyle 1
+    gather_wood: { yield: 10,               place: 'forest' },  // one woodcutter keeps ~4 fires lit
     // 20 wood, divided by crafting skill: a 2.0 crafter pays 10 (~10.00) plus a shift, and
     // sells into bids that ran to 40.00. Crafting to sell already paid — what stopped it was
     // the observation, not the margin.
@@ -78,6 +82,13 @@ export const CFG = {
   // TILT is how lopsided the draw is before scaling (1 = flat, higher = sharper
   // specialists); FLOOR is the hard minimum, and the ceiling follows from it at
   // 3.0 − 2 × FLOOR. At TILT 2 the middle 90% of skills land between 0.2 and 2.4.
+  // Learning by doing, the only source of growth: labour is fixed at one shift each and the
+  // village sits at its allocation ceiling from round 1, so real output can only rise if
+  // people get better at what they do. Every shift worked multiplies that job's skill by
+  // (1 + LEARN), up to LEARN_CAP times the skill the agent was born with. 0.3% a shift is
+  // ~+35% over 100 rounds for someone who sticks to one job — which also rewards sticking.
+  LEARN: env.LEARN === '0' ? 0 : (+env.LEARN || 0.003),
+  LEARN_CAP: +env.LEARN_CAP || 1.4,
   SKILL_TILT: +env.SKILL_TILT || 2,
   SKILL_FLOOR: +env.SKILL_FLOOR || 0.2,
   // ...except that dividing a net's wood by a 0.2 skill would ask for 100 wood, so that one
