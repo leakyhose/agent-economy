@@ -1,0 +1,54 @@
+/* Observation console tokens. Cold slate ink, brass for anything interactive,
+   and a fixed semantic set: colour only ever encodes identity, direction or
+   severity. Nothing here is decorative. */
+:root {
+  color-scheme: dark;
+
+  --ink-900: #070A0E;
+  --ink-800: #0B1016;
+  --ink-700: #0F151D;
+  --ink-600: #131B24;
+  --ink-500: #19232E;
+  --ink-400: #1F2B37;
+
+  --line: #1B2530;
+  --line-2: #26333F;
+  --edge: rgba(255, 255, 255, 0.045);
+
+  --text-0: #DEE6EE;
+  --text-1: #94A3B2;
+  --text-2: #64727F;
+  --text-3: #45525E;
+
+  --brass: #E8B33C;
+  --brass-ink: #241B08;
+  --brass-dim: rgba(232, 179, 60, 0.16);
+  --up: #4FC1A6;
+  --down: #E4685D;
+  --alert: #E8B33C;
+  --info: #6BA8E8;
+
+  --font-ui: 'Archivo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Spline Sans Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --t-micro: 10px;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-base: 13px;
+  --t-md: 15px;
+  --t-lg: 19px;
+  --t-xl: 25px;
+  --t-2xl: 33px;
+
+  --s1: 4px;
+  --s2: 6px;
+  --s3: 8px;
+  --s4: 12px;
+  --s5: 16px;
+  --s6: 24px;
+  --s7: 32px;
+
+  --bar-h: 46px;
+  --tape-h: 28px;
+  --rail-w: 152px;
+}

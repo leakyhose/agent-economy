@@ -7,7 +7,12 @@
     "test": "vitest run",
     "typecheck": "tsc -b --pretty",
     "demo:solana": "tsx packages/solana/scripts/demo.ts",
-    "test:chain": "cargo test -p world"
+    "test:chain": "cargo test -p world",
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build",
+    "typecheck:web": "npm --prefix apps/web run typecheck",
+    "test:web": "npm --prefix apps/web run test",
+    "check:vocab": "npm --prefix apps/web run check:vocab"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
