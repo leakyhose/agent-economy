@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>agent-economy</title>
+<style>
+  body { font: 13px ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  button { font: inherit; padding: 4px 14px; cursor: pointer; }
+  .box { border: 1px solid #ccc; padding: 8px 10px; margin: 10px 0; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 2px 8px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
+  td.n, th.n { text-align: right; }
+  td.t { white-space: normal; color: #555; }
+  .hungry { color: #b00; }
+</style>
+
+<h1>agent-economy</h1>
+<button id="btn" onclick="toggle()">…</button>
+<span id="status"></span>
+
+<div class="box" id="world">not running</div>
+<div class="box" id="events"></div>
+
+<table>
+  <thead><tr>
+    <th>agent</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
+    <th class="n">wood</th><th class="n">nets</th><th class="n">hunger</th><th>last thought</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+const $ = id => document.getElementById(id);
+const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
+let running = false;
+
+async function toggle() {
+  btn.disabled = true;
+  statusEl.textContent = running ? ' stopping…' : ' starting (creating ledger on Solana)…';
+  await fetch(running ? '/stop' : '/start', { method: 'POST' });
+  btn.disabled = false;
+  refresh();
+}
+
+async function refresh() {
+  const s = await (await fetch('/state')).json();
+  running = s.running;
+  btn.textContent = running ? 'Stop' : 'Start simulation';
+  if (!running) {
+    statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
+    world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
+    return;
+  }
+  statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
+
+  const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
+  const doing = Object.entries(s.doing).map(([k, v]) => `${k} ${v}`).join(' · ');
+  world.innerHTML =
+    `<b>round ${s.round}</b> · tick ${s.tick}<br>` +
+    `prices: ${prices}<br>` +
+    `doing: ${doing}<br>` +
+    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · ` +
+    `<span class="hungry">hungry ${s.totals.hungry}</span><br>` +
+    `solana: ${s.chain.transactions} transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}…</a>` +
+    (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '');
+
+  events.innerHTML = s.events.map(e => e.type === 'error'
+    ? `<div class="hungry">error: ${e.message}</div>`
+    : `<div>round ${e.round}: ${e.prices.map((p, i) => (p / 100).toFixed(2) + ' (' + e.volumes[i] + ')').join(' / ')} · ${e.txs} tx · ${e.ms}ms</div>`
+  ).join('') || 'waiting for first market round…';
+
+  rows.innerHTML = s.agents.map(a =>
+    `<tr><td>${a.name}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
+    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
+    `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
+    `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
+  ).join('');
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
