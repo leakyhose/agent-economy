@@ -1,0 +1,1 @@
+{ "name": "@aw/engine", "private": true, "type": "module", "main": "src/index.ts" }

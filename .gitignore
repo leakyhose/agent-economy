@@ -9,6 +9,7 @@ target/
 test-ledger/
 reference/
 pnpm-lock.yaml
+package-lock.json
 runs/
 
 # The program keypair is the exception: it is a throwaway localnet identity with no

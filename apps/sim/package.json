@@ -1,0 +1,8 @@
+{
+  "name": "@aw/sim",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "dependencies": { "ws": "^8.18.0" },
+  "devDependencies": { "@types/ws": "^8.5.13" }
+}
