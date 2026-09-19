@@ -5,7 +5,12 @@
   "scripts": {
     "sim": "tsx apps/sim/src/main.ts",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "dev": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/web run build",
+    "typecheck:web": "npm --prefix apps/web run typecheck",
+    "test:web": "npm --prefix apps/web run test",
+    "check:vocab": "npm --prefix apps/web run check:vocab"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
