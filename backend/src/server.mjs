@@ -2,6 +2,7 @@
 //   GET  /        dashboard            GET /state   JSON snapshot
 //   POST /start   start a new world    GET /events  live event stream (SSE)
 //   POST /stop    stop it
+//   POST /pause   freeze after the next round settles    POST /resume  unfreeze
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,7 +62,11 @@ async function start() {
       ltvBps: bps(B.LTV), rateBps: bps(B.RATE), penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA),
       marginBps: bps(B.MARGIN), termSlots: B.TERM_SLOTS, equityFloor: Math.round(B.EQUITY_FLOOR * money),
     });
-  const W = createWorld(chain, await chain.fetch(), { onEvent: e => sim && broadcast(e) });
+  const W = createWorld(chain, await chain.fetch(), { onEvent: e => {
+    if (!sim) return;
+    broadcast(e);
+    if (e.type === 'round' && sim.pausing) freeze();
+  } });
 
   // every run is saved: runs/<timestamp>/events.jsonl + meta.json (+ final.json on stop)
   const dir = path.join(ROOT, 'runs', new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19));
@@ -73,7 +78,7 @@ async function start() {
     config: { ...CFG, RPC: undefined },
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
-  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir,
+  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, pausing: false, paused: false,
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
   console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
@@ -82,7 +87,7 @@ async function start() {
   async function agentLoop(a) {
     await sleep(Math.random() * CFG.STAGGER_MS);          // staggered wake-up
     while (alive()) {
-      if (a.activity) { await sleep(CFG.TICK_MS); continue; }
+      if (a.activity || sim.paused) { await sleep(CFG.TICK_MS); continue; }   // no LLM calls while paused
       const tools = makeTools(W, a);
       try { await brain.decide(a, tools); } catch (e) { W.emit('error', { agent: a.id, message: e.message }); }
       if (!alive()) return;
@@ -95,6 +100,36 @@ async function start() {
   W.agents.forEach(agentLoop);
   sim.clock = setInterval(() => W.step(), CFG.TICK_MS);
   return 'started';
+}
+
+// Pausing only ever happens between rounds: /pause sets a flag, and the clock is stopped
+// right after the next round has settled on-chain, so no round is left half-applied.
+// With the clock stopped no ticks pass: activities don't finish, nobody eats or freezes,
+// and idle agents don't call the LLM. Solana's own clock keeps running, though, so loan
+// due dates (in slots) still come closer while paused.
+function freeze() {
+  clearInterval(sim.clock);
+  sim.clock = null;
+  sim.pausing = false;
+  sim.paused = true;
+  console.log(`paused after round ${sim.W.round}`);
+}
+
+function pause() {
+  if (!sim) return 'not running';
+  if (sim.paused) return 'already paused';
+  sim.pausing = true;
+  return 'pausing after this round';
+}
+
+function resume() {
+  if (!sim) return 'not running';
+  if (sim.pausing) { sim.pausing = false; return 'resumed'; }   // cancel a pause still waiting on its round
+  if (!sim.paused) return 'not paused';
+  sim.paused = false;
+  sim.clock = setInterval(() => sim.W.step(), CFG.TICK_MS);
+  console.log(`resumed at round ${sim.W.round}`);
+  return 'resumed';
 }
 
 async function stop() {
@@ -122,7 +157,7 @@ function state() {
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, brain: brain.name, tick: W.tick, round: W.round,
+    running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name, tick: W.tick, round: W.round,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
     volumes: Object.fromEntries(GOODS.map((g, i) => [g, W.volumes[i]])),
@@ -180,6 +215,8 @@ http.createServer(async (req, res) => {
     if (req.url === '/state') return json(res, state());
     if (req.url === '/start' && req.method === 'POST') return json(res, { result: await start() });
     if (req.url === '/stop'  && req.method === 'POST') return json(res, { result: await stop() });
+    if (req.url === '/pause' && req.method === 'POST') return json(res, { result: pause() });
+    if (req.url === '/resume' && req.method === 'POST') return json(res, { result: resume() });
     if (req.url === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
       sseClients.add(res); req.on('close', () => sseClients.delete(res)); return;

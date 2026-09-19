@@ -19,6 +19,7 @@
 
 <h1>agent-economy</h1>
 <button id="btn" onclick="toggle()">…</button>
+<button id="pauseBtn" onclick="togglePause()" hidden>Pause</button>
 <span id="status"></span>
 
 <div class="box" id="world">not running</div>
@@ -248,17 +249,30 @@ async function toggle() {
   refresh();
 }
 
+// pause takes effect after the current round settles; clicking again while it waits cancels it
+async function togglePause() {
+  const p = $('pauseBtn');
+  p.disabled = true;
+  await fetch(p.dataset.state === 'running' ? '/pause' : '/resume', { method: 'POST' });
+  p.disabled = false;
+  refresh();
+}
+
 async function refresh() {
   const s = await (await fetch('/state')).json();
   running = s.running;
   btn.textContent = running ? 'Stop' : 'Start simulation';
+  const p = $('pauseBtn');
+  p.hidden = !running;
+  p.dataset.state = s.paused ? 'paused' : s.pausing ? 'pausing' : 'running';
+  p.textContent = s.paused ? 'Resume' : s.pausing ? 'Pausing after this round… (cancel)' : 'Pause';
   if (!running) {
     statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
     world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
     $('market').style.display = 'none'; $('econ').style.display = 'none'; $('econ2').style.display = 'none';
     return;
   }
-  statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
+  statusEl.textContent = (s.paused ? ` paused after round ${s.round}` : ` running ${s.seconds}s`) + ` · brain: ${s.brain}`;
   last = s; $('market').style.display = 'flex'; $('econ').style.display = 'flex'; $('econ2').style.display = 'flex';
   GN.forEach((_, g) => chart(g)); book(); econ(); wealth(); bankFeed();
 
