@@ -5,7 +5,9 @@
   "scripts": {
     "sim": "tsx apps/sim/src/main.ts",
     "test": "vitest run",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "demo:solana": "tsx packages/solana/scripts/demo.ts",
+    "test:chain": "cargo test -p world"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

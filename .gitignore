@@ -10,3 +10,13 @@ test-ledger/
 reference/
 pnpm-lock.yaml
 runs/
+
+# The program keypair is the exception: it is a throwaway localnet identity with no
+# funds and no upgrade authority worth stealing, and without it `declare_id!` in
+# programs/world/src/lib.rs cannot be deployed by anyone else on the team. A real
+# deployment key would never be committed.
+!target/
+target/*
+!target/deploy/
+target/deploy/*
+!target/deploy/world-keypair.json
