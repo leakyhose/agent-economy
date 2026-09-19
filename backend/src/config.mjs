@@ -49,22 +49,26 @@ export const CFG = {
   // Every job takes one shift, and a shift is one round. Quantities are deliberately
   // coarse-grained (~15 a shift, a meal 5 food): at a skill of 0.2 a shift still yields
   // something, so a weak agent is poor at a job, not shut out of it.
-  // Both gathering jobs yield the same at skill 1.0 and both goods open at 1.00, so a shift
-  // is worth the same either way and an agent's choice is about skill, not about the job.
   // 10, not 15: at 15 the village could meet its needs with ~19.5 of its 30 shifts, and the
   // slack showed up as 32-46% of all food rotting and 22,000 wood nobody could use. At 10
-  // the same needs take ~29.5 shifts (about 17 fishing, 10 woodcutting, 2.5 crafting), so
-  // output is scarce enough to be worth selling, and growth has to come from skill (LEARN).
+  // the same needs take ~29.5 shifts, so output is scarce enough to be worth selling.
+  // Food is 12, not the symmetric 10: at 10 the food ask side ran dry in a third of the early
+  // rounds, and an empty ask side prints ~+3.9% a round (bids always sit above the last price),
+  // which took the price index to 2.61 in 99 rounds. Wood is the good actually in glut, so it
+  // stays at 10. Growth still has to come from skill (LEARN) and from nets: a net is +~42% to
+  // a catch, so nets spreading through the fishers is itself a source of real growth.
   TASKS: {
-    gather_food: { yield: 10, netYield: 14, place: 'docks' },   // one fisher feeds ~2 people at lifestyle 1
+    gather_food: { yield: 12, netYield: 17, place: 'docks' },   // one fisher feeds ~2 people at lifestyle 1
     gather_wood: { yield: 10,               place: 'forest' },  // one woodcutter keeps ~4 fires lit
     // 20 wood, divided by crafting skill: a 2.0 crafter pays 10 (~10.00) plus a shift, and
     // sells into bids that ran to 40.00. Crafting to sell already paid — what stopped it was
     // the observation, not the margin.
     craft_net:   { wood: 20,                place: 'workshop' },
     // A house: the wood is used up when the build starts, and the house exists on-chain
-    // from then on, unfinished, so it can be pledged for a construction loan. It gives nothing and can't be sold until `shifts` building
-    // shifts are done; a build left for other work waits, unfinished, until resumed.
+    // from then on, unfinished, so it can be pledged for a construction loan. It gives nothing and can't be sold until `shifts` units of
+    // building progress are done; a build left for other work waits, unfinished, until resumed.
+    // `shifts` is the work a house takes at crafting skill 1.0 — a shift adds the builder's
+    // crafting skill (BUILD_CLAMP), so a 2.0 crafter finishes in 2 shifts and a 0.2 in 4.
     // 60 wood, flat for everyone (see W.houseWood), + 3 shifts ≈ 105.00 all in, against
     // +1.5 wellbeing a round — worth ~7.50 at what a helping of food costs — so it pays back
     // in ~14 rounds, and lands on the 90-145 agents actually bid for a house. At 150 wood
@@ -87,14 +91,21 @@ export const CFG = {
   // people get better at what they do. Every shift worked multiplies that job's skill by
   // (1 + LEARN), up to LEARN_CAP times the skill the agent was born with. 0.3% a shift is
   // ~+35% over 100 rounds for someone who sticks to one job — which also rewards sticking.
+  // The cap is 1.6, not 1.4: a full-time specialist hits 1.4x at round ~112, so growth would
+  // flatten just after a 100-round run ends. 1.6x is ~168 shifts, beyond any run so far.
   LEARN: env.LEARN === '0' ? 0 : (+env.LEARN || 0.003),
-  LEARN_CAP: +env.LEARN_CAP || 1.4,
+  LEARN_CAP: +env.LEARN_CAP || 1.6,
   SKILL_TILT: +env.SKILL_TILT || 2,
   SKILL_FLOOR: +env.SKILL_FLOOR || 0.2,
   // ...except that dividing a net's wood by a 0.2 skill would ask for 100 wood, so that one
   // bill is clamped to this band: the best crafter is 4x cheaper than the worst, and no one
   // is priced out of a net entirely.
   CRAFT_CLAMP: [0.5, 2.0],
+  // Crafting is the maker's skill: it also sets how fast a house goes up (build_house adds this
+  // much progress a shift, out of TASKS.build_house.shifts). A narrower band than CRAFT_CLAMP —
+  // 2.0 finishes in 2 shifts, 1.0 in 3, anyone at or under 0.75 in 4 — so the worst builder is
+  // twice as slow, not six times, and every agent can still put up a house.
+  BUILD_CLAMP: [0.75, 2.0],
   // Chance a (free) net breaks on each fishing shift; a pledged net is held by the chain and
   // doesn't. This is the crafter's whole trade: ~17 fishing shifts a round over a ~6.7-shift
   // life is ~2.5 nets a round of standing demand. Lowering it would remove that.
@@ -156,15 +167,18 @@ export const CFG = {
   },
   SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
   ROUND_MS_GUESS: 1500,    // round length assumed before the first round is measured (short is safe: see TERM_SLACK)
-  // cents: food, wood, nets, boats, houses. Houses and boats open at 1 cent — the chain
-  // refuses a zero start price — which is the point: nothing has ever traded at it, so
-  // it backs no credit and no net worth, and agents are shown "no trades yet" instead of
-  // a number. A real price appears the first time a house actually sells.
-  START_PRICES: [100, 100, 2500, 1, 1],
+  // cents: food, wood, nets, boats, houses. Boats open at 1 cent — the chain refuses a zero
+  // start price — and nothing makes or shows them. Houses open at what one costs to make
+  // (60 wood × 1.00 + 3 shifts × 10 wood × 1.00 = 90.00, the same number world.mjs values
+  // real GDP at): a house nobody has bought yet is still the village's biggest asset, and at
+  // 1 cent it backed no loan and no net worth — 192 of 222 refused loans were "not enough
+  // collateral" and the bank once auctioned a seized house for a penny. Agents are still shown
+  // "no trades yet — a house takes …", never this number as a price (see tools.mjs marketText).
+  START_PRICES: [100, 100, 2500, 1, 9000],
   // The price index: a fixed basket (15 meals at lifestyle 1, some firewood, a little of the
-  // durables), unchanged since rounds became turns so runs stay comparable. Houses are out
-  // of it: a basket weight on a good with no reference price would make the index jump the
-  // day one first sells. Index 1.00 = this basket at START_PRICES.
+  // durables), unchanged since rounds became turns so runs stay comparable. Houses stay out
+  // of it (weight 0): one house is worth 15 rounds of the rest of the basket, so the first
+  // sale away from the opening 90.00 would swamp the index. Index 1.00 = basket at START_PRICES.
   PRICE_BASKET: [75, 18.75, 0.5, 0, 0],
   INFLATION_ROUNDS: 20,
   // D6: agents see last round's order book as a depth ladder (top levels per side).

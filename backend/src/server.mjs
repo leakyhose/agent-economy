@@ -160,7 +160,7 @@ function state() {
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs), buildShifts: W.buildShifts,
+    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
@@ -184,7 +184,9 @@ function state() {
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: Object.fromEntries(Object.entries(a.skills).map(([k, v]) => [k, +v.toFixed(2)])), cash: a.cash / 100,
       food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.houses(a), house: W.hasHouse(a),
-      building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
+      // a build in progress: shifts worked, out of what it takes this agent (crafting skill sets that)
+      building: a.building?.shifts ?? null, buildShifts: (a.building?.shifts ?? 0) + W.buildShiftsLeft(a),
+      locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,

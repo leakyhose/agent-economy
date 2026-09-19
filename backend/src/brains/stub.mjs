@@ -32,7 +32,7 @@ export function stubBrain() {
       const keepNets = crafter ? 0 : 1;
       if (v.nets > keepNets) t.exec('place_order', { side: 'sell', good: 'net', quantity: v.nets - keepNets, price: +(p.nets * shade('nets')).toFixed(2) });
       // a builder lives in one house and sells the rest, at about what building it cost him
-      const houseCost = v.houseWood * p.wood + 4 * p.food * v.meal;
+      const houseCost = v.houseWood * p.wood + (v.buildShifts + 1) * p.food * v.meal;
       if (v.owned > 1) t.exec('place_order', { side: 'sell', good: 'house', quantity: v.owned - 1, price: +(houseCost * jitter).toFixed(2) });
 
       // buy what you need
