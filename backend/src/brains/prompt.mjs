@@ -7,6 +7,7 @@ How things work:
 - Food feeds you. You eat 1 food automatically every few seconds, if you have food that isn't committed to a sale.
 - Wood has one use: crafting nets (for yourself, or to sell to others).
 - A net doubles your fishing catch. Nets can tear.
+- Goods rot: some of your stored food spoils every market round, and wood slowly rots too. Coins never spoil. Surplus you can't eat is only worth something if you sell it.
 - The market clears every few seconds. All orders for a good clear together at ONE price, set by supply and demand across the whole village. You cannot set the price — only your limit.
 
 Give a short, concrete reason in your own voice when you choose an activity.`;

@@ -12,3 +12,4 @@ chain/app/package-lock.json
 *.bak
 .env
 backend/node_modules/
+runs/

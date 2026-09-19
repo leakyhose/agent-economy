@@ -101,13 +101,32 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     else { a.hunger++; if (a.hunger === 1 || a.hunger % 3 === 0) remember(a, `You went hungry (${a.hunger} missed meal${a.hunger > 1 ? 's' : ''}).`); }
   }
 
+  // Goods rot; coins don't. Only FREE stock rots — goods committed to a sale are
+  // safe until the round clears. Fractional rot rounds up or down at random, so the
+  // expected loss is exact even for small piles.
+  W.spoiled = [0, 0, 0];
+  function spoil() {
+    for (const a of agents) for (let g = 0; g < GOODS.length; g++) {
+      const rate = CFG.SPOIL[g], free = W.availGood(a, g);
+      if (!rate || free <= 0) continue;
+      const x = free * rate; let n = Math.floor(x); if (rnd() < x - n) n++;
+      if (n > 0) {
+        addDelta(a, g, -n); W.spoiled[g] += n;
+        if (g === FOOD) remember(a, `${n} of your food spoiled.`);
+      }
+    }
+  }
+
   W.step = () => {
     W.tick++;
     for (const a of agents) {
       if (a.activity && W.tick >= a.activity.endsAt) finish(a);
       if ((W.tick + a.eatPhase) % CFG.EAT_TICKS === 0) eat(a);
     }
-    if (W.tick % CFG.ROUND_TICKS === 0) W.runRound().catch(e => emit('error', { message: e.message }));
+    if (W.tick % CFG.ROUND_TICKS === 0) {
+      spoil();
+      W.runRound().catch(e => emit('error', { message: e.message }));
+    }
   };
 
   // ---- a market round: settle deltas, clear three auctions, read the chain back
@@ -118,6 +137,13 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const batch = W.pending; W.pending = [];
     const book = W.book; W.book = emptyBook(); W.inflight = book;
     const sigs = [];
+
+    const bookStats = GOODS.map((_, g) => {
+      const b = book[g].filter(o => o.side === 'buy'), s = book[g].filter(o => o.side === 'sell');
+      return { bids: b.length, bidQty: b.reduce((t, o) => t + o.qty, 0), asks: s.length, askQty: s.reduce((t, o) => t + o.qty, 0),
+               bestBid: Math.max(0, ...b.map(o => o.limit)), bestAsk: s.length ? Math.min(...s.map(o => o.limit)) : null };
+    });
+    const spoiled = W.spoiled; W.spoiled = [0, 0, 0];
 
     // what the chain WILL hold once this batch settles
     const exp = agents.map(a => ({ cash: a.chain.cash, goods: [...a.chain.goods] }));
@@ -148,14 +174,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
     // the chain is the truth — replace the mirror
     const L = await chain.fetch();
-    const fills = [0, 0, 0];
+    const fills = [0, 0, 0], trades = [];
     for (const a of agents) {
       const after = L.slots[a.id], e = exp[a.id];
       const cashDelta = after.cash - e.cash;
       for (let g = 0; g < 3; g++) {
         const dg = after.goods[g] - e.goods[g];
-        if (dg > 0) remember(a, `Market: you bought ${dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`);
-        if (dg < 0) { remember(a, `Market: you sold ${-dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`); fills[g] += -dg; }
+        if (dg > 0) { remember(a, `Market: you bought ${dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`); trades.push({ agent: a.id, good: GOODS[g], side: 'buy', qty: dg, price: L.lastPrice[g] }); }
+        if (dg < 0) { remember(a, `Market: you sold ${-dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`); fills[g] += -dg; trades.push({ agent: a.id, good: GOODS[g], side: 'sell', qty: -dg, price: L.lastPrice[g] }); }
       }
       void cashDelta;
       a.chain = { cash: after.cash, goods: [...after.goods] };
@@ -169,7 +195,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (W.priceHistory.length > 200) W.priceHistory.shift();
     W.inflight = null;
     W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs };
-    emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sig: sigs.at(-1) });
+    emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sig: sigs.at(-1),
+                    book: bookStats, trades, spoiled,
+                    agents: agents.map(a => ({ id: a.id, cash: a.cash, goods: a.goods, hunger: a.hunger, activity: a.activity?.task ?? null })) });
     W.roundBusy = false;
   };
 

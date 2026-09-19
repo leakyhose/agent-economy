@@ -11,6 +11,10 @@
   td.n, th.n { text-align: right; }
   td.t { white-space: normal; color: #555; }
   .hungry { color: #b00; }
+  .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; }
+  .chart svg { display: block; width: 100%; height: auto; }
+  .chart .head { display: flex; justify-content: space-between; margin-bottom: 2px; }
+  .up { color: #1a7f37; } .down { color: #b00; }
 </style>
 
 <h1>agent-economy</h1>
@@ -18,6 +22,11 @@
 <span id="status"></span>
 
 <div class="box" id="world">not running</div>
+
+<div id="market" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
+  <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div>
+  <div class="box" id="book" style="margin:0; min-width:260px; flex:1"></div>
+</div>
 <div class="box" id="events"></div>
 
 <table>
@@ -32,6 +41,73 @@
 const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
 let running = false;
+let last = null;                     // last /state, so hover can redraw without a fetch
+const hover = [null, null, null];    // hovered round index per chart
+
+// ---- a small live chart: price as a step line (it only changes when a trade clears),
+//      volume as bars underneath, hover shows the exact round.
+function chart(g) {
+  const el = $('c' + g), s = last, h = s.history, name = ['food', 'wood', 'nets'][g];
+  const W = 300, PH = 90, VH = 24, PAD = 36, top = 6, vTop = top + PH + 8, H = vTop + VH + 14;
+  const now = s.prices[name], first = h.length ? h[0].prices[g] : now;
+  const chg = first ? (now - first) / first * 100 : 0;
+  const head = `<div class="head"><b>${name}</b><span>${now.toFixed(2)} ` +
+    `<span class="${chg > 0 ? 'up' : chg < 0 ? 'down' : ''}">${chg > 0 ? '+' : ''}${chg.toFixed(1)}%</span></span></div>`;
+  if (h.length < 2) { el.innerHTML = head + '<div style="color:#888;padding:30px 0">waiting for rounds…</div>'; return; }
+
+  const ps = h.map(x => x.prices[g]), vs = h.map(x => x.volumes[g]);
+  let lo = Math.min(...ps), hi = Math.max(...ps);
+  if (hi - lo < 0.01) { lo -= 0.5; hi += 0.5; }               // flat line: give it room
+  const pad = (hi - lo) * 0.15; lo -= pad; hi += pad;
+  const vmax = Math.max(1, ...vs);
+  const x = i => PAD + i / (h.length - 1) * (W - PAD - 4);
+  const y = p => top + (hi - p) / (hi - lo) * PH;
+
+  let d = `M${x(0)},${y(ps[0])}`;
+  for (let i = 1; i < ps.length; i++) d += ` H${x(i)} V${y(ps[i])}`;
+  const bw = Math.max(1, (W - PAD - 4) / h.length - 2);
+  const bars = vs.map((v, i) => v ? `<rect x="${x(i) - bw / 2}" y="${vTop + VH - v / vmax * VH}" width="${bw}" height="${v / vmax * VH}" rx="1" fill="#9db4d6"/>` : '').join('');
+
+  const k = hover[g];
+  const tip = k == null ? '' :
+    `<line x1="${x(k)}" x2="${x(k)}" y1="${top}" y2="${vTop + VH}" stroke="#999" stroke-dasharray="2 2"/>` +
+    `<circle cx="${x(k)}" cy="${y(ps[k])}" r="4" fill="#2458a6" stroke="#fff" stroke-width="2"/>` +
+    `<text x="${x(k) > W / 2 ? x(k) - 6 : x(k) + 6}" y="${top + 10}" text-anchor="${x(k) > W / 2 ? 'end' : 'start'}" font-size="10" fill="#111">` +
+    `round ${h[k].round} · ${ps[k].toFixed(2)} · ${vs[k]} sold</text>`;
+
+  el.innerHTML = head + `<svg viewBox="0 0 ${W} ${H}">
+    <line x1="${PAD}" x2="${W - 4}" y1="${y(hi - pad)}" y2="${y(hi - pad)}" stroke="#eee"/>
+    <line x1="${PAD}" x2="${W - 4}" y1="${y(lo + pad)}" y2="${y(lo + pad)}" stroke="#eee"/>
+    <text x="${PAD - 4}" y="${y(hi - pad) + 3}" text-anchor="end" font-size="9" fill="#888">${(hi - pad).toFixed(2)}</text>
+    <text x="${PAD - 4}" y="${y(lo + pad) + 3}" text-anchor="end" font-size="9" fill="#888">${(lo + pad).toFixed(2)}</text>
+    <path d="${d}" fill="none" stroke="#2458a6" stroke-width="2" stroke-linejoin="round"/>
+    <text x="${PAD - 4}" y="${vTop + VH}" text-anchor="end" font-size="9" fill="#888">vol</text>
+    ${bars}
+    <text x="${PAD}" y="${H - 2}" font-size="9" fill="#888">round ${h[0].round}</text>
+    <text x="${W - 4}" y="${H - 2}" text-anchor="end" font-size="9" fill="#888">round ${h.at(-1).round}</text>
+    ${tip}
+    <rect x="${PAD}" y="0" width="${W - PAD}" height="${H}" fill="transparent" data-g="${g}"/>
+  </svg>`;
+  const hit = el.querySelector('rect[data-g]');
+  hit.onmousemove = ev => {
+    const r = hit.getBoundingClientRect(), fx = (ev.clientX - r.left) / r.width;
+    hover[g] = Math.max(0, Math.min(h.length - 1, Math.round(fx * (h.length - 1)))); chart(g);
+  };
+  hit.onmouseleave = () => { hover[g] = null; chart(g); };
+}
+
+// ---- the market right now: last round's order book + the latest trades
+function book() {
+  const m = last.market;
+  const rows = m.book.map(b =>
+    `<tr><td>${b.good}</td><td class="n">${b.bids} (${b.bidQty})</td><td class="n">${b.bestBid?.toFixed(2) ?? '—'}</td>` +
+    `<td class="n">${b.bestAsk?.toFixed(2) ?? '—'}</td><td class="n">${b.asks} (${b.askQty})</td></tr>`).join('');
+  const trades = m.trades.map(t => `<div>r${t.round} · ${t.name} bought ${t.qty} ${t.good} @ ${t.price.toFixed(2)}</div>`).join('');
+  $('book').innerHTML =
+    `<b>order book (last round)</b><table style="margin:4px 0 8px"><tr><th></th><th class="n">buy orders</th>` +
+    `<th class="n">best bid</th><th class="n">best ask</th><th class="n">sell orders</th></tr>${rows}</table>` +
+    `<b>latest trades</b>${trades || '<div style="color:#888">none yet</div>'}`;
+}
 
 async function toggle() {
   btn.disabled = true;
@@ -48,9 +124,12 @@ async function refresh() {
   if (!running) {
     statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
     world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
+    $('market').style.display = 'none';
     return;
   }
   statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
+  last = s; $('market').style.display = 'flex';
+  chart(0); chart(1); chart(2); book();
 
   const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
   const doing = Object.entries(s.doing).map(([k, v]) => `${k} ${v}`).join(' · ');

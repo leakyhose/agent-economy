@@ -44,6 +44,7 @@ const ACTIVITIES = new Set(['gather_food', 'gather_wood', 'craft_net', 'rest']);
 
 export function makeTools(W, a) {
   const acted = { activity: null, orders: 0 };
+  const log = { saw: null, actions: [] };      // written to the run log after each decision
 
   function marketText() {
     const h = W.priceHistory.slice(-6);
@@ -56,6 +57,10 @@ export function makeTools(W, a) {
 
   // Everything the agent is told about its situation. The LLM sees this as its prompt.
   function observe() {
+    log.saw = describe();
+    return log.saw;
+  }
+  function describe() {
     const rc = W.reservedCash(a);
     const rf = W.reservedGood(a, FOOD);
     return [
@@ -64,6 +69,7 @@ export function makeTools(W, a) {
       `Food: ${a.goods[FOOD]}${rf ? ` (${rf} committed to sell)` : ''}. Wood: ${a.goods[WOOD]}. Nets: ${a.goods[NETS]}.`,
       a.hunger ? `You are HUNGRY — ${a.hunger} missed meal(s). Hungry villagers gather half as much.` : 'You are fed.',
       `You eat 1 food every ${CFG.EAT_TICKS * CFG.TICK_MS / 1000}s if you have food that isn't committed to a sale.`,
+      `Every market round about ${Math.round(CFG.SPOIL[FOOD] * 100)}% of your free food and ${Math.round(CFG.SPOIL[WOOD] * 100)}% of your free wood rots. Coins never spoil.`,
       `Market (round ${W.round}): ${marketText()}.`,
       a.memory.length ? `Recently:\n- ${a.memory.join('\n- ')}` : '',
       'Choose your next shift.',
@@ -71,6 +77,11 @@ export function makeTools(W, a) {
   }
 
   function exec(name, input = {}) {
+    const result = run(name, input);
+    log.actions.push({ tool: name, input, result });
+    return result;
+  }
+  function run(name, input) {
     if (ACTIVITIES.has(name)) {
       if (acted.activity) return `You already chose to ${acted.activity} this shift.`;
       const task = name === 'rest' ? 'idle' : name;
@@ -102,5 +113,5 @@ export function makeTools(W, a) {
     };
   }
 
-  return { defs: TOOL_DEFS, exec, observe, view, acted };
+  return { defs: TOOL_DEFS, exec, observe, view, acted, log };
 }

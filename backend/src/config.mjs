@@ -24,7 +24,7 @@ export const CFG = {
   MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : 'gpt-5.6-luna'),
   TICK_MS:     +env.TICK_MS     || 500,               // one game tick
   ROUND_TICKS: +env.ROUND_TICKS || 6,                 // market clears every N ticks
-  EAT_TICKS:   +env.EAT_TICKS   || 12,                // each agent eats 1 food every N ticks
+  EAT_TICKS:   +env.EAT_TICKS   || 8,                 // each agent eats 1 food every N ticks
   STAGGER_MS:  +env.STAGGER_MS  || 6000,              // agents wake up spread over this window
   START_CASH:  +env.START_CASH  || 5000,              // cents
   START_FOOD:  +env.START_FOOD  || 6,
@@ -34,12 +34,16 @@ export const CFG = {
   RPC:          env.RPC          || 'http://127.0.0.1:8899',
 
   TASKS: {
-    gather_food: { ticks: 6, yield: 3, netYield: 6, place: 'docks' },
+    gather_food: { ticks: 6, yield: 2, netYield: 4, place: 'docks' },   // one fisher feeds ~2 people
     gather_wood: { ticks: 6, yield: 3,               place: 'forest' },
     craft_net:   { ticks: 4, wood: 4,                place: 'workshop' },
     idle:        { ticks: 6,                          place: 'square' },
   },
   NET_WEAR: 0.05,          // chance a net breaks on each fishing shift
+  // Share of an agent's FREE stock that rots every market round: food, wood, nets.
+  // Coins never spoil — so holding money is the way to store value, and surplus
+  // goods have to be sold before they rot.
+  SPOIL: [0.10, 0.02, 0],
   HUNGRY_PENALTY: 0.5,     // hungry agents gather half as much
   START_PRICES: [500, 300, 2000],   // cents: food, wood, nets
 };

@@ -27,13 +27,14 @@ async function makeBrain() {
 }
 
 // ---- one simulation at a time --------------------------------------------------
-let sim = null;          // { W, chain, brain, clock, gen, startedAt }
+let sim = null;          // { W, chain, brain, clock, gen, startedAt, log }
 let gen = 0;
 const sseClients = new Set();
 
 function broadcast(e) {
   const line = `data: ${JSON.stringify(e)}\n\n`;
   for (const res of sseClients) res.write(line);
+  sim?.log.write(JSON.stringify(e) + '\n');
   if (e.type === 'round') {
     const W = sim.W, acts = {};
     for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; acts[k] = (acts[k] ?? 0) + 1; }
@@ -54,7 +55,19 @@ async function start() {
   const chain = await connectChain();
   await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD);
   const W = createWorld(chain, await chain.fetch(), { onEvent: e => sim && broadcast(e) });
-  sim = { W, chain, brain, gen: myGen, startedAt: Date.now() };
+
+  // every run is saved: runs/<timestamp>/events.jsonl + meta.json (+ final.json on stop)
+  const dir = path.join(ROOT, 'runs', new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({
+    startedAt: new Date().toISOString(), brain: brain.name,
+    program: PROGRAM_ID.toBase58(), ledger: chain.ledger.publicKey.toBase58(),
+    config: { ...CFG, RPC: undefined },
+    agents: W.agents.map(a => ({ id: a.id, name: a.name, traits: a.traits })),
+  }, null, 2));
+  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir,
+          log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
+  console.log(`logging to ${path.relative(ROOT, dir)}/`);
   console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
 
   const alive = () => sim && sim.gen === myGen;
@@ -62,11 +75,13 @@ async function start() {
     await sleep(Math.random() * CFG.STAGGER_MS);          // staggered wake-up
     while (alive()) {
       if (a.activity) { await sleep(CFG.TICK_MS); continue; }
-      try { await brain.decide(a, makeTools(W, a)); } catch (e) { W.emit('error', { agent: a.id, message: e.message }); }
+      const tools = makeTools(W, a);
+      try { await brain.decide(a, tools); } catch (e) { W.emit('error', { agent: a.id, message: e.message }); }
       if (!alive()) return;
       a.decisions++;
       if (!a.activity) W.startActivity(a, 'idle');
-      W.emit('thought', { agent: a.id, name: a.name, thought: a.thought, activity: a.activity?.task });
+      W.emit('decision', { agent: a.id, name: a.name, thought: a.thought, activity: a.activity?.task,
+                           saw: tools.log.saw, actions: tools.log.actions });
     }
   }
   W.agents.forEach(agentLoop);
@@ -77,8 +92,16 @@ async function start() {
 async function stop() {
   if (!sim) return 'not running';
   clearInterval(sim.clock);
-  const s = sim; sim = null;
+  const s = sim;
   while (s.W.roundBusy) await sleep(50);
+  sim = null;
+  const L = await s.chain.fetch();
+  fs.writeFileSync(path.join(s.dir, 'final.json'), JSON.stringify({
+    stoppedAt: new Date().toISOString(), rounds: s.W.round, transactions: s.chain.txCount(),
+    llm: s.brain.stats(), chain: L,
+  }, null, 2));
+  s.log.end();
+  console.log(`saved ${path.relative(ROOT, s.dir)}/`);
   console.log(`stopped after ${s.W.round} rounds, ${s.chain.txCount()} transactions`);
   return 'stopped';
 }
@@ -108,6 +131,18 @@ function state() {
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
     })),
     events: W.events.filter(e => e.type === 'round' || e.type === 'error').slice(-15).reverse(),
+    // live market: price history for the charts, last round's order book, recent trades
+    history: W.priceHistory.map(h => ({ round: h.round, prices: h.prices.map(p => p / 100), volumes: h.volumes })),
+    market: (() => {
+      const rounds = W.events.filter(e => e.type === 'round');
+      const last = rounds.at(-1);
+      return {
+        book: last ? last.book.map((b, g) => ({ good: GOODS[g], ...b,
+          bestBid: b.bestBid ? b.bestBid / 100 : null, bestAsk: b.bestAsk ? b.bestAsk / 100 : null })) : [],
+        trades: rounds.slice(-8).flatMap(r => (r.trades ?? []).filter(t => t.side === 'buy')
+          .map(t => ({ round: r.round, name: W.agents[t.agent].name, good: t.good, qty: t.qty, price: t.price / 100 }))).slice(-12).reverse(),
+      };
+    })(),
   };
 }
 
@@ -138,8 +173,9 @@ http.createServer(async (req, res) => {
 if (CFG.RUN_SECONDS) {
   await start();
   await sleep(CFG.RUN_SECONDS * 1000);
-  const { W, chain, brain } = sim;
+  const { W, chain, brain, dir } = sim;
   await stop();
+  console.log(`analyze with: node backend/scripts/analyze.mjs ${path.relative(ROOT, dir)}`);
   const L = await chain.fetch();
   const rich = W.agents.slice().sort((x, y) => y.cash - x.cash);
   console.log(`\nmoney on chain ${coins(L.slots.reduce((s, x) => s + x.cash, 0))} (started ${coins(CFG.START_CASH * CFG.AGENTS)})`);
