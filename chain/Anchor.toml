@@ -7,7 +7,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-chain = "9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7"
+chain = "5U9gu7ixPUWboBdP4kqaWqrHU6a3KP2wPFduhsXbctF5"
 
 [provider]
 cluster = "localnet"

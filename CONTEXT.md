@@ -21,7 +21,7 @@ money and bank charts, jobs, needs, wealth, loan feed).
 agent-economy/
 ├── chain/            Anchor program: the ledger, its market and its bank
 │   └── programs/chain/src/lib.rs
-├── backend/          the village: clock, agents, the market round, the dashboard
+├── backend/          the village: clock, agents, the market round, and HTTP API
 │   ├── src/
 │   │   ├── config.mjs      every setting, one place
 │   │   ├── chain.mjs       talks to Solana (hand-encoded instructions)
@@ -33,13 +33,19 @@ agent-economy/
 │   │       ├── stub.mjs      free heuristic placeholder (no API key needed)
 │   │       ├── claude.mjs    Claude, tool-calling
 │   │       └── openai.mjs    OpenAI, tool-calling (default gpt-5.6-luna)
-│   ├── public/index.html   the dashboard — one file, no build step
 │   └── scripts/analyze.mjs analyze any saved run
+├── frontend/         Claude-designed 3D island dashboard — no build step
+│   ├── Moku Island.dc.html live UI wired to the backend API
+│   ├── island3d.js         interactive Three.js island
+│   └── support.js          exported design runtime
 ├── runs/             every run, saved automatically (gitignored)
 ├── FIX_PLAN.md       the work in progress
 ├── FUTURE_PLAN.md    later features, and what was cut
 └── .env / .env.example     API keys and settings (AGENTS=30 in both)
 ```
+
+Run `npm start` from the repository root. The backend serves the frontend and opens
+`http://localhost:8787`; set `OPEN_BROWSER=0` to print the URL without opening it.
 
 **The split is deliberate:**
 - **Off-chain:** the clock, agent reasoning (LLM calls), the dashboard.

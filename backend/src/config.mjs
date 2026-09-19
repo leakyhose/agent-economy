@@ -24,8 +24,9 @@ export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
 export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
-  BRAIN:        env.BRAIN        || 'stub',            // stub | openai | claude
-  MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : 'gpt-5.6-luna'),
+  BRAIN:        env.BRAIN        || 'stub',            // stub | openai | claude | baseten
+  MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5'
+                                    : env.BRAIN === 'baseten' ? 'zai-org/GLM-5.3' : 'gpt-5.6-luna'),
   // Time is counted in rounds. Every round, all agents decide at once (the clock waits
   // for the slowest, up to DECIDE_TIMEOUT_MS), then everyone works one shift, eats one
   // meal, fires burn, goods rot and the market clears on-chain.

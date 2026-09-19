@@ -10,6 +10,7 @@ chain/test-ledger/
 chain/app/node_modules/
 chain/app/package-lock.json
 *.bak
+*:Zone.Identifier
 .env
 backend/node_modules/
 runs/

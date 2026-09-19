@@ -31,10 +31,27 @@ const MAX_DELTAS_PER_TX = 120;
 export const explorer = (kind, id) =>
   `https://explorer.solana.com/${kind}/${id}?cluster=custom&customUrl=${encodeURIComponent(CFG.RPC)}`;
 
+function loadAuthority() {
+  // Windows Node launched from WSL rewrites HOME to the Windows profile, even when
+  // the repo and Solana wallet live in WSL. ROOT still contains the WSL home path,
+  // so include that location as a portable fallback.
+  const rootHome = ROOT.match(/^((?:[\\/]{2}[^\\/]+[\\/][^\\/]+)?[\\/]home[\\/][^\\/]+)/i)?.[1];
+  const candidates = [
+    process.env.ANCHOR_WALLET,
+    process.env.SOLANA_WALLET,
+    process.env.HOME && path.join(process.env.HOME, '.config', 'solana', 'id.json'),
+    rootHome && path.join(rootHome, '.config', 'solana', 'id.json'),
+  ].filter(Boolean);
+  const wallet = [...new Set(candidates)].find(file => fs.existsSync(file));
+  if (!wallet) {
+    throw new Error(`Solana wallet not found. Checked: ${candidates.join(', ')}. Set ANCHOR_WALLET to its path.`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(wallet, 'utf8'))));
+}
+
 export async function connectChain() {
   const conn = new Connection(CFG.RPC, 'confirmed');
-  const authority = Keypair.fromSecretKey(Uint8Array.from(
-    JSON.parse(fs.readFileSync(`${process.env.HOME}/.config/solana/id.json`, 'utf8'))));
+  const authority = loadAuthority();
   const ledger = Keypair.generate();
   // A stranger with no authority over the ledger. It forecloses loans and pays dividends,
   // to prove on every call that `liquidate` and `pay_dividend` really are open to anyone.
