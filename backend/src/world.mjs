@@ -20,8 +20,21 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   // Round a fractional amount up or down at random, so the expected value is exact.
   const roll = x => { const n = Math.floor(x); return n + (rnd() < x - n ? 1 : 0); };
-  const [lo, hi] = CFG.SKILL_RANGE;
-  const skill = () => +(lo + rnd() * (hi - lo)).toFixed(1);
+  // One villager's three skills: a lopsided draw, scaled so everyone's add up to TALENT.
+  // Talent is a budget, not a gift — a great fisher is a poor woodcutter — so the only way
+  // to live well is to work your best job and buy the rest. The floor keeps nobody at
+  // exactly nothing (and keeps craft skill out of a division by zero); rounding and the
+  // floor move the total a hair, so the residue goes on the top skill and the budget
+  // stays exact, which also caps the top at TALENT − 2 × floor.
+  const LO = CFG.SKILL_FLOOR, TALENT = 3;
+  const skills = () => {
+    const raw = [rnd(), rnd(), rnd()].map(u => u ** CFG.SKILL_TILT);
+    const scale = TALENT / raw.reduce((s, x) => s + x, 0);
+    const k = raw.map(x => Math.round(Math.max(LO, x * scale) * 10) / 10);
+    const top = k.indexOf(Math.max(...k));
+    k[top] = +(k[top] + TALENT - k.reduce((s, x) => s + x, 0)).toFixed(1);
+    return { gather_food: k[0], gather_wood: k[1], craft_net: k[2] };
+  };
 
   const none = () => GOODS.map(() => 0);
   const list = q => q.map((n, g) => n ? `${n} ${n === 1 ? GOODS[g].replace(/s$/, '') : GOODS[g]}` : '').filter(Boolean).join(' and ');
@@ -50,7 +63,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     thought: 'just arrived in the village',
     memory: [],
     traits: { patience: +rnd().toFixed(2), risk: +rnd().toFixed(2) },
-    skills: { gather_food: skill(), gather_wood: skill(), craft_net: skill() },
+    skills: skills(),
+    upkeepPaid: 0,                                  // houses whose upkeep wood was paid last round
     decisions: 0,
   }));
 
@@ -102,12 +116,16 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.usableNets = a => Math.max(0, W.availGood(a, NETS)) + a.locked[NETS];
   // An unfinished house is on-chain (one of goods or locked) but is not a home yet.
   W.unfinished = a => a.building ? 1 : 0;
-  W.hasHouse = a => W.owned(a, HOUSES) - W.unfinished(a) >= 1;
+  W.houses = a => W.owned(a, HOUSES) - W.unfinished(a);   // finished houses owned; several are worth having
+  W.hasHouse = a => W.houses(a) >= 1;
+  // What n houses pay a meal period: WELLBEING.HOUSE in order, its last figure repeating.
+  const HWB = CFG.WELLBEING.HOUSE;
+  W.houseWB = n => { let s = 0; for (let i = 0; i < n; i++) s += HWB[Math.min(i, HWB.length - 1)]; return s; };
   // What can be sold: free goods, less a house under construction. Pledged houses are
   // counted as the unfinished one first, so a free finished house stays sellable.
   const holdable = (a, g) => a.goods[g] - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
   W.sellable = (a, g) => holdable(a, g) - W.reservedGood(a, g);
-  W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.skill(a, 'craft_net')));
+  W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.craftSkill(a)));
 
   // ---- wellbeing: the goal ------------------------------------------------------
   const credit = (a, part, x) => { a.wellbeing += x; a.wbParts[part] += x; a.wbNow[part] += x; };
@@ -133,8 +151,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
   // ---- skills: how good an agent is at each kind of work -----------------------
   W.skill = (a, task) => a.skills[task] ?? 1;
-  W.netWood = a => Math.max(1, Math.round(CFG.TASKS.craft_net.wood / W.skill(a, 'craft_net')));
+  // Crafting divides a wood bill rather than multiplying a yield, so the full skill range
+  // would swing a house between 80 and 1000 wood. Clamped, the spread is 4× either way.
+  W.craftSkill = a => Math.min(CFG.CRAFT_CLAMP[1], Math.max(CFG.CRAFT_CLAMP[0], W.skill(a, 'craft_net')));
+  W.netWood = a => Math.max(1, Math.round(CFG.TASKS.craft_net.wood / W.craftSkill(a)));
   W.buildShifts = CFG.TASKS.build_house.shifts;
+  // A good nobody has ever traded has no price: its START_PRICE is a placeholder the chain
+  // insisted on, not a number anyone paid. Houses start that way.
+  W.traded = g => W.priceHistory.some(r => r.volumes[g] > 0);
 
   // ---- what agents can do (called through tools.mjs) --------------------------
   // kept: the agent didn't decide in time and repeats its last job.
@@ -308,17 +332,28 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     W.shiftsNow[task === 'idle' ? 'idle' : 'worked']++;
   }
 
-  // A meal: eat what the lifestyle calls for (or what's left), and count the meal
-  // period's wellbeing — the food, the fire, the house. Food committed to a sale is
-  // eaten too (the agent's asks shrink): asking high doesn't keep food from the table.
+  // A meal: eat as many meals' worth as the lifestyle calls for, and count the meal
+  // period's wellbeing — the food, the fire, the houses. Meals are whole (CFG.MEAL food
+  // each): a scrap below one is no meal, so it stays in the larder rather than being
+  // eaten for nothing. Food committed to a sale is eaten too (the agent's asks shrink):
+  // asking high doesn't keep food from the table.
   function eat(a) {
     const WB = CFG.WELLBEING;
-    const n = Math.max(0, Math.min(a.lifestyle, a.goods[FOOD]));
-    if (n) { addDelta(a, FOOD, -n); a.hunger = 0; }
+    const n = Math.max(0, Math.min(a.lifestyle, Math.floor(a.goods[FOOD] / CFG.MEAL)));
+    if (n) { addDelta(a, FOOD, -n * CFG.MEAL); a.hunger = 0; }
     else { a.hunger++; if (a.hunger === 1 || a.hunger % 3 === 0) remember(a, `You went hungry (${a.hunger} missed meal${a.hunger > 1 ? 's' : ''}).`); }
     credit(a, 'eating', WB.EAT[n]);
     credit(a, 'warmth', a.cold ? WB.COLD : WB.WARM);
-    if (W.hasHouse(a)) credit(a, 'house', WB.HOUSE);
+    // Upkeep: every house owned wants HOUSE_UPKEEP wood a round. Unpaid, it still stands —
+    // it just pays nothing this round. The fire comes first: warmth is worth more than a
+    // spare house, so upkeep only spends wood beyond one fire's worth.
+    const own = W.houses(a);
+    const spare = Math.max(0, a.goods[WOOD] - CFG.FIRE_WOOD);
+    a.upkeepPaid = Math.min(own, Math.floor(spare / CFG.HOUSE_UPKEEP));
+    if (a.upkeepPaid) addDelta(a, WOOD, -a.upkeepPaid * CFG.HOUSE_UPKEEP);
+    if (a.upkeepPaid < own) remember(a, `You had no wood for the upkeep of ${own - a.upkeepPaid} of your ${own} house${own > 1 ? 's' : ''}: ` +
+      `${own - a.upkeepPaid === 1 ? 'it gave' : 'they gave'} you nothing this round.`);
+    credit(a, 'house', W.houseWB(a.upkeepPaid));
     a.wbRecent.push({ tick: W.tick, ate: n, ...a.wbNow });
     if (a.wbRecent.length > 6) a.wbRecent.shift();
     a.wbNow = { eating: 0, warmth: 0, house: 0 };
@@ -326,7 +361,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
   // Wood's second use: a fire. Like food, it's used up, so wood always has buyers.
   function warm(a) {
-    if (a.goods[WOOD] >= 1) { addDelta(a, WOOD, -1); a.cold = 0; }
+    if (a.goods[WOOD] >= CFG.FIRE_WOOD) { addDelta(a, WOOD, -CFG.FIRE_WOOD); a.cold = 0; }
     else { a.cold++; if (a.cold === 1 || a.cold % 3 === 0) remember(a, `You had no wood for your fire and went cold (${a.cold} time${a.cold > 1 ? 's' : ''}).`); }
   }
 
@@ -711,6 +746,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       gini: +gini(agents.map(a => Math.max(0, W.wealth(a)))).toFixed(3),
       credit: L.debtTotalNow, money: L.supply,
       housesBuilt: W.housesBuilt, building: agents.filter(a => a.building).length, homeowners: agents.filter(a => W.hasHouse(a)).length,
+      houses: agents.reduce((s, a) => s + W.houses(a), 0),   // finished houses owned: more than one per villager is the point
     };
   }
 

@@ -160,7 +160,7 @@ function state() {
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs),
+    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs), buildShifts: W.buildShifts,
     decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
@@ -173,7 +173,7 @@ function state() {
             overdue: W.overdue,
             keeper: chain.keeper.publicKey.toBase58() },
     totals: { money: sum(a => a.cash) / 100, food: sum(a => a.goods[0]), wood: sum(a => a.goods[1]),
-              nets: sum(a => a.goods[2]), houses: W.agents.filter(a => W.hasHouse(a)).length,
+              nets: sum(a => a.goods[2]), houses: sum(a => W.houses(a)), homeowners: W.agents.filter(a => W.hasHouse(a)).length,
               building: W.agents.filter(a => a.building).length, housesBuilt: W.housesBuilt, hungry: W.agents.filter(a => a.hunger > 0).length,
               cold: W.agents.filter(a => a.cold >= 2).length },
     doing,
@@ -183,7 +183,7 @@ function state() {
     llm: brain.stats(),
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: a.skills, cash: a.cash / 100,
-      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.owned(a, HOUSES), house: W.hasHouse(a),
+      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.houses(a), house: W.hasHouse(a),
       building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
@@ -232,7 +232,9 @@ http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
       sseClients.add(res); req.on('close', () => sseClients.delete(res)); return;
     }
-    res.writeHead(200, { 'content-type': 'text/html' });
+    // no-store: the page is re-read from disk every request, so the browser must never
+    // serve a cached copy — a stale dashboard silently breaks charts after a redeploy.
+    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
     res.end(fs.readFileSync(PAGE));            // re-read each time: edit the page, refresh
   } catch (e) {
     json(res, { error: e.message }, 500);

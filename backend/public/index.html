@@ -419,7 +419,7 @@ function agentTable() {
   rows.innerHTML = shown.map(a =>
     `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
     `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
-    `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/3` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
+    `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/${last.buildShifts ?? 0}` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
     `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
     `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
     `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
@@ -443,7 +443,7 @@ function details() {
     `prices: ${prices}<br>` +
     `doing: ${doing}<br>` +
     `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · ` +
-    `houses ${s.totals.houses} lived in, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
+    `houses ${s.totals.houses} owned by ${s.totals.homeowners}, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
     `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
     `bank: income: interest ${s.bank.books.interestIncome.toFixed(2)} · penalties ${s.bank.books.penalties.toFixed(2)} · sales ${s.bank.books.recovered.toFixed(2)} · ` +
     (s.bank.creditOn ? `loans run ${s.bank.terms} rounds` : 'credit off') + '<br>' +
