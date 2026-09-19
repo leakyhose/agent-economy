@@ -15,8 +15,10 @@ try {
 } catch { /* no .env yet */ }
 const env = process.env;
 
-export const GOODS = ['food', 'wood', 'nets', 'boats'];
-export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3;
+// Order is fixed: it is the on-chain layout (lib.rs N_GOODS = 5). Houses are built
+// (build_house); boats exist as goods (owned, traded, pledged) but nothing builds them yet.
+export const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'];
+export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
 export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
@@ -26,7 +28,9 @@ export const CFG = {
   ROUND_TICKS: +env.ROUND_TICKS || 6,                 // market clears every N ticks
   EAT_TICKS:   +env.EAT_TICKS   || 8,                 // each agent eats 1 food every N ticks
   STAGGER_MS:  +env.STAGGER_MS  || 6000,              // agents wake up spread over this window
-  START_CASH:  +env.START_CASH  || 5000,              // cents
+  // cents. A house (~70 coins) can't be bought outright from this, so buying or
+  // building one needs savings or a loan.
+  START_CASH:  +env.START_CASH  || 3000,
   START_FOOD:  +env.START_FOOD  || 6,
   START_WOOD:  +env.START_WOOD  || 4,
   WARM_TICKS:  +env.WARM_TICKS  || 16,                // each agent burns 1 wood every N ticks to keep warm
@@ -40,40 +44,88 @@ export const CFG = {
     gather_food: { ticks: 6, yield: 2, netYield: 4, place: 'docks' },   // one fisher feeds ~2 people
     gather_wood: { ticks: 6, yield: 3,               place: 'forest' },
     craft_net:   { ticks: 4, wood: 4,                place: 'workshop' },
+    // A house: the wood (divided by crafting skill, like a net) is used up when the build
+    // starts, and the house exists on-chain from then on, unfinished, so it can be pledged
+    // for a construction loan. It gives nothing and can't be sold until `shifts` building
+    // shifts are done; a build left for other work waits, unfinished, until resumed.
+    build_house: { ticks: 6, wood: 16, shifts: 3,    place: 'building site' },
     idle:        { ticks: 6,                          place: 'square' },
   },
   // Every villager draws a random skill per job at birth (1.0 = average). It multiplies
   // what a shift yields; for craft_net it divides the wood a net costs. Nothing assigns
   // a job — agents see their skills and choose, so specialization has to emerge.
   SKILL_RANGE: [0.5, 1.5],
-  NET_WEAR: 0.05,          // chance a net breaks on each fishing shift
-  // Share of an agent's FREE stock that rots every market round: food, wood, nets, boats.
+  NET_WEAR: 0.05,          // chance a (free) net breaks on each fishing shift; a pledged net is held by the chain and doesn't
+  // Share of an agent's FREE stock that rots every market round: food, wood, nets, boats, houses.
   // Coins never spoil — so holding money is the way to store value, and surplus
   // goods have to be sold before they rot.
-  SPOIL: [0.10, 0.02, 0, 0],
+  SPOIL: [0.10, 0.02, 0, 0, 0],
   HUNGRY_PENALTY: 0.5,     // hungry agents gather half as much
   COLD_PENALTY: 0.5,       // so do cold ones (2+ missed fires); both together = a quarter
 
+  // The goal: the best life. Wellbeing is counted every meal period (EAT_TICKS), per
+  // agent, and at the end net worth is added at COINS_PER_POINT. Diminishing: a second
+  // food per meal is worth less than the first, a third less again. Calibrated so the
+  // choices are close at opening prices: one extra food (5.00) buys +0.6 then +0.4,
+  // against 0.5 for keeping the 5 coins; a rest shift (+1.0) is worth about what an
+  // average fishing shift earns (2 food ≈ 10 coins ≈ 1 point).
+  WELLBEING: {
+    EAT: [-2, 1.0, 1.6, 2.0],   // per meal, by food eaten: none (a missed meal), 1, 2, 3
+    WARM: 0.5,                  // per meal period while the fire is lit
+    COLD: -1,                   // per meal period while it is out
+    HOUSE: 1.5,                 // per meal period while you own a house (pledged or not)
+    REST: 1.0,                  // per rest shift the agent chose
+    COINS_PER_POINT: 10,        // at the end, every 10 coins of net worth = 1 point
+  },
+  LIFESTYLE_START: 1,           // food per meal (1–3) until an agent sets its own
+  HOUSE_WARMTH: 2,              // a house makes firewood last this many times longer
+  HOUSE_STORE: 10,              // a (finished) house keeps this much of its owner's free food from rotting
+
+  // The fish lake: one shared stock. A shift's catch = base yield × skill × (2 with a
+  // net) × stock / capacity, and the catch leaves the lake. It regrows logistically every
+  // round: + REGROWTH × stock × (1 − stock / capacity), fastest at half full
+  // (REGROWTH × capacity / 4 a round). Capacity scales with the village. At 30 agents:
+  // capacity 1800, and the most it can sustain is 36 fish a round — everyone eating
+  // ~1.6 food a meal (before rot), not 3. The lake settles where catch = regrowth:
+  // 30 agents fishing every shift without nets (~60 a round from a full lake) hold it
+  // near 58%; with nets (~120) near 17%. Left alone it refills from 20% to 90% in ~45
+  // rounds (~2.5 min).
+  LAKE: {
+    CAPACITY: +env.LAKE_CAPACITY || 60,    // fish per villager
+    REGROWTH: +env.LAKE_REGROWTH || 0.08,  // logistic growth rate, per market round
+    START:    +env.LAKE_START    || 1.0,   // share of capacity at the start
+    FLOOR: 0.05,                           // regrowth never falls below that of a lake this full (fish swim in from the river)
+  },
+
   // The village bank, enforced on-chain. It is the ONLY way new coins come into being:
-  // it mints them as a loan against pledged wood/nets/boats, and burns the principal
-  // when repaid. Interest and penalties are its income (its equity); what it earns
-  // beyond the capital it must keep is paid out to every agent as a dividend.
+  // it mints them as a loan against pledged goods, and burns the principal when repaid.
+  // A public bank: its terms are policy (set here, later by the central-bank panel), not
+  // chosen to make a profit. Interest and penalties go to its capital; what it holds
+  // beyond the capital it must keep is paid out to every agent equally as a dividend.
   BANK: {
-    LTV: 0.5,              // a loan (with interest) may be at most half the collateral's value
-    RATE: 0.10,            // flat interest per loan, paid first on repayment, to the bank's equity
-    PENALTY: 0.20,         // added to the debt at foreclosure, to the bank's equity
-    TERM_SLOTS: 150,       // due this many Solana slots after borrowing (~60s at 400ms/slot)
+    // Credit on/off. CREDIT=0 is the no-credit regime: LTV 0, so the chain lends nothing.
+    CREDIT: env.CREDIT !== '0',
+    LTV: env.CREDIT === '0' ? 0 : (+env.BANK_LTV || 0.60),   // a loan may be at most 60% of the collateral's value
+    MARGIN: 0.80,          // margin call (anyone may foreclose) once debt > 80% of the collateral at last prices
+    PENALTY: 0.10,         // added to the debt at foreclosure (late or margin), to the bank's capital
+    RATE_PER_MIN: +env.BANK_RATE || 0.05,   // interest, charged pro-rata per slot for the time the loan is held
+    MAX_TERM_MINUTES: 3,                    // the borrower picks the term: 1, 2 or 3 minutes
     // The bank's opening equity, as a share of the starting money. With KAPPA 0.10 it can
     // lend 10× its equity, so 0.10 lets debt reach the whole starting money supply
-    // (the old fixed cap was half) — room for boats — while losing ~10% of that loan
-    // book wipes it out and stops lending: a credit crunch that defaults can cause.
+    // (30 agents × 30 coins = 900: room for ~20 house loans at 60% of 70) while losing
+    // ~10% of that loan book wipes it out and stops lending: a credit crunch that
+    // defaults can cause.
     SEED: 0.10,
     KAPPA: 0.10,           // capital ratio: all loans together <= equity / KAPPA
-    MARGIN: 0.70,          // margin call (anyone may foreclose) once debt > 70% of collateral at last prices
-    // Equity never paid out, as a share of the starting money. Equal to SEED, so the
-    // bank keeps its seed and pays out only profit beyond KAPPA × loans.
-    EQUITY_FLOOR: 0.10,
+    // Equity never paid out, as a share of the starting money: the seed plus a 10%
+    // buffer, so the bank pays out only profit beyond KAPPA × loans + this.
+    EQUITY_FLOOR: 0.11,
   },
-  SLOT_MS: 400,            // assumed slot time, only for telling agents "due in ~Ns"
-  START_PRICES: [500, 300, 2000, 8000],   // cents: food, wood, nets, boats
+  SLOT_MS: 400,            // assumed slot time: a minute of loan term or interest is 60000 / SLOT_MS slots
+  START_PRICES: [500, 300, 2000, 8000, 7000],   // cents: food, wood, nets, boats, houses
+  // The price index: a fixed basket, what one villager uses in a minute at lifestyle 1
+  // (15 meals, 3.75 wood for the fire) plus a little of the durables. Index 1.00 = this
+  // basket at START_PRICES. Inflation is its change over the last INFLATION_ROUNDS.
+  PRICE_BASKET: [15, 3.75, 0.1, 0, 0.02],
+  INFLATION_ROUNDS: 20,    // a minute at 3s rounds
 };

@@ -5,8 +5,9 @@ research passes: why nobody borrowed; the Salesforce AI Economist design; credit
 agent-based macro models (CATS, JAMEL, Mark-0, EURACE, Keen); and how to make LLM agents act
 economically (EconAgent, AgentSociety, 2024–26 literature).
 
-**Priority: 1, 2, 3.** 4 and 5 are written down for later. Hiring, an LLM mayor, a map and
-agent-issued notes are cut for now.
+**The work to do now is in `FIX_PLAN.md`** (wellbeing goal, houses and boats, a public bank run
+by a central bank you control, GDP metrics). This file keeps the background and the features for
+later. Items 1–3 are done or superseded by `FIX_PLAN.md`.
 
 **Ground rule from every report: change the economics or fix the information, never steer the
 result.** No "consider borrowing", no "don't anchor", no rewording the goal. Judges may read
@@ -135,6 +136,44 @@ after a wave of defaults, `borrow` refusals for "lending cap" rise.
   shown. **Storms** stop fishing for a few rounds.
 - Or **fish and forest as commons** with logistic regrowth: overfishing lowers catches, food price
   rises, labor moves (also fixes fishing dominance).
+
+## 6. On-chain visibility (≈3–8h) — for the Solana prize
+
+- **Devnet + "foreclose it yourself" script (≈3h).** Deploy to devnet so anyone can inspect the
+  ledger in Solana Explorer; ship a tiny script a judge runs with their own key to liquidate an
+  overdue loan. Dashboard lists loans that can be foreclosed right now.
+- **Per-agent identity (≈3–4h).** Each agent gets a program-derived address that every
+  transaction involving it references (program checks it), so each agent's own history shows in
+  the explorer. Needs address lookup tables so a 30-agent auction still fits in a transaction.
+  Optional: per-agent keypairs that sign their own loans (custodial; say so).
+- **Coins as an SPL token (≈4–6h)** whose only minter is the program's rules — the money supply
+  becomes checkable in the explorer.
+- **Transaction V1 (4,096 bytes)** if auctions exceed ~96 orders per good (≈100 agents).
+
+## 7. 100-agent demo (≈1–2h + one paid run)
+
+A one-off demo profile: 100 agents, `TICK_MS` 1000 (half the calls per minute, economy easier to
+watch), loan terms scaled to the slower clock (they're in slots), `LLM_CONCURRENCY` ~60, dropped
+orders logged. Check OpenAI rate limits first (~1–2M tokens/min). Free stress test with the stub
+brain first. Cost ≈ $0.35–0.50/min at 1s ticks.
+
+## Houses (from the AI Economist) — BEFORE boats (checkpoint-1 analysis)
+
+~12 wood + 3 shifts; tradable and pledgeable (mortgages), and a pledged house stays usable.
+Wanted by everyone (boats mostly by fishers). Pays back through savings, not more food, so it
+doesn't feed the glut, and it creates wood demand. Payback ≈ 10–15 rounds (40–55s) at checkpoint-1
+prices — rational even under today's 60s term. **Tune it so it doesn't kill demand:** "no firewood
+at all" permanently removes wood demand, and "nothing rots" turns spoilage (today the only sink
+for surplus) into hoarding — use half the firewood, rot-free storage up to N units, slow decay.
+Another on-chain good: MAX_AGENTS drops (≈135).
+
+## Done since this plan was written
+
+- Item 1 (fixes & true information) and item 3 (balance-sheet bank) — checkpoint 1, commit
+  `00cfef2` on `ys-version`. Boats exist on-chain as a good but can't be built yet.
+- Round speed: the village clock freezes while a round settles (no skipped rounds); auctions and
+  the dividend go out in parallel (~1.2s per round at 30 agents).
+- Tested in a 30-agent run (`runs/2026-09-19T17-04-02`); findings above.
 
 ## Cut for now
 

@@ -14,13 +14,16 @@ const DISC = Object.fromEntries(idl.instructions.map(i => [i.name, Buffer.from(i
 export const PROGRAM_ID = new PublicKey(idl.address);
 
 // Must match lib.rs. The layout is decoded by hand in fetch() below.
-export const N_GOODS = 4;              // food, wood, nets, boats
-export const MAX_AGENTS = 150;
-export const PLEDGEABLE = [false, true, true, true];   // food rots and can't be collateral
+export const N_GOODS = 5;              // food, wood, nets, boats, houses
+export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
+export const MAX_AGENTS = 137;
+export const PLEDGEABLE = [false, true, true, true, true];   // food rots and can't be collateral
 export const FIRE_SALE_BPS = 8000;     // foreclosure values seized goods at 80% of the last price
+export const FORGIVE_BELOW = 100;      // a repay that leaves less than one coin owing closes the loan
+export const DIVIDEND_SHARE_BPS = 5000; // pay_dividend pays half the surplus above the capital required
 export const BANK = 0xffff;            // order "agent" id for the bank's foreclosure sales
-const SLOT = 64;                       // cash u64, goods [u32;4], locked [u32;4], debt, principal, due_slot u64
-const HEADER = 8 + 264;                // discriminator + everything before slots (see Ledger in lib.rs)
+const SLOT = 72;                       // cash u64, goods [u32;5], locked [u32;5], debt, principal u64, due_slot, accrued_slot u32
+const HEADER = 8 + 360;                // discriminator + everything before slots (see Ledger in lib.rs)
 const LEDGER_SIZE = HEADER + MAX_AGENTS * SLOT;
 const MAX_ORDERS_PER_TX = 96;          // ~1220 bytes: the legacy transaction ceiling
 const MAX_DELTAS_PER_TX = 120;
@@ -56,17 +59,21 @@ export async function connectChain() {
     { pubkey: authority.publicKey, isSigner: true, isWritable: false },
   ];
 
-  // prices: opening last price per good, in cents. bankSeed: the bank's opening equity.
-  // terms: { ltvBps, rateBps, penaltyBps, kappaBps, marginBps, termSlots, equityFloor }
+  // prices: opening last price per good (N_GOODS of them), in cents. bankSeed: the bank's opening cash.
+  // terms: { ltvBps, rateBps, ratePeriodSlots, penaltyBps, kappaBps, marginBps,
+  //          termUnitSlots, maxTermUnits, equityFloor }  — ltvBps 0 = no credit.
+  // Interest is rateBps per ratePeriodSlots, by slot; a loan term is 1..maxTermUnits × termUnitSlots.
   async function initialize(n, cash, food, wood, prices, bankSeed, terms) {
-    const d = Buffer.alloc(8 + 4 + 8 + 4 + 4 + 8 * N_GOODS + 8 + 26);
+    if (prices.length !== N_GOODS) throw new Error(`initialize: need ${N_GOODS} prices`);
+    const d = Buffer.alloc(8 + 4 + 8 + 4 + 4 + 8 * N_GOODS + 8 + 6 * 2 + 3 * 8);
     DISC.initialize.copy(d, 0);
     d.writeUInt32LE(n, 8); d.writeBigUInt64LE(BigInt(cash), 12); d.writeUInt32LE(food, 20); d.writeUInt32LE(wood, 24);
     prices.forEach((p, g) => d.writeBigUInt64LE(BigInt(p), 28 + g * 8));
-    d.writeBigUInt64LE(BigInt(bankSeed), 60);
-    d.writeUInt16LE(terms.ltvBps, 68); d.writeUInt16LE(terms.rateBps, 70); d.writeUInt16LE(terms.penaltyBps, 72);
-    d.writeUInt16LE(terms.kappaBps, 74); d.writeUInt16LE(terms.marginBps, 76);
-    d.writeBigUInt64LE(BigInt(terms.termSlots), 78); d.writeBigUInt64LE(BigInt(terms.equityFloor ?? 0), 86);
+    d.writeBigUInt64LE(BigInt(bankSeed), 68);
+    d.writeUInt16LE(terms.ltvBps, 76); d.writeUInt16LE(terms.rateBps, 78); d.writeUInt16LE(terms.penaltyBps, 80);
+    d.writeUInt16LE(terms.kappaBps, 82); d.writeUInt16LE(terms.marginBps, 84); d.writeUInt16LE(terms.maxTermUnits, 86);
+    d.writeBigUInt64LE(BigInt(terms.ratePeriodSlots), 88); d.writeBigUInt64LE(BigInt(terms.termUnitSlots), 96);
+    d.writeBigUInt64LE(BigInt(terms.equityFloor ?? 0), 104);
     const sig = await conn.requestAirdrop(keeper.publicKey, 1e9);   // localnet: fees for the keeper
     await conn.confirmTransaction(sig, 'confirmed');
     return send(new TransactionInstruction({
@@ -111,13 +118,17 @@ export async function connectChain() {
   }
 
   // ---- the bank ---------------------------------------------------------------
-  async function borrow(agent, amount, collateral) {
-    const d = Buffer.alloc(8 + 2 + 8 + 4 * N_GOODS);
+  // termSlots: one of allowedTerms(L.terms); used only when opening a loan (a top-up keeps
+  // its due slot, so any value is accepted then; an overdue loan can't be topped up).
+  // collateral: N_GOODS counts to add to the pledge, food must be 0.
+  async function borrow(agent, amount, termSlots, collateral) {
+    const d = Buffer.alloc(8 + 2 + 8 + 8 + 4 * N_GOODS);
     DISC.borrow.copy(d, 0);
-    d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10);
-    collateral.forEach((q, g) => d.writeUInt32LE(q, 18 + g * 4));
+    d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10); d.writeBigUInt64LE(BigInt(termSlots), 18);
+    collateral.forEach((q, g) => d.writeUInt32LE(q, 26 + g * 4));
     return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeKeys() }));
   }
+  // Interest accrued to the chain's slot is paid first. Leaving < FORGIVE_BELOW owing closes the loan.
   async function repay(agent, amount) {
     const d = Buffer.alloc(8 + 2 + 8);
     DISC.repay.copy(d, 0);
@@ -134,15 +145,19 @@ export async function connectChain() {
       { pubkey: keeper.publicKey, isSigner: true, isWritable: false },
     ] }), [], [keeper]);
   };
-  // Foreclose: allowed once overdue or under margin (see liquidatable()).
+  // Collect or foreclose: allowed once overdue or under margin (see liquidatable()). An overdue
+  // loan whose debtor has the cash is simply repaid from it — no penalty, collateral released
+  // (see collects()); otherwise it's a foreclosure with the penalty.
   const liquidate = agent => anyone('liquidate', agent);
-  // Pay the bank's equity above its capital requirement to every agent equally. A no-op without a surplus.
+  // Pay half the bank's equity above its capital requirement to every agent equally. A no-op without a surplus.
   const payDividend = () => anyone('pay_dividend');
 
   // Read the whole ledger back. Zero-copy layout, decoded by hand (offsets: Ledger in lib.rs, +8).
+  // `debt` is as last accrued on-chain; `debtNow` adds the interest accrued up to `slot`,
+  // the slot this read was taken at.
   async function fetch() {
-    const acct = await conn.getAccountInfo(ledger.publicKey, 'confirmed');
-    const b = acct.data;
+    const { context, value: acct } = await conn.getAccountInfoAndContext(ledger.publicKey, 'confirmed');
+    const b = acct.data, now = context.slot;
     const u64 = o => Number(b.readBigUInt64LE(8 + o));
     const u32 = o => b.readUInt32LE(8 + o);
     const u16 = o => b.readUInt16LE(8 + o);
@@ -150,30 +165,41 @@ export async function connectChain() {
     const slot = o => ({
       cash: u64(o),
       goods: G.map(g => u32(o + 8 + g * 4)),
-      locked: G.map(g => u32(o + 24 + g * 4)),
-      debt: u64(o + 40), principal: u64(o + 48), dueSlot: u64(o + 56),
+      locked: G.map(g => u32(o + 28 + g * 4)),
+      debt: u64(o + 48), principal: u64(o + 56), dueSlot: u32(o + 64), accruedSlot: u32(o + 68),
     });
     const n = u32(32);
     const books = {
-      startMoney: u64(88), bankSeed: u64(96), minted: u64(104), principalRepaid: u64(112),
-      interestIncome: u64(120), penalties: u64(128), recovered: u64(136), writtenOff: u64(144),
-      badDebt: u64(152), dividendsPaid: u64(160),
+      startMoney: u64(96), bankSeed: u64(104), minted: u64(112), principalRepaid: u64(120),
+      interestIncome: u64(128), penalties: u64(136), recovered: u64(144), writtenOff: u64(152),
+      badDebt: u64(160), dividendsPaid: u64(168), seizedValue: u64(176), soldBook: u64(184),
+      refunds: u64(192), forgiven: u64(200),
     };
-    const terms = { equityFloor: u64(168), termSlots: u64(176), ltvBps: u16(184), rateBps: u16(186),
-                    penaltyBps: u16(188), kappaBps: u16(190), marginBps: u16(192) };
-    const bank = slot(200);
-    const debtTotal = u64(80);
+    const bankBook = G.map(g => u64(208 + g * 8));
+    const terms = { equityFloor: u64(248), ratePeriodSlots: u64(256), termUnitSlots: u64(264),
+                    ltvBps: u16(272), rateBps: u16(274), penaltyBps: u16(276), kappaBps: u16(278),
+                    marginBps: u16(280), maxTermUnits: u16(282) };
+    terms.allowedTerms = allowedTerms(terms);
+    const bank = slot(288);
+    const debtTotal = u64(88);
+    const inventory = bankBook.reduce((t, v) => t + v, 0);
+    const equity = bank.cash + inventory - books.badDebt;
+    const capitalRequired = Math.floor(debtTotal * terms.kappaBps / 10_000) + terms.equityFloor;
     const out = {
       numAgents: n, round: u32(36),
       lastPrice: G.map(g => u64(40 + g * 8)),
-      supply: u64(72), debtTotal, badDebt: books.badDebt,
-      books, terms, bank,
-      equity: bank.cash,
-      lendingCap: Math.floor(bank.cash * 10_000 / terms.kappaBps),            // max debtTotal
-      capitalRequired: Math.floor(debtTotal * terms.kappaBps / 10_000) + terms.equityFloor,
+      supply: u64(80), debtTotal, badDebt: books.badDebt,
+      books, terms, bank, bankBook, inventory,
+      equity,                                                                   // cash + seized goods at book − bad debt
+      lendingCap: Math.floor(Math.max(0, equity) * 10_000 / terms.kappaBps),    // max debtTotal
+      capitalRequired,
+      creditOn: terms.ltvBps > 0,
       slots: [],
     };
     for (let i = 0; i < n; i++) out.slots.push(slot(HEADER + i * SLOT - 8));
+    for (const s of out.slots) s.debtNow = accruedDebt(s, terms, now);
+    out.slot = now;
+    out.debtTotalNow = out.slots.reduce((t, s) => t + s.debtNow, 0);
     return out;
   }
 
@@ -187,12 +213,40 @@ export async function connectChain() {
 // Value of a slot's pledged goods at the given prices (cents).
 export const lockedValue = (s, prices) => s.locked.reduce((v, q, g) => v + q * prices[g], 0);
 
+// The loan terms a borrower may pick, in slots: 1..maxTermUnits × termUnitSlots.
+export const allowedTerms = terms => Array.from({ length: terms.maxTermUnits }, (_, k) => (k + 1) * terms.termUnitSlots);
+
+// A slot's debt at `nowSlot`: the stored debt plus simple interest on the principal since
+// accruedSlot, rateBps per ratePeriodSlots, rounded down — exactly what the program adds
+// when it next touches the loan (borrow, repay, liquidate) at that slot.
+export function accruedDebt(s, terms, nowSlot) {
+  if (!s.debt || !s.principal) return s.debt;
+  const held = BigInt(Math.max(0, nowSlot - s.accruedSlot));
+  return s.debt + Number(BigInt(s.principal) * BigInt(terms.rateBps) * held / (10_000n * BigInt(terms.ratePeriodSlots)));
+}
+
 // Why `liquidate` would succeed on this slot right now — 'overdue', 'margin' or null.
+// 'overdue' covers both outcomes: collects() says whether it's a direct debit or a foreclosure.
 // Same rule as the program: overdue once the chain slot passes dueSlot; a margin call
-// once debt × 10000 > locked value at the last prices × marginBps.
+// once accrued debt × 10000 > locked value at the last prices × marginBps.
 export function liquidatable(s, L, nowSlot) {
   if (!s.debt) return null;
   if (nowSlot > s.dueSlot) return 'overdue';
-  if (s.debt * 10_000 > lockedValue(s, L.lastPrice) * L.terms.marginBps) return 'margin';
+  if (accruedDebt(s, L.terms, nowSlot) * 10_000 > lockedValue(s, L.lastPrice) * L.terms.marginBps) return 'margin';
   return null;
+}
+
+// True when `liquidate` at nowSlot would repay the loan from the debtor's cash (overdue, and
+// cash covers the accrued debt): no penalty, nothing seized. False = foreclosure, or not allowed.
+// The program decides at the slot the transaction lands, when a little more interest is owed.
+export function collects(s, L, nowSlot) {
+  return !!s.debt && nowSlot > s.dueSlot && s.cash >= accruedDebt(s, L.terms, nowSlot);
+}
+
+// What pay_dividend would pay each agent right now (0 = nothing): half the equity above
+// capitalRequired, at most the bank's cash, split equally and rounded down.
+export function dividendPerAgent(L) {
+  const surplus = L.equity - L.capitalRequired;
+  if (surplus <= 0 || !L.numAgents) return 0;
+  return Math.floor(Math.min(Math.floor(surplus * DIVIDEND_SHARE_BPS / 10_000), L.bank.cash) / L.numAgents);
 }

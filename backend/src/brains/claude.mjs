@@ -55,7 +55,13 @@ export function claudeBrain() {
         if (!uses.length) return;
 
         t.acted.failed = false;
-        const results = uses.map(u => ({ type: 'tool_result', tool_use_id: u.id, content: t.exec(u.name, u.input) }));
+        // A tool call cut off by the token limit carries incomplete arguments: never run it
+        // with what's there. Tell the model, and give it another turn.
+        const cut = r.stop_reason === 'max_tokens' ? uses.at(-1) : null;
+        const results = uses.map(u => ({ type: 'tool_result', tool_use_id: u.id,
+          ...(u === cut || !u.input || typeof u.input !== 'object' || Array.isArray(u.input)
+            ? { is_error: true, content: t.badCall(u.name, JSON.stringify(u.input), u === cut ? 'it was cut off at the length limit' : 'arguments must be a JSON object') }
+            : { content: t.exec(u.name, u.input) }) }));
         if (t.acted.activity && !t.acted.failed) return;  // chose a shift, nothing refused — done
         messages.push({ role: 'assistant', content: r.content }, { role: 'user', content: results });
       }

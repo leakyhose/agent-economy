@@ -24,8 +24,13 @@
 <div class="box" id="world">not running</div>
 
 <div id="market" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
-  <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div>
+  <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
   <div class="box" id="book" style="margin:0; min-width:260px; flex:1"></div>
+</div>
+<div id="macro" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
+  <div class="chart" id="k-gdp"></div><div class="chart" id="k-cpi"></div><div class="chart" id="k-emp"></div>
+  <div class="chart" id="k-slack"></div><div class="chart" id="k-wb"></div><div class="chart" id="k-gini"></div>
+  <div class="chart" id="k-houses"></div>
 </div>
 <div id="econ" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
   <div class="chart" id="k-money"></div><div class="chart" id="k-debt"></div><div class="chart" id="k-bank"></div>
@@ -41,8 +46,8 @@
 <table>
   <thead><tr>
     <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
-    <th class="n">wood</th><th class="n">nets</th><th class="n">boats</th><th class="n">hunger</th><th class="n">cold</th>
-    <th class="n">debt</th><th class="n">due</th><th>last thought</th>
+    <th class="n">wood</th><th class="n">nets</th><th class="n">boats</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
+    <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>last thought</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -50,7 +55,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
-const GN = ['food', 'wood', 'nets', 'boats'];   // good index -> name, same order as the chain
+const GN = ['food', 'wood', 'nets', 'boats', 'houses'];   // good index -> name, same order as the chain
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 let running = false;
 let last = null;                     // last /state, so hover can redraw without a fetch
@@ -149,8 +154,47 @@ function lines(id, title, series, { fmt = v => v.toFixed(0), stacked = false, no
   hit.onmouseleave = () => { khover[id] = null; econ(); };
 }
 
+// average of a per-round series over the last k rounds (per-round numbers are noisy)
+const rolling = (get, k) => last.history.map((_, i, h) => { const w = h.slice(Math.max(0, i - k + 1), i + 1).map(get).filter(v => v != null);
+  return w.length ? w.reduce((s, v) => s + v, 0) / w.length : 0; });
+
+function macro() {
+  const h = last.history;
+  if (!h.length || h[0].gdp === undefined) return;
+  const gdp10 = rolling(x => x.gdp, 10), emp5 = rolling(x => x.employment, 5), wb5 = rolling(x => x.wbRound, 5);
+  h.forEach((x, i) => { x.gdp10 = gdp10[i]; x.emp5 = emp5[i] * 100; x.wb5 = wb5[i] * 20; });   // 20 rounds a minute
+  const m = h.at(-1), infl = m.inflation == null ? 'n/a yet' : `${m.inflation > 0 ? '+' : ''}${(m.inflation * 100).toFixed(1)}%`;
+  lines('k-gdp', 'GDP per round', [
+    { name: 'gdp', color: '#bbb', get: x => x.gdp },
+    { name: '10-round avg', color: '#2458a6', get: x => x.gdp10 },
+  ], { fmt: v => v.toFixed(1), note: 'fish, wood, nets, houses made, at prices' });
+  lines('k-cpi', 'price index', [
+    { name: 'index', color: '#b00', get: x => x.priceIndex },
+    { name: 'start', color: '#aaa', get: () => 1, dash: true },
+  ], { fmt: v => v.toFixed(2), zero: false, note: `inflation, last minute: ${infl}` });
+  lines('k-emp', 'employment %', [
+    { name: 'worked, 5-round avg', color: '#1a7f37', get: x => x.emp5 },
+  ], { fmt: v => v.toFixed(0), note: 'worked / all shifts finished (incl. rest)' });
+  lines('k-slack', 'slack: offered, unsold', [
+    { name: 'value', color: '#c77700', get: x => x.slack },
+  ], { fmt: v => v.toFixed(1), note: `last round ${m.slackShare == null ? '—' : Math.round(m.slackShare * 100) + '%'} of the value offered didn't sell` });
+  lines('k-wb', 'wellbeing per agent', [
+    { name: 'total so far', color: '#2458a6', get: x => x.wellbeing },
+    { name: 'per minute (5-round avg)', color: '#1a7f37', get: x => x.wb5 },
+  ], { fmt: v => v.toFixed(1), note: 'average over agents' });
+  lines('k-gini', 'inequality (Gini, net worth)', [
+    { name: 'gini', color: '#7b4fb0', get: x => x.gini },
+  ], { fmt: v => v.toFixed(2), note: '0 = equal; net worth at what goods sell for' });
+  lines('k-houses', 'houses', [
+    { name: 'lived in', color: '#1a7f37', get: x => x.homeowners },
+    { name: 'being built', color: '#c77700', get: x => x.building },
+    { name: 'built (total)', color: '#2458a6', get: x => x.housesBuilt, dash: true },
+  ], { note: `out of ${last.agents.length} agents` });
+}
+
 function econ() {
   if (!last.history.length || last.history[0].supply === undefined) return;
+  macro();
   const start = last.bank.startSupply;
   lines('k-money', 'money in circulation', [
     { name: 'coins', color: '#2458a6', get: h => h.supply },
@@ -159,21 +203,23 @@ function econ() {
   lines('k-debt', 'bank loans', [
     { name: 'owed to bank', color: '#c77700', get: h => h.debt },
     { name: 'lending cap', color: '#aaa', get: h => h.lendingCap, dash: true },
-  ], { fmt: v => v.toFixed(1), note: 'cap = equity / kappa; losses shrink it' });
+  ], { fmt: v => v.toFixed(1), note: last.bank.creditOn ? `credit outstanding, interest to now; ${(last.bank.ratePerMin * 100).toFixed(1)}%/min` : 'credit is switched off (LTV 0)' });
   lines('k-bank', 'bank capital (totals)', [
     { name: 'equity', color: '#2458a6', get: h => h.equity },
     { name: 'dividends', color: '#1a7f37', get: h => h.dividends },
     { name: 'written off', color: '#b00', get: h => h.writtenOff },
     { name: 'bad debt', color: '#b00', get: h => h.badDebt, dash: true },
   ], { fmt: v => v.toFixed(1), note: 'dividends, write-offs: running totals' });
-  lines('k-fore', 'foreclosures (total)', [
+  lines('k-fore', 'loans come due (total)', [
+    { name: 'collected', color: '#1a7f37', get: h => h.autoRepaid ?? 0 },
+    { name: 'foreclosed overdue', color: '#c77700', get: h => h.overdue },
     { name: 'margin call', color: '#b00', get: h => h.marginCalls },
-    { name: 'overdue', color: '#c77700', get: h => h.overdue },
-  ], { note: 'margin call = collateral fell below the line' });
+  ], { note: 'collected = from cash when due, no penalty' });
   lines('k-jobs', 'what agents are doing', [
     { name: 'fish', color: '#2f7fc1', get: h => h.doing.gather_food },
     { name: 'wood', color: '#8a5a2b', get: h => h.doing.gather_wood },
     { name: 'craft', color: '#7b4fb0', get: h => h.doing.craft_net },
+    { name: 'build', color: '#c77700', get: h => h.doing.build_house ?? 0 },
     { name: 'idle', color: '#bbb', get: h => h.doing.idle },
   ], { stacked: true, note: 'agents on each job, per round' });
   lines('k-needs', 'hungry / cold agents', [
@@ -185,12 +231,13 @@ function econ() {
     { name: 'wood', color: '#8a5a2b', get: h => h.held[1] },
     { name: 'nets', color: '#7b4fb0', get: h => h.held[2] },
     { name: 'boats', color: '#333', get: h => h.held[3] ?? 0 },
+    { name: 'houses', color: '#c77700', get: h => h.held[4] ?? 0 },
   ], { note: 'rising = glut piling up, falling = scarcity' });
 }
 
-// ---- who's rich: cash to the right, debt to the left, net worth = cash - debt
+// ---- who's rich: cash to the right, debt to the left, net worth (cash + goods at what they sell for − debt) on the right
 function wealth() {
-  const ag = [...last.agents].sort((a, b) => (b.cash - b.debt) - (a.cash - a.debt));
+  const ag = [...last.agents].sort((a, b) => b.wealth - a.wealth);
   const max = Math.max(1, ...ag.map(a => Math.max(a.cash, a.debt))), start = last.bank.startSupply / ag.length;
   const W = 520, L = 90, mid = L + 90, R = W - 80, row = 16;
   const sx = v => v / max * (R - mid);
@@ -198,9 +245,9 @@ function wealth() {
     return `<text x="0" y="${yy + 10}" font-size="11">${a.name}</text>` +
       (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 5}" fill="#c77700"/>` : '') +
       `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 5}" fill="${a.cash - a.debt >= start ? '#1a7f37' : '#8fbf9a'}"/>` +
-      `<text x="${W}" y="${yy + 10}" font-size="11" text-anchor="end">${(a.cash - a.debt).toFixed(2)}</text>`; }).join('');
+      `<text x="${W}" y="${yy + 10}" font-size="11" text-anchor="end">${a.wealth.toFixed(2)}</text>`; }).join('');
   const sLine = mid + sx(start);
-  $('wealth').innerHTML = `<b>who's winning</b> <span style="color:#666">net worth = cash − debt ` +
+  $('wealth').innerHTML = `<b>who's winning</b> <span style="color:#666">net worth (right) = cash + goods − debt ` +
     `(<span style="color:#c77700">■ debt</span> <span style="color:#1a7f37">■ cash</span>, dark = above starting cash)</span>` +
     `<svg viewBox="0 0 ${W} ${ag.length * row + 20}" width="${W}" height="${ag.length * row + 20}" style="display:block;max-width:100%">${bars}` +
     `<line x1="${sLine}" x2="${sLine}" y1="10" y2="${ag.length * row + 16}" stroke="#999" stroke-dasharray="3 3"/>` +
@@ -209,11 +256,14 @@ function wealth() {
 }
 
 function bankFeed() {
-  const words = { borrow: ['borrowed', '#c77700'], repay: ['repaid', '#1a7f37'], foreclosed: ['FORECLOSED', '#b00'] };
-  const items = last.bankFeed.map(f => `<div style="color:${words[f.kind][1]}">r${f.round} · ${f.name} ` + (f.kind !== 'foreclosed'
-    ? `${words[f.kind][0]} ${f.amount.toFixed(2)}`
+  const words = { borrow: ['borrowed', '#c77700'], repay: ['repaid', '#1a7f37'], collected: ['collected', '#1a7f37'], foreclosed: ['FORECLOSED', '#b00'] };
+  const items = last.bankFeed.map(f => `<div style="color:${f.ok === false ? '#888' : words[f.kind][1]}">r${f.round} · ${f.name} ` + (
+    f.kind === 'borrow' ? `${f.ok === false ? 'refused: borrow' : 'borrowed'} ${f.amount.toFixed(2)}${f.term ? ` for ${f.term} min` : ' (top-up)'}${f.construction ? ' · construction loan' : ''}`
+    : f.kind === 'repay' ? `${f.ok === false ? 'refused: repay' : 'repaid'} ${f.amount.toFixed(2)}`
+    : f.kind === 'collected' ? `collected at the deadline: ${f.amount.toFixed(2)} from cash, no penalty`
     : `FORECLOSED (${f.reason === 'margin' ? 'margin call' : 'overdue'}) on ${(f.debt ?? 0).toFixed(2)}: ${f.amount.toFixed(2)} cash taken` +
-      (f.seized?.some(q => q) ? `, seized ${goodsList(f.seized)}` : '') + (f.returned?.some(q => q) ? `, returned ${goodsList(f.returned)}` : '')) +
+      (f.seized?.some(q => q) ? `, seized ${goodsList(f.seized)}` : '') + (f.refund ? `, refunded ${f.refund.toFixed(2)}` : '') +
+      (f.returned?.some(q => q) ? `, returned ${goodsList(f.returned)}` : '')) +
     `</div>`).join('');
   const b = last.bank, d = b.lastDividend;
   $('bankfeed').innerHTML = `<b>bank</b><br>in circulation ${b.supply.toFixed(2)} (start ${b.startSupply.toFixed(2)})<br>` +
@@ -221,7 +271,8 @@ function bankFeed() {
     `owed ${b.debt.toFixed(2)} · written off ${b.books.writtenOff.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)}<br>` +
     `income: interest ${b.books.interestIncome.toFixed(2)} · penalties ${b.books.penalties.toFixed(2)} · sales ${b.books.recovered.toFixed(2)}<br>` +
     `dividends paid ${b.dividends.toFixed(2)}` + (d ? ` (last r${d.round}: ${(d.perAgent / 100).toFixed(2)} each)` : '') + `<br>` +
-    `foreclosures: ${b.marginCalls} margin call · ${b.overdue} overdue<br>` +
+    (b.creditOn ? `terms: ${(b.ratePerMin * 100).toFixed(1)}% a minute, by the slot · term ${b.terms.join('/')} min<br>` : `credit is switched off: the chain refuses every loan<br>`) +
+    `due loans: ${b.autoRepaid} collected from cash · foreclosures: ${b.marginCalls} margin call · ${b.overdue} overdue<br>` +
     `seized, for sale: ${goodsList(b.goods) || 'nothing'}<br>` +
     `<span style="color:#666">foreclosures and dividends signed by keeper ${b.keeper.slice(0, 8)}… (not the server)</span>` +
     `<div style="margin-top:6px"><b>loans (recent)</b>${items || '<div style="color:#888">no loans yet</div>'}</div>`;
@@ -255,11 +306,11 @@ async function refresh() {
   if (!running) {
     statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
     world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
-    $('market').style.display = 'none'; $('econ').style.display = 'none'; $('econ2').style.display = 'none';
+    $('market').style.display = 'none'; $('macro').style.display = 'none'; $('econ').style.display = 'none'; $('econ2').style.display = 'none';
     return;
   }
   statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
-  last = s; $('market').style.display = 'flex'; $('econ').style.display = 'flex'; $('econ2').style.display = 'flex';
+  last = s; $('market').style.display = 'flex'; $('macro').style.display = 'flex'; $('econ').style.display = 'flex'; $('econ2').style.display = 'flex';
   GN.forEach((_, g) => chart(g)); book(); econ(); wealth(); bankFeed();
 
   const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
@@ -269,12 +320,17 @@ async function refresh() {
     `prices: ${prices}<br>` +
     `doing: ${doing}<br>` +
     `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · boats ${s.totals.boats} · ` +
+    `houses ${s.totals.houses} lived in, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
     `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
     `bank: money in circulation ${s.bank.supply.toFixed(2)} (started ${s.bank.startSupply.toFixed(2)}) · ` +
     `owed ${s.bank.debt.toFixed(2)} of cap ${s.bank.lendingCap.toFixed(2)} · equity ${s.bank.equity.toFixed(2)} · ` +
     `dividends ${s.bank.dividends.toFixed(2)} · written off ${s.bank.books.writtenOff.toFixed(2)} · bad debt ${s.bank.badDebt.toFixed(2)}<br>` +
     (s.foreclosures.length ? `<span class="hungry">foreclosures: ${s.foreclosures.map(f => `r${f.round} ${f.name} (${f.reason === 'margin' ? 'margin call' : 'overdue'})`).join(' · ')}</span> ` +
       `(signed by keeper ${s.bank.keeper.slice(0, 8)}…, not the authority)<br>` : '') +
+    (s.metrics ? `economy (last round): GDP ${s.metrics.gdp.toFixed(2)} · price index ${s.metrics.priceIndex.toFixed(2)}` +
+      (s.metrics.inflation != null ? ` (${s.metrics.inflation > 0 ? '+' : ''}${(s.metrics.inflation * 100).toFixed(1)}% in a minute)` : '') +
+      ` · employment ${s.metrics.employment == null ? '—' : Math.round(s.metrics.employment * 100) + '%'} · slack ${s.metrics.slack.toFixed(2)}` +
+      ` · wellbeing ${s.metrics.wellbeing.toFixed(1)} avg · gini ${s.metrics.gini.toFixed(2)} · credit ${s.metrics.credit.toFixed(2)} · money ${s.metrics.money.toFixed(2)}<br>` : '') +
     `solana: ${s.chain.transactions} transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}…</a>` +
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '');
 
@@ -286,8 +342,10 @@ async function refresh() {
   rows.innerHTML = s.agents.map(a =>
     `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
     `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td><td class="n">${a.boats}</td>` +
+    `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/3` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
     `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
     `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
+    `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
     `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
     `<td class="n ${a.dueIn !== null && a.dueIn <= 0 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + 's'}</td>` +
     `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`

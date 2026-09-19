@@ -60,9 +60,15 @@ export function openaiBrain() {
         if (!calls.length) return;
 
         t.acted.failed = false;
+        // Arguments that aren't a JSON object (malformed, or cut off at the token limit)
+        // are never run with defaults: the model is told, and gets another turn.
         const results = calls.map(c => {
-          let args = {};
-          try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* bad JSON: run with no args */ }
+          let args;
+          try { args = JSON.parse(c.function.arguments || '{}'); } catch (e) {
+            return { role: 'tool', tool_call_id: c.id, content: t.badCall(c.function.name, c.function.arguments, `invalid JSON: ${e.message}`) };
+          }
+          if (!args || typeof args !== 'object' || Array.isArray(args))
+            return { role: 'tool', tool_call_id: c.id, content: t.badCall(c.function.name, c.function.arguments, 'arguments must be a JSON object') };
           return { role: 'tool', tool_call_id: c.id, content: t.exec(c.function.name, args) };
         });
         if (t.acted.activity && !t.acted.failed) return;   // chose a shift, nothing refused — done
