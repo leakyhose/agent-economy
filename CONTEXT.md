@@ -55,12 +55,13 @@ WORK   →  gather_food / gather_wood / craft_net   (a timed shift, several seco
 SELL   →  place limit orders; a batch auction clears once per round, on-chain
 EAT    →  automatic, every few ticks; no food = hunger, which halves output
 WARM   →  automatic, burn 1 wood every 16 ticks; no wood = cold, which also halves output
-BORROW →  pledge wood/nets to the on-chain bank for newly minted coins; repay or be foreclosed
+BORROW →  pledge wood/nets/boats to the on-chain bank for newly minted coins; repay or be foreclosed
 SPOIL  →  unsold food and wood rot every round; coins never spoil
 ```
 
-Three goods: **food, wood, nets**. A net doubles your fishing catch and is crafted from
-wood. **Every agent draws a random skill per job** (0.5–1.5, `CFG.SKILL_RANGE`) from a
+Four goods: **food, wood, nets, boats**. A net doubles your fishing catch and is crafted from
+wood. Boats (opening price 80.00) are tradable and pledgeable on-chain, but nothing
+builds them yet — `build_boat` is the next step. **Every agent draws a random skill per job** (0.5–1.5, `CFG.SKILL_RANGE`) from a
 fixed seed (`SEED`), so the same village is reborn every run. Skill multiplies a
 shift's yield and divides the wood a net costs. No job is assigned — agents see their
 skills and choose, so any specialization is emergent. Each agent is also shown what a
@@ -72,21 +73,32 @@ Wood has two uses: fuel (used up, so wood always has buyers) and nets (capital).
 
 **Money is created by lending, as in real economies.** Agents start with
 `AGENTS × START_CASH` coins. The only way new coins come into being is the on-chain
-bank: an agent pledges wood/nets and `borrow` mints coins into its purse. `repay`
-burns them (interest burns a bit more). The program tracks `supply` and it always
-equals the sum of every agent's cash — checked on a local validator.
+bank: an agent pledges wood/nets/boats and `borrow` mints coins into its purse.
+Repaying pays interest first, to the bank; the principal is burned. `supply` always
+equals the sum of every agent's cash — checked every round from the log.
 
-What keeps the money from being worthless — every rule enforced on-chain (`CFG.BANK`):
-- **Backed:** a loan with interest may be at most 50% of the pledged goods' value at the
-  last clearing prices. Food can't be pledged (it rots).
-- **Temporary:** every loan is due ~60s (150 slots) later. Repaying destroys the coins.
-- **Capped:** total outstanding debt ≤ 50% of the starting money supply.
-- **Enforced by anyone:** `liquidate` is **permissionless**. Once the chain's clock
-  passes the due slot, any signer can foreclose: +20% penalty, the debtor's cash is burned
-  toward it, and if that falls short ALL collateral goes to the bank. The simulation's
-  keeper is a separate keypair with no authority, so every foreclosure proves this.
-- **Seized goods are sold, proceeds burned:** the bank posts seized collateral into the
-  auction at 80% of the last price; coins it takes in leave circulation.
+**The bank has a balance sheet** (every rule on-chain, dials in `CFG.BANK`):
+- **Equity** is the bank's own cash, seeded at start (`SEED` = 10% of starting money, not
+  counted in `supply`). Interest, foreclosure penalties and sales of seized goods add to
+  it; write-offs and dividends take from it.
+- **Backed:** a loan with interest may be at most 50% (`LTV`) of the pledged goods' value
+  at last prices. Food can't be pledged (it rots).
+- **Lending limited by capital:** all loans together ≤ equity / `KAPPA` (0.10, so 10×
+  equity). Defaults eat equity, which tightens lending for everyone — a credit crunch.
+- **Temporary:** every loan is due `TERM_SLOTS` (150 slots, ~60s) after borrowing.
+- **Foreclosure by anyone:** `liquidate` is **permissionless**, allowed once the loan is
+  overdue OR on a **margin call** (debt > `MARGIN` = 70% of the collateral at last prices).
+  +20% penalty; the debtor's cash is collected first (interest + penalty to equity, the
+  rest burns principal); if short, the bank seizes only as many units as it needs
+  (priciest first, valued at 80% of last price) and **returns the rest**. Unpaid principal
+  is written off against equity at once; a loss bigger than equity is `bad_debt`,
+  paid down by later income. The keeper is a separate keypair with no authority.
+- **Seized goods are fire-sold** into the auction at 80% of the last price; proceeds go to
+  equity. A fire sale lowers the last price, which can margin-call other loans.
+- **Dividend:** equity above `KAPPA × debt + EQUITY_FLOOR` (floor = the seed) is paid to
+  every agent equally by the permissionless `pay_dividend`, called once per round.
+- **Books:** `Σ agent cash + bank cash = start money + seed + minted − principal repaid −
+  written off`, checked every round by `analyze.mjs` and the headless summary.
 - **Needs:** food and firewood are used up constantly, so everyone always needs coins.
 
 The analyzer reports money supply over time next to a price index. Prices rising much
@@ -128,56 +140,53 @@ faster than supply grows would be the sign of money losing value.
 
 ## 3. What's on Solana today
 
-One Anchor program (`chain/programs/chain/src/lib.rs`), six instructions:
+One Anchor program (`chain/programs/chain/src/lib.rs`), seven instructions:
 
 ```rust
-pub const MAX_AGENTS: usize = 200;   // keeps the ledger (9,768 bytes) under the 10 KiB create limit
-pub const N_GOODS: usize = 3;   // food, wood, nets
+pub const MAX_AGENTS: usize = 150;   // 8 + 264 + 150×64 = 9,872 bytes, under the 10 KiB create limit
+pub const N_GOODS: usize = 4;        // food, wood, nets, boats
 
-initialize(num_agents, start_cash, start_food, start_wood, terms)  // ledger, purses, bank rules
+initialize(n, start_cash, start_food, start_wood, start_prices[4], bank_seed, terms)
+                                                   // ledger, purses, opening prices, bank equity + rules
 settle(deltas: Vec<Delta>)                        // signed goods deltas: catches,
                                                    //   meals, fires, crafting, spoilage
 clear_auction(good, bids, asks)                   // uniform-price batch auction (the bank may sell)
-borrow(agent, amount, collateral)                 // lock wood/nets, MINT coins, record debt
-repay(agent, amount)                              // BURN coins, unlock collateral when paid off
-liquidate(agent)                                  // PERMISSIONLESS foreclosure once overdue
+borrow(agent, amount, collateral[4])              // lock goods, MINT coins; capped by collateral AND bank capital
+repay(agent, amount)                              // interest to equity, principal BURNED; unlock when paid off
+liquidate(agent)                                  // PERMISSIONLESS: overdue or margin call; partial seizure
+pay_dividend()                                    // PERMISSIONLESS: equity above requirement, to all agents
 ```
 
-```rust
-#[account(zero_copy)]
-pub struct Ledger {
-    pub authority: Pubkey,               // only this key may write — CHECKED on every write but liquidate
-    pub num_agents: u32,
-    pub round: u32,
-    pub last_price: [u64; N_GOODS],
-    pub supply: u64, pub debt_total: u64, pub bad_debt: u64, pub debt_cap: u64,
-    pub ltv_bps: u16, pub rate_bps: u16, pub penalty_bps: u16, pub _pad: u16,
-    pub term_slots: u64,
-    pub bank: AgentSlot,                 // seized collateral awaiting sale
-    pub slots: [AgentSlot; MAX_AGENTS],
-}
-#[zero_copy]
-pub struct AgentSlot { cash: u64, goods: [u32; 3], locked: [u32; 3], debt: u64, due_slot: u64 }  // 48 bytes
-```
+`terms = { ltv, rate, penalty, kappa, margin (bps), term_slots, equity_floor }`. The
+`Ledger` holds prices, `supply`, `debt_total`, the bank's **books** (`start_money,
+bank_seed, minted, principal_repaid, interest_income, penalties, recovered,
+written_off, bad_debt, dividends_paid`), the terms, a `bank` slot (cash = equity,
+goods = seized collateral for sale) and 150 `AgentSlot { cash, goods[4], locked[4],
+debt, principal, due_slot }` (64 bytes). Byte offsets are commented in `lib.rs` and
+decoded by hand in `chain.mjs` `fetch()`, which also derives `equity`, `lendingCap`
+and `capitalRequired`.
 
-**Every write except `liquidate` requires the ledger's `authority` to sign, and the
-program checks the signer matches** (`Write::load_checked`). `liquidate` takes any
-signer; the program itself checks the loan is overdue by the chain's `Clock`.
+**Every write except `liquidate` and `pay_dividend` requires the ledger's `authority`
+to sign, and the program checks the signer matches** (`Write::load_checked`). Those two
+take any signer; the program itself checks the loan is overdue by the chain's `Clock`
+or under margin at the last prices, and computes the surplus it pays out.
 
 ### What actually happens on-chain, per market round
 
 1. The backend batches everything that happened that round (catches, meals eaten,
    crafting, spoilage) as **signed deltas** and sends one or more `settle` transactions.
    No balance may go negative — the program checks and rejects.
-2. For each of the three goods, the backend sends the round's order book to
+2. Loans and repayments are sent; any loan `liquidatable()` (overdue or margin) is
+   foreclosed by the keeper; the keeper calls `pay_dividend` if the books show a surplus.
+3. For each of the four goods, the backend sends the round's order book to
    `clear_auction`. **Orders are pre-sorted off-chain; the program verifies the
    sortedness in one O(n) pass** rather than sorting on-chain (sorting on-chain risks
    blowing the compute budget at scale — this is the same design as the earlier
    research recommended). An unsorted book is rejected — verified with a real
    transaction that the program refuses it.
-3. The clearing price is the midpoint of the last crossing bid/ask pair; every filled
+4. The clearing price is the midpoint of the last crossing bid/ask pair; every filled
    order settles atomically inside that one transaction.
-4. The backend reads the ledger back and replaces its local mirror with what the chain
+5. The backend reads the ledger back and replaces its local mirror with what the chain
    says — **the chain is the source of truth**, not an assertion the server makes about
    itself.
 
@@ -207,7 +216,7 @@ what fits in one legacy (1232-byte) transaction.
   `mintAuthority: null` moment to show a judge yet.
 - No per-agent on-chain identity (no PDA per agent) — agent #40 is an array index, not
   an account a judge can open in the explorer individually.
-- `liquidate` is the one permissionless instruction. There's no standalone CLI yet
+- `liquidate` and `pay_dividend` are the permissionless instructions. There's no standalone CLI yet
   for a judge to call it from their own terminal. That would be a small script.
 
 ---

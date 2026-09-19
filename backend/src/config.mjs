@@ -15,8 +15,8 @@ try {
 } catch { /* no .env yet */ }
 const env = process.env;
 
-export const GOODS = ['food', 'wood', 'nets'];
-export const FOOD = 0, WOOD = 1, NETS = 2;
+export const GOODS = ['food', 'wood', 'nets', 'boats'];
+export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3;
 
 export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
@@ -47,22 +47,33 @@ export const CFG = {
   // a job — agents see their skills and choose, so specialization has to emerge.
   SKILL_RANGE: [0.5, 1.5],
   NET_WEAR: 0.05,          // chance a net breaks on each fishing shift
-  // Share of an agent's FREE stock that rots every market round: food, wood, nets.
+  // Share of an agent's FREE stock that rots every market round: food, wood, nets, boats.
   // Coins never spoil — so holding money is the way to store value, and surplus
   // goods have to be sold before they rot.
-  SPOIL: [0.10, 0.02, 0],
+  SPOIL: [0.10, 0.02, 0, 0],
   HUNGRY_PENALTY: 0.5,     // hungry agents gather half as much
   COLD_PENALTY: 0.5,       // so do cold ones (2+ missed fires); both together = a quarter
 
   // The village bank, enforced on-chain. It is the ONLY way new coins come into being:
-  // it mints them as a loan against pledged wood/nets, and burns them when repaid.
+  // it mints them as a loan against pledged wood/nets/boats, and burns the principal
+  // when repaid. Interest and penalties are its income (its equity); what it earns
+  // beyond the capital it must keep is paid out to every agent as a dividend.
   BANK: {
     LTV: 0.5,              // a loan (with interest) may be at most half the collateral's value
-    RATE: 0.10,            // flat interest per loan, burned on repayment
-    PENALTY: 0.20,         // added to an overdue debt at foreclosure
+    RATE: 0.10,            // flat interest per loan, paid first on repayment, to the bank's equity
+    PENALTY: 0.20,         // added to the debt at foreclosure, to the bank's equity
     TERM_SLOTS: 150,       // due this many Solana slots after borrowing (~60s at 400ms/slot)
-    CAP_SHARE: 0.5,        // all loans together <= this share of the starting money supply
+    // The bank's opening equity, as a share of the starting money. With KAPPA 0.10 it can
+    // lend 10× its equity, so 0.10 lets debt reach the whole starting money supply
+    // (the old fixed cap was half) — room for boats — while losing ~10% of that loan
+    // book wipes it out and stops lending: a credit crunch that defaults can cause.
+    SEED: 0.10,
+    KAPPA: 0.10,           // capital ratio: all loans together <= equity / KAPPA
+    MARGIN: 0.70,          // margin call (anyone may foreclose) once debt > 70% of collateral at last prices
+    // Equity never paid out, as a share of the starting money. Equal to SEED, so the
+    // bank keeps its seed and pays out only profit beyond KAPPA × loans.
+    EQUITY_FLOOR: 0.10,
   },
   SLOT_MS: 400,            // assumed slot time, only for telling agents "due in ~Ns"
-  START_PRICES: [500, 300, 2000],   // cents: food, wood, nets
+  START_PRICES: [500, 300, 2000, 8000],   // cents: food, wood, nets, boats
 };

@@ -18,7 +18,8 @@ export function stubBrain() {
       if (v.food > 6) t.exec('place_order', { side: 'sell', good: 'food', quantity: v.food - 6, price: +(p.food * jitter * 0.95).toFixed(2) });
       const woodNeed = 3 + (v.nets && !crafter ? 0 : v.netWood);   // 3 for the fire
       if (v.wood > woodNeed) t.exec('place_order', { side: 'sell', good: 'wood', quantity: v.wood - woodNeed, price: +(p.wood * jitter * 0.95).toFixed(2) });
-      if (v.nets > (crafter ? 0 : 1)) t.exec('place_order', { side: 'sell', good: 'net', quantity: v.nets - 1, price: +(p.nets * jitter).toFixed(2) });
+      const keepNets = crafter ? 0 : 1;
+      if (v.nets > keepNets) t.exec('place_order', { side: 'sell', good: 'net', quantity: v.nets - keepNets, price: +(p.nets * jitter).toFixed(2) });
 
       // buy what you need
       const cash = v.availCash / 100;
@@ -29,9 +30,15 @@ export function stubBrain() {
         t.exec('place_order', { side: 'buy', good: 'net', quantity: 1, price: +(p.nets * 1.05).toFixed(2) });
 
       // the bank: borrow when broke and holding collateral, repay as soon as affordable
-      if (v.debt && v.availCash > v.debt) t.exec('repay', { amount: v.debt / 100 });
-      else if (!v.debt && cash < p.food * 3 && v.maxLoan > 100)
-        t.exec('borrow', { amount: Math.floor(v.maxLoan * 0.8) / 100, wood: Math.max(0, v.wood - 3), nets: v.nets, reason: 'short of cash' });
+      // (a fresh view: the sell orders above committed some goods)
+      const f = t.view();
+      if (f.debt && f.availCash > f.debt) t.exec('repay', { amount: f.debt / 100 });
+      else if (!f.debt && cash < p.food * 3 && f.maxLoan > 100) {
+        const pledge = { wood: Math.max(0, f.wood - 3), nets: f.nets, boats: f.boats };
+        const value = pledge.wood * p.wood + pledge.nets * p.nets + pledge.boats * p.boats;   // coins
+        const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.4) * 100) / 100;       // under LTV after interest
+        if (amount >= 1) t.exec('borrow', { amount, ...pledge, reason: 'short of cash' });
+      }
 
       // pick the shift
       let act;

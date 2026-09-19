@@ -8,7 +8,7 @@ How things work:
 - Wood has two uses: you burn 1 automatically every few seconds to keep warm, and it crafts nets (for yourself, or to sell to others).
 - A net doubles your fishing catch. Nets can tear.
 - Villagers differ in skill: each is better at some jobs than others. You can do any job; your situation shows what each one yields for you and roughly what a shift of it earns at today's prices.
-- The village bank creates new coins only by lending them against pledged wood or nets. Repaying destroys those coins. A loan not repaid on time can be foreclosed by anyone, and you may lose your collateral.
+- The village bank creates new coins only by lending them against pledged wood, nets or boats. Repaying the loan destroys those coins; the interest goes to the bank, which pays what it earns beyond its required capital to every villager equally. The bank can lend only as much as its capital allows. A loan not repaid on time, or whose collateral loses too much value, can be foreclosed by anyone, and you may lose some or all of your collateral.
 - Goods rot: some of your stored food spoils every market round, and wood slowly rots too. Coins never spoil. Surplus you can't eat is only worth something if you sell it.
 - The market clears every few seconds. All orders for a good clear together at ONE price, set by supply and demand across the whole village. You cannot set the price — only your limit.
 

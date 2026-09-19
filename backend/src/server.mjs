@@ -39,11 +39,12 @@ function broadcast(e) {
     const W = sim.W, acts = {};
     for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; acts[k] = (acts[k] ?? 0) + 1; }
     const st = sim.brain.stats();
-    console.log(`round ${String(e.round).padStart(3)} | money ${coins(e.bank.supply)} debt ${coins(e.bank.debtTotal)} | ` +
+    console.log(`round ${String(e.round).padStart(3)} | money ${coins(e.bank.supply)} debt ${coins(e.bank.debtTotal)} equity ${coins(e.bank.equity)} | ` +
       GOODS.map((g, i) => `${g} ${coins(e.prices[i])} (${e.volumes[i]})`).join('  ') +
       ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} idle ${acts.idle ?? 0}` +
       ` | hungry ${W.agents.filter(a => a.hunger > 0).length} cold ${W.agents.filter(a => a.cold >= 2).length}` +
-      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => f.name).join(', ')}` : '') + ` | ${e.txs} tx ${e.ms}ms` +
+      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => `${f.name} (${f.reason})`).join(', ')}` : '') +
+      (e.bank.dividend ? ` | dividend ${coins(e.bank.dividend.perAgent)} each` : '') + ` | ${e.txs} tx ${e.ms}ms` +
       (st.calls ? ` | llm ${st.calls} calls $${st.cost.toFixed(3)}` : ''));
   }
   if (e.type === 'error') console.error(`  ! ${e.message}`);
@@ -54,12 +55,12 @@ async function start() {
   const myGen = ++gen;
   const brain = await makeBrain();
   const chain = await connectChain();
-  const B = CFG.BANK;
-  await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, {
-    debtCap: Math.round(B.CAP_SHARE * CFG.AGENTS * CFG.START_CASH),
-    ltvBps: Math.round(B.LTV * 10_000), rateBps: Math.round(B.RATE * 10_000),
-    penaltyBps: Math.round(B.PENALTY * 10_000), termSlots: B.TERM_SLOTS,
-  });
+  const B = CFG.BANK, money = CFG.AGENTS * CFG.START_CASH, bps = x => Math.round(x * 10_000);
+  await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, CFG.START_PRICES,
+    Math.round(B.SEED * money), {
+      ltvBps: bps(B.LTV), rateBps: bps(B.RATE), penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA),
+      marginBps: bps(B.MARGIN), termSlots: B.TERM_SLOTS, equityFloor: Math.round(B.EQUITY_FLOOR * money),
+    });
   const W = createWorld(chain, await chain.fetch(), { onEvent: e => sim && broadcast(e) });
 
   // every run is saved: runs/<timestamp>/events.jsonl + meta.json (+ final.json on stop)
@@ -127,9 +128,13 @@ function state() {
     volumes: Object.fromEntries(GOODS.map((g, i) => [g, W.volumes[i]])),
     bank: { supply: W.bank.supply / 100, startSupply: CFG.AGENTS * CFG.START_CASH / 100,
             debt: W.bank.debtTotal / 100, badDebt: W.bank.badDebt / 100, goods: W.bank.goods,
+            equity: W.bank.equity / 100, lendingCap: W.bank.lendingCap / 100, capitalRequired: W.bank.capitalRequired / 100,
+            books: Object.fromEntries(Object.entries(W.bank.books).map(([k, v]) => [k, v / 100])),
+            dividends: W.bank.books.dividendsPaid / 100, lastDividend: W.bank.lastDividend,
+            marginCalls: W.marginCalls, overdue: W.overdue,
             keeper: chain.keeper.publicKey.toBase58() },
     totals: { money: sum(a => a.cash) / 100, food: sum(a => a.goods[0]), wood: sum(a => a.goods[1]),
-              nets: sum(a => a.goods[2]), hungry: W.agents.filter(a => a.hunger > 0).length,
+              nets: sum(a => a.goods[2]), boats: sum(a => a.goods[3]), hungry: W.agents.filter(a => a.hunger > 0).length,
               cold: W.agents.filter(a => a.cold >= 2).length },
     doing,
     chain: { program: PROGRAM_ID.toBase58(), ledger: chain.ledger.publicKey.toBase58(),
@@ -138,17 +143,18 @@ function state() {
     llm: brain.stats(),
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: a.skills, cash: a.cash / 100,
-      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], hunger: a.hunger, cold: a.cold,
+      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], boats: a.goods[3], locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: a.debt / 100, dueIn: W.secondsUntilDue(a),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
     })),
     events: W.events.filter(e => e.type === 'round' || e.type === 'error').slice(-15).reverse(),
-    foreclosures: W.bankLog.filter(f => f.kind === 'seized' || f.kind === 'foreclosed').slice(-8).reverse(),
+    foreclosures: W.bankLog.filter(f => f.kind === 'foreclosed').slice(-8).reverse(),
     // live market: price history for the charts, last round's order book, recent trades
     history: W.priceHistory.map(h => ({ ...h, prices: h.prices.map(p => p / 100),
-      supply: h.supply / 100, debt: h.debt / 100, badDebt: h.badDebt / 100 })),
+      supply: h.supply / 100, debt: h.debt / 100, badDebt: h.badDebt / 100, equity: h.equity / 100,
+      lendingCap: h.lendingCap / 100, dividends: h.dividends / 100, writtenOff: h.writtenOff / 100 })),
     // every loan, repayment and foreclosure, newest first
-    bankFeed: W.bankLog.slice(-14).reverse().map(f => ({ ...f, amount: f.amount / 100 })),
+    bankFeed: W.bankLog.slice(-14).reverse().map(f => ({ ...f, amount: f.amount / 100, ...(f.debt ? { debt: f.debt / 100 } : {}) })),
     market: (() => {
       const rounds = W.events.filter(e => e.type === 'round');
       const last = rounds.at(-1);
@@ -192,11 +198,18 @@ if (CFG.RUN_SECONDS) {
   const { W, chain, brain, dir } = sim;
   await stop();
   console.log(`analyze with: node backend/scripts/analyze.mjs ${path.relative(ROOT, dir)}`);
-  const L = await chain.fetch();
+  const L = await chain.fetch(), b = L.books;
   const rich = W.agents.slice().sort((x, y) => y.cash - x.cash);
-  console.log(`\nmoney on chain ${coins(L.slots.reduce((s, x) => s + x.cash, 0))} = supply ${coins(L.supply)} (started ${coins(CFG.START_CASH * CFG.AGENTS)}); ` +
-    `owed to bank ${coins(L.debtTotal)}, bad debt ${coins(L.badDebt)}`);
-  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${L.slots.reduce((s, x) => s + x.goods[2], 0)}`);
+  const cash = L.slots.reduce((s, x) => s + x.cash, 0), debt = L.slots.reduce((s, x) => s + x.debt, 0);
+  const books = b.startMoney + b.bankSeed + b.minted - b.principalRepaid - b.writtenOff;
+  const ok = x => x ? 'ok' : 'BROKEN';
+  console.log(`\ninvariants: supply ${coins(L.supply)} = Σ cash ${coins(cash)} ${ok(L.supply === cash)}; ` +
+    `Σ cash + bank ${coins(cash + L.bank.cash)} = books ${coins(books)} ${ok(cash + L.bank.cash === books)}; ` +
+    `debt ${coins(L.debtTotal)} = Σ debt ${coins(debt)} ${ok(L.debtTotal === debt)}`);
+  console.log(`bank: equity ${coins(L.equity)} (seed ${coins(b.bankSeed)}), lending cap ${coins(L.lendingCap)}, interest ${coins(b.interestIncome)}, ` +
+    `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}, dividends ${coins(b.dividendsPaid)}; ` +
+    `foreclosures ${W.marginCalls} margin call, ${W.overdue} overdue`);
+  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${L.slots.reduce((s, x) => s + x.goods[2], 0)}   boats ${L.slots.reduce((s, x) => s + x.goods[3], 0)}`);
   console.log(`richest ${rich.slice(0, 3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   console.log(`poorest ${rich.slice(-3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   const st = brain.stats(); if (st.calls) console.log(`llm ${st.calls} calls, ${st.errors} errors, $${st.cost.toFixed(3)}`);
