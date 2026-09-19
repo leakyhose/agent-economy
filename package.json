@@ -7,7 +7,9 @@
     "test": "vitest run",
     "typecheck": "tsc -b --pretty",
     "demo:solana": "tsx packages/solana/scripts/demo.ts",
-    "test:chain": "cargo test -p world"
+    "test:chain": "cargo test -p world",
+    "demo:org": "tsx packages/solana/scripts/org-demo.ts",
+    "test:org": "cargo test -p org"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

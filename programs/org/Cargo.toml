@@ -1,0 +1,26 @@
+[package]
+name = "org"
+version = "0.1.0"
+description = "Agentic World — treasuries, governance and escrow for any world's organizations."
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "org"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "1.2.0", features = ["init-if-needed"] }
+anchor-spl = { version = "1.2.0", default-features = false, features = ["token", "token_2022"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
