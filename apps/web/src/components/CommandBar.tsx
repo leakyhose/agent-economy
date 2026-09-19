@@ -6,6 +6,19 @@ import { padTick } from '../derive/format.ts';
 
 const SPEEDS = [0.5, 1, 2, 4, 8];
 const SCALES = [1, 4, 12];
+/** Round sizes spanning the ledger's 2..320 range, without a free-text box. */
+const HEADCOUNTS = [10, 24, 50, 100, 150, 200, 320];
+
+/** What a run costs per hour, very roughly: a model-backed agent decides a few
+ *  times a minute on a prompt of a few hundred tokens. Shown so nobody starts a
+ *  300-agent run on the dear model without seeing the number first. */
+function costPerHour(price: [number, number] | undefined, agents: number): string | null {
+  if (!price || agents <= 0) return null;
+  const decisionsPerHour = agents * 0.5 * 60;     // ~half the population, twice a minute
+  const usd = decisionsPerHour * (450 / 1e6 * price[0] + 60 / 1e6 * price[1]);
+  if (usd < 0.01) return '<$0.01/hr';
+  return usd < 1 ? `~$${usd.toFixed(2)}/hr` : `~$${usd.toFixed(usd < 10 ? 1 : 0)}/hr`;
+}
 
 export function CommandBar() {
   const manifest = useSim((s) => s.manifest);
@@ -23,6 +36,24 @@ export function CommandBar() {
   const setSourceKind = useSim((s) => s.setSourceKind);
   const status = useSim((s) => s.status);
   const statusDetail = useSim((s) => s.statusDetail);
+  const agentCount = useSim((s) => s.agentCount);
+  const serverAgents = useSim((s) => s.serverAgents);
+  const agentLimits = useSim((s) => s.agentLimits);
+  const agentNote = useSim((s) => s.agentNote);
+  const setAgentCount = useSim((s) => s.setAgentCount);
+  const model = useSim((s) => s.model);
+  const setModel = useSim((s) => s.setModel);
+  const brain = useSim((s) => s.brain);
+  const setBrain = useSim((s) => s.setBrain);
+  const catalogue = useSim((s) => s.catalogue);
+  const hasKey = useSim((s) => s.hasKey);
+  const loading = useSim((s) => s.loading);
+
+  const live = sourceKind === 'live';
+  const models = catalogue.models.length > 0 ? catalogue.models : [];
+  const chosen = models.find((m) => m.id === model);
+  const options = HEADCOUNTS.filter((n) => n >= agentLimits.min && n <= agentLimits.max);
+  const cost = costPerHour(chosen?.price, serverAgents || (agentCount ?? 0));
 
   return (
     <header className="bar">
@@ -103,7 +134,7 @@ export function CommandBar() {
           </button>
         </div>
 
-        {sourceKind === 'fixture' ? (
+        {!live ? (
           <div className="field">
             <label className="field-label" htmlFor="scale-select">Population</label>
             <select
@@ -117,7 +148,66 @@ export function CommandBar() {
               ))}
             </select>
           </div>
-        ) : null}
+        ) : (
+          <>
+            <div className="field">
+              <label className="field-label" htmlFor="agents-select">Agents</label>
+              <select
+                id="agents-select"
+                className="control"
+                value={agentCount ?? ''}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  void setAgentCount(raw === '' ? null : Number(raw));
+                }}
+                title={agentNote || 'Scales the mix of entity types the world file specifies'}
+              >
+                <option value="">World default{serverAgents ? ` (${serverAgents})` : ''}</option>
+                {options.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label className="field-label" htmlFor="model-select">Model</label>
+              <select
+                id="model-select"
+                className="control"
+                value={model ?? ''}
+                onChange={(event) => void setModel(event.target.value)}
+                title={chosen?.note ?? 'Which model the agents reason with'}
+              >
+                {models.map((entry) => (
+                  <option
+                    key={entry.id}
+                    value={entry.id}
+                    disabled={entry.provider !== 'stub' && !hasKey}
+                  >
+                    {entry.label}{entry.provider !== 'stub' && !hasKey ? ' \u2014 no key' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label className="field-label" htmlFor="brain-select">Agents run</label>
+              <select
+                id="brain-select"
+                className="control"
+                value={brain ?? ''}
+                onChange={(event) => void setBrain(event.target.value)}
+                title={catalogue.brains.find((b) => b.id === brain)?.note ?? ''}
+              >
+                {catalogue.brains.map((entry) => (
+                  <option key={entry.id} value={entry.id}>{entry.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {cost ? <span className="field-note" title="Very rough: assumes half the population decides twice a minute">{cost}</span> : null}
+          </>
+        )}
       </div>
 
       <div className="readout">
@@ -126,9 +216,13 @@ export function CommandBar() {
         <span className="readout-unit">{config?.tickUnit ?? 'tick'}s elapsed</span>
       </div>
 
-      <div className="status" data-status={status} title={statusDetail}>
-        <span className={`status-dot${status === 'connecting' ? ' pulse' : ''}`} />
-        {sourceKind === 'fixture' ? 'fixture replay' : status}
+      <div
+        className="status"
+        data-status={loading ? 'connecting' : status}
+        title={loading ? 'Building the population: a keypair and token accounts per agent' : statusDetail}
+      >
+        <span className={`status-dot${loading || status === 'connecting' ? ' pulse' : ''}`} />
+        {loading ? 'building' : sourceKind === 'fixture' ? 'fixture replay' : status}
       </div>
     </header>
   );

@@ -14,6 +14,8 @@ import type { ActionProposal, SimEvent, WorldDefinition, WorldState } from '@aw/
 import { CFG } from './config.ts';
 import { makeSettlement, type Settlement } from './settlement.ts';
 import { settlementsFromFills } from './market-settlement.ts';
+import { resizePopulation, MAX_AGENTS, MIN_AGENTS } from './population.ts';
+import { MODELS, BRAINS, modelChoice } from './models.ts';
 
 export interface Frame {
   world: WorldDefinition;
@@ -48,6 +50,12 @@ export class Simulation {
   private recent: SimEvent[] = [];
   private signatures: string[] = [];
   private loadedName = '';
+  /** Requested headcount, remembered so reset reproduces the same run. */
+  private requestedAgents: number | null = null;
+  agentNote = '';
+  /** Chosen from the dashboard; falls back to the environment's defaults. */
+  model: string = CFG.PROVIDER === 'openai' ? CFG.MODEL : 'stub';
+  brain: string = CFG.BRAIN;
 
   constructor(private readonly onFrame: (frame: Frame) => void,
               private readonly log: (line: string) => void = console.log) {
@@ -57,10 +65,27 @@ export class Simulation {
   get worldName(): string { return this.loadedName; }
 
   /** Builds a fresh world, population and settlement backend. Never auto-starts. */
-  async load(name: string): Promise<void> {
+  async load(
+    name: string,
+    headcount?: number | null,
+    model?: string | null,
+    brain?: string | null,
+  ): Promise<void> {
+    if (model) this.model = model;
+    if (brain) this.brain = brain;
     this.running = false;
     const file = name.endsWith('.json') ? name : `worlds/${name}.json`;
-    const world = await loadWorldFile(resolve(file));
+    const declared = await loadWorldFile(resolve(file));
+
+    // An explicit headcount scales the world's declared mix; absent one, the
+    // world file's own population stands.
+    const wanted = headcount ?? this.requestedAgents;
+    const sized = wanted ? resizePopulation(declared, wanted) : null;
+    const world = sized?.world ?? declared;
+    this.requestedAgents = wanted ?? null;
+    this.agentNote = sized?.note ?? '';
+    if (sized?.note) this.log(`[sim] ${sized.note}`);
+
     const engine = new Engine(world, new JsonlRepository(world.name));
     engine.init();
 
@@ -76,9 +101,10 @@ export class Simulation {
 
     // One provider shared by the whole population, so the concurrency limit is a
     // real ceiling on in-flight requests rather than one per agent.
+    const choice = modelChoice(this.model);
     const provider = createProvider({
-      kind: CFG.PROVIDER as ProviderKind,
-      model: CFG.MODEL,
+      kind: choice.provider as ProviderKind,
+      model: choice.id,
       concurrency: CFG.LLM_CONCURRENCY,
       onFallback: (reason) => this.log(`[sim] ${reason}`),
     });
@@ -88,9 +114,9 @@ export class Simulation {
     // nobody asks. A quarter pure LLM so a model is always talking, a quarter
     // hybrid so most spend goes to agents at a real decision point, and half
     // deterministic so somebody is reliably on the other side of the book.
-    const mix = CFG.BRAIN === 'mix';
+    const mix = this.brain === 'mix';
     const kinds: EngineKind[] = ['llm', 'hybrid', 'utility', 'rule'];
-    const usesModel = mix || CFG.BRAIN === 'llm' || CFG.BRAIN === 'hybrid';
+    const usesModel = mix || this.brain === 'llm' || this.brain === 'hybrid';
     const lens = makeLens(world);
 
     const agents: Agent[] = [];
@@ -100,7 +126,7 @@ export class Simulation {
       if (!entity || !agentTypes.has(entity.type)) continue;
       agents.push(createAgent({
         id, lens,
-        kind: mix ? kinds[n % kinds.length]! : (CFG.BRAIN as EngineKind),
+        kind: mix ? kinds[n % kinds.length]! : (this.brain as EngineKind),
         seed: world.seed ^ (n * 0x9e3779b1),
         walletAddress: addresses.get(id) ?? `offchain:${id}`,
         ...(usesModel ? { provider } : {}),
@@ -122,14 +148,21 @@ export class Simulation {
     }, {});
     this.log(`[sim] loaded ${world.name}: ${agents.length} agents, ${world.markets?.length ?? 0} markets`);
     this.log(`[sim] engines: ${Object.entries(tally).map(([k, v]) => `${v}x${k}`).join(' ')}`);
-    this.log(`[sim] model=${provider.name === 'stub' ? 'stub' : `${provider.name}/${CFG.MODEL}`} chain=${CFG.CHAIN ? CFG.RPC : 'off'}`);
+    this.log(`[sim] brain=${this.brain} model=${provider.name === 'stub' ? 'stub' : choice.id} chain=${CFG.CHAIN ? CFG.RPC : 'off'}`);
 
     this.emit([]);
   }
 
   async reset(): Promise<void> {
-    if (this.loadedName) await this.load(this.loadedName);
+    if (this.loadedName) await this.load(this.loadedName, this.requestedAgents, this.model, this.brain);
   }
+
+  /** What the dashboard should show in its headcount control. */
+  get agentCount(): number { return this.agents.length; }
+  get agentLimits(): { min: number; max: number } {
+    return { min: MIN_AGENTS, max: MAX_AGENTS };
+  }
+  get catalogue() { return { models: MODELS, brains: BRAINS }; }
 
   start(): void { if (this.engine) { this.running = true; this.engine.resume(); } }
   pause(): void { this.running = false; this.engine?.pause(); }

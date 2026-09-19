@@ -52,7 +52,45 @@ export interface OrderBook {
   clearedAtTick: number;
 }
 
+/** A model the server is willing to run, as it advertises them. */
+export interface ModelChoice {
+  id: string;
+  label: string;
+  provider: 'stub' | 'openai';
+  /** [input, output] $ per 1M tokens. Absent for the stub, which is free. */
+  price?: [number, number];
+  note?: string;
+}
+
+export interface BrainChoice {
+  id: string;
+  label: string;
+  note?: string;
+}
+
+/** What the server is currently running. Optional: a server that never sends
+ *  one simply leaves the dashboard's own numbers in place. */
+export interface StatusMessage {
+  type: 'status';
+  running: boolean;
+  world: string;
+  worlds: string[];
+  tick: number;
+  speed: number;
+  chain: string | null;
+  model: string;
+  agents?: number;
+  agentLimits?: { min: number; max: number };
+  agentNote?: string;
+  brain?: string;
+  catalogue?: { models: ModelChoice[]; brains: BrainChoice[] };
+  hasKey?: boolean;
+  /** The server is rebuilding a population; a large one takes real seconds. */
+  loading?: boolean;
+}
+
 export type ServerMessage =
+  | StatusMessage
   | StateMessage
   | EventsMessage
   | WorldMessage
@@ -63,7 +101,7 @@ export type ServerMessage =
 export type ClientCommand =
   | { type: 'control'; command: 'start' | 'pause' | 'step' | 'reset' }
   | { type: 'speed'; multiplier: number }
-  | { type: 'load'; world: string };
+  | { type: 'load'; world: string; agents?: number; model?: string; brain?: string };
 
 export type TransportStatus = 'offline' | 'connecting' | 'open' | 'closed' | 'error';
 

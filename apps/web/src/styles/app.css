@@ -806,3 +806,12 @@ td.reason {
 .ladder[data-side='supply'] .ladder-price { color: var(--down); }
 .ladder[data-side='demand'] .ladder-qty { text-align: left; }
 .ladder[data-side='supply'] .ladder-row { grid-template-columns: auto minmax(0, 1fr); }
+
+/* Cost estimate beside the model picker: present, but never louder than a value. */
+.field-note {
+  font: var(--mono-sm, 11px/1.4 ui-monospace, monospace);
+  color: var(--ink-dim, #8a8f98);
+  white-space: nowrap;
+  align-self: center;
+  padding-inline-start: 2px;
+}

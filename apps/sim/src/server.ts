@@ -11,7 +11,7 @@ import { CFG } from './config.ts';
 type ClientCommand =
   | { type: 'control'; command: 'start' | 'pause' | 'step' | 'reset' }
   | { type: 'speed'; multiplier: number }
-  | { type: 'load'; world: string };
+  | { type: 'load'; world: string; agents?: number; model?: string; brain?: string };
 
 export function startServer(port: number) {
   const http = createServer((req, res) => {
@@ -40,6 +40,9 @@ export function startServer(port: number) {
   };
 
   const sim = new Simulation(onFrame);
+  // Building a population means a real keypair and token accounts per agent, so
+  // a large world takes visible seconds. Say so, or the page looks frozen.
+  let loading = false;
   // Confirmation events are minted here, so they need their own sequence space.
   let confirmSeq = 1_000_000;
 
@@ -49,9 +52,17 @@ export function startServer(port: number) {
     world: sim.worldName,
     worlds: availableWorlds(),
     tick: sim.engine?.state.tick ?? 0,
+    loading,
+    agents: sim.agentCount,
+    agentLimits: sim.agentLimits,
+    agentNote: sim.agentNote,
     speed: sim.speed,
     chain: CFG.CHAIN ? CFG.RPC : null,
-    model: CFG.PROVIDER === 'openai' ? `${CFG.PROVIDER}/${CFG.MODEL}` : 'stub',
+    model: sim.model,
+    brain: sim.brain,
+    catalogue: sim.catalogue,
+    // A model can only be chosen if the server actually has a key for it.
+    hasKey: Boolean(process.env['OPENAI_API_KEY']),
   });
 
   wss.on('connection', (ws: WebSocket) => {
@@ -68,13 +79,19 @@ export function startServer(port: number) {
       try { msg = JSON.parse(String(buf)) as ClientCommand; } catch { return; }
       try {
         if (msg.type === 'load') {
-          await sim.load(msg.world);
+          loading = true;
+          broadcast(status());
+          try {
+            await sim.load(msg.world, msg.agents ?? null, msg.model ?? null, msg.brain ?? null);
+          } finally {
+            loading = false;
+          }
         } else if (msg.type === 'speed') {
           sim.setSpeed(msg.multiplier);
         } else if (msg.type === 'control') {
           if (msg.command === 'start') {
             // Starting with nothing loaded should just work: pick the first world.
-            if (!sim.world) await sim.load(availableWorlds()[0] ?? CFG.WORLD);
+            if (!sim.world) await sim.load(availableWorlds()[0] ?? CFG.WORLD, null, null, null);
             sim.start();
           } else if (msg.command === 'pause') sim.pause();
           else if (msg.command === 'step') { sim.pause(); await sim.step(); }
@@ -108,6 +125,10 @@ export function startServer(port: number) {
             events: fresh.map((signature) => ({
               seq: confirmSeq++,
               tick: sim.engine?.state.tick ?? 0,
+    loading,
+    agents: sim.agentCount,
+    agentLimits: sim.agentLimits,
+    agentNote: sim.agentNote,
               type: 'settlement_confirmed',
               data: { rpc: CFG.RPC },
               signature,
