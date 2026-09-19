@@ -291,7 +291,7 @@ function serveFrontend(res, pathname) {
   return serveFile(res, file);
 }
 
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, 'http://localhost').pathname;
     if (pathname === '/state') return json(res, state());
@@ -309,18 +309,38 @@ http.createServer(async (req, res) => {
     console.error(`${req.method} ${req.url} failed: ${e.stack ?? e.message}`);
     json(res, { error: e.message }, 500);
   }
-}).listen(CFG.PORT, () => {
-  const url = `http://localhost:${CFG.PORT}`;
-  console.log(`dashboard: ${url}`);
-  if (!CFG.RUN_SECONDS && process.env.OPEN_BROWSER !== '0') {
-    const command = process.platform === 'darwin' ? ['open', [url]]
-      : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
-        : ['xdg-open', [url]];
-    const child = spawn(command[0], command[1], { detached: true, stdio: 'ignore' });
-    child.on('error', () => {});               // headless shells simply keep the printed URL
-    child.unref();
-  }
 });
+
+function listen(port = CFG.PORT) {
+  const cleanup = () => {
+    server.off('error', onError);
+    server.off('listening', onListening);
+  };
+  const onError = error => {
+    cleanup();
+    if (error.code !== 'EADDRINUSE' || port >= CFG.PORT + 10) throw error;
+    const next = port + 1;
+    console.warn(`port ${port} is busy; trying ${next}`);
+    listen(next);
+  };
+  const onListening = () => {
+    cleanup();
+    const url = `http://localhost:${port}`;
+    console.log(`dashboard: ${url}`);
+    if (!CFG.RUN_SECONDS && process.env.OPEN_BROWSER !== '0') {
+      const command = process.platform === 'darwin' ? ['open', [url]]
+        : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+          : ['xdg-open', [url]];
+      const child = spawn(command[0], command[1], { detached: true, stdio: 'ignore' });
+      child.on('error', () => {});               // headless shells simply keep the printed URL
+      child.unref();
+    }
+  };
+  server.once('error', onError);
+  server.once('listening', onListening);
+  server.listen(port);
+}
+listen();
 
 // ---- headless mode: RUN_SECONDS=45 starts immediately, prints a summary, exits ---
 if (CFG.RUN_SECONDS) {
