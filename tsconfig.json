@@ -1,5 +1,12 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "baseUrl": "." },
-  "include": ["packages/*/src/**/*.ts", "apps/sim/src/**/*.ts", "tests/**/*.ts"]
+  "compilerOptions": {
+    "baseUrl": "."
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/scripts/**/*.ts",
+    "apps/sim/src/**/*.ts",
+    "tests/**/*.ts"
+  ]
 }
