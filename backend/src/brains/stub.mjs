@@ -36,11 +36,14 @@ export function stubBrain() {
       const keepFood = MEAL * want * 4;
       const project = crafter && build >= craft ? v.trancheWood : crafter ? v.netWood : 0;
       const keepWood = CFG.FIRE_WOOD * 2 + CFG.HOUSE_UPKEEP * v.homes * 4 + project;
-      if (v.food > keepFood) order('sell', 'food', v.food - keepFood, p.food * jitter * 0.95);
-      if (v.wood > keepWood) order('sell', 'wood', v.wood - keepWood, p.wood * jitter * 0.95);
+      // STUB_PLANS=1: leave food and wood to the stall and the shopping list, as the LLM agents mostly do
+      const plans = process.env.STUB_PLANS === '1';
+      if (!plans && v.food > keepFood) order('sell', 'food', v.food - keepFood, p.food * jitter * 0.95);
+      if (!plans && v.wood > keepWood) order('sell', 'wood', v.wood - keepWood, p.wood * jitter * 0.95);
       let cash = () => t.view().availCash / 100;
+      if (plans) { /* the plans trade */ } else
       if (v.food < keepFood / 2) order('buy', 'food', Math.min(keepFood - v.food, cash() * 0.5 / (p.food * 1.1)), p.food * 1.1 * jitter);
-      if (v.wood < keepWood) order('buy', 'wood', Math.min(keepWood - v.wood, cash() * 0.4 / (p.wood * 1.1)), p.wood * 1.1 * jitter);
+      if (!plans && v.wood < keepWood) order('buy', 'wood', Math.min(keepWood - v.wood, cash() * 0.4 / (p.wood * 1.1)), p.wood * 1.1 * jitter);
 
       // capital: a fisher wants a net, and more nets once hiring pays; a crafter sells the nets it makes
       const fisher = fish >= cut && !crafter;

@@ -96,11 +96,15 @@ export const CFG = {
   // The market stall everyone starts with (agents change theirs with set_sale): what is held
   // above `keep` is offered every round at `min` × the start price or better. Food, wood and
   // nets only; nobody's house or labour is for sale until they say so.
-  STALL: [{ keep: 20, min: 0.8 }, { keep: 25, min: 0.8 }, { keep: 1, min: 0.8 }, null, null],
+  // The stall asks the going price to begin with and reprices itself (REPRICE); `min` is its floor.
+  STALL: [{ keep: 20, min: 0.3 }, { keep: 25, min: 0.3 }, { keep: 1, min: 0.4 }, null, null],
+  // Prices move when markets don't clear: a stall that sold nothing asks `down` less next round,
+  // one that sold out asks `up` more; a shopping list that got nothing bids `down` more.
+  REPRICE: { down: 0.07, up: 0.05 },
 
   // The shopping list everyone starts with (agents change theirs with set_buy): every round,
   // bid for whatever is held short of `target`, at up to `max` × the start price.
-  SHOP: [{ target: 20, max: 1.25 }, { target: 15, max: 1.25 }, null, null, null],
+  SHOP: [{ target: 20, max: 2.5 }, { target: 15, max: 2.5 }, null, null, null],
 
   // The labour market. A villager may sell their NEXT shift (one unit of labour) in the
   // round's auction; the buyer has a hired hand next round, working in whatever job the

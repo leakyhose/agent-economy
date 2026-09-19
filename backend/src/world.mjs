@@ -62,11 +62,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     // The market stall: a standing sale plan per good, { keep, min } — every round whatever is
     // held above `keep` is offered at `min` (cents) or better, until the agent changes it.
     // Producers everywhere bring their goods to market without deciding to each morning.
-    sale: GOODS.map((_, g) => CFG.STALL[g] ? { keep: CFG.STALL[g].keep, min: Math.round(CFG.START_PRICES[g] * CFG.STALL[g].min) } : null),
+    // `ask` is what the stall asks now: it starts at the going price, is marked down when nothing
+    // sells and up when everything does (CFG.REPRICE), and never goes below `min`.
+    sale: GOODS.map((_, g) => CFG.STALL[g] ? { keep: CFG.STALL[g].keep, min: Math.round(CFG.START_PRICES[g] * CFG.STALL[g].min), ask: CFG.START_PRICES[g] } : null),
     // The shopping list: a standing purchase plan per good, { target, max } — every round the
     // agent bids for whatever it holds short of `target`, at up to `max` (cents). Households buy
     // their necessities by habit, not by remembering to each morning.
-    shop: GOODS.map((_, g) => CFG.SHOP[g] ? { target: CFG.SHOP[g].target, max: Math.round(CFG.START_PRICES[g] * CFG.SHOP[g].max) } : null),
+    // `bid` is what it offers now: raised when it gets nothing, eased when it gets everything, never above `max`.
+    shop: GOODS.map((_, g) => CFG.SHOP[g] ? { target: CFG.SHOP[g].target, max: Math.round(CFG.START_PRICES[g] * CFG.SHOP[g].max), bid: CFG.START_PRICES[g] } : null),
     hired: null,                                    // this round's shift was sold last round: { wage } (cents)
     hands: 0,                                       // hired hands working for this agent this round
     wagesEarned: 0, wagesPaid: 0, shiftsHired: 0, handsUsed: 0,   // over the run
@@ -249,13 +252,13 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     a.sale.forEach((plan, g) => {
       if (!plan || a.orders.some(o => o.good === g && o.side === 'sell')) return;
       const bids = a.orders.filter(o => o.good === g && o.side === 'buy');
-      if (bids.some(o => o.limit >= plan.min) || (g === LABOUR && bids.length)) return;   // never trade with yourself
+      if (bids.some(o => o.limit >= plan.ask) || (g === LABOUR && bids.length)) return;   // never trade with yourself
       const need = g !== WOOD ? 0 : a.building ? W.trancheWood(a) * (W.buildShifts - a.building.done) : a.materials ?? 0;
       const qty = g === LABOUR ? Math.min(1, W.sellable(a, g)) : Math.floor(W.sellable(a, g) - plan.keep - need);
       if (qty < 1) return;
-      const o = { agent: a.id, side: 'sell', good: g, qty, limit: plan.min, seq: ++W.seq, stall: true };
+      const o = { agent: a.id, side: 'sell', good: g, qty, limit: plan.ask, seq: ++W.seq, stall: true };
       a.orders.push(o);
-      emit('order', { agent: a.id, name: a.name, side: 'sell', good: GOODS[g], qty, price: plan.min, seq: o.seq, stall: true });
+      emit('order', { agent: a.id, name: a.name, side: 'sell', good: GOODS[g], qty, price: plan.ask, seq: o.seq, stall: true });
     });
   };
   // The shopping list, after the stall: bid for what is short of the target, as far as free cash goes.
@@ -268,18 +271,18 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       const target = g === FOOD ? Math.max(plan.target, 2 * a.lifestyle * CFG.MEAL)
         : g === WOOD ? plan.target + (a.building ? W.trancheWood(a) : a.materials ?? 0) : plan.target;   // a maker orders the next shift's materials
       const free = a.cash - a.orders.filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((t, o) => t + o.qty * o.limit, 0);
-      const qty = Math.min(target - W.owned(a, g), Math.floor(free / plan.max));
+      const qty = Math.min(target - W.owned(a, g), Math.floor(free / plan.bid));
       if (qty < 1) return;
-      const o = { agent: a.id, side: 'buy', good: g, qty, limit: plan.max, seq: ++W.seq, shop: true };
+      const o = { agent: a.id, side: 'buy', good: g, qty, limit: plan.bid, seq: ++W.seq, shop: true };
       a.orders.push(o);
-      emit('order', { agent: a.id, name: a.name, side: 'buy', good: GOODS[g], qty, price: plan.max, seq: o.seq, shop: true });
+      emit('order', { agent: a.id, name: a.name, side: 'buy', good: GOODS[g], qty, price: plan.bid, seq: o.seq, shop: true });
     });
   };
   W.setBuy = (a, g, target, max) => {
     target = Math.floor(Number(target)); max = Math.round(Number(max));
     if (g === LABOUR || g === HOUSES) return 'The shopping list is for food, wood and nets; bid for labour or a house with place_order.';
     if (!(target >= 0) || !(max >= 1)) return 'target must be 0 or more and max_price positive.';
-    a.shop[g] = target ? { target, max } : null;
+    a.shop[g] = target ? { target, max, bid: Math.min(max, a.shop[g]?.bid ?? W.prices[g]) } : null;
     emit('shop_plan', { agent: a.id, name: a.name, good: GOODS[g], target, max });
     return null;
   };
@@ -288,7 +291,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (g === LABOUR) return 'Your stall can\'t sell labour: offer your next shift with place_order (sell 1 labour) in the rounds you want to.';
     keep = Math.floor(Number(keep)); min = Math.round(Number(min));
     if (!(keep >= 0) || !(min >= 1)) return 'keep must be 0 or more and min_price positive.';
-    a.sale[g] = { keep, min };
+    a.sale[g] = { keep, min, ask: Math.max(min, a.sale[g]?.ask ?? W.prices[g]) };
     emit('sale_plan', { agent: a.id, name: a.name, good: GOODS[g], keep, min });
     return null;
   };
@@ -798,6 +801,15 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         return `${head}: ${o.sentQty < o.qty ? `only ${o.sentQty} sent, ` : ''}${o.filled} ${sell ? 'sold' : 'bought'}` +
           (o.filled ? ` at ${(l.price / 100).toFixed(2)}.` : ` — ${l.offered} were offered, ${l.wanted} wanted.`);
       });
+      // Repricing by habit: a stall that sold nothing marks down, one that sold out marks up; a
+      // shopping list that got nothing bids more, one that got everything bids a little less.
+      const R = CFG.REPRICE, clamp = (x, lo, hi) => Math.round(Math.min(hi, Math.max(lo, x)));
+      for (const o of a.orders) {
+        if (!o.sentQty) continue;
+        const none = !o.filled, all = o.filled >= o.sentQty;
+        if (o.stall && a.sale[o.good]) { const pl = a.sale[o.good]; pl.ask = clamp(pl.ask * (none ? 1 - R.down : all ? 1 + R.up : 1), pl.min, Infinity); }
+        if (o.shop && a.shop[o.good]) { const pl = a.shop[o.good]; pl.bid = clamp(pl.bid * (none ? 1 + R.down : all ? 1 - R.up / 2 : 1), 1, pl.max); }
+      }
       a.fills = lines.length ? { round: W.round + 1, lines } : null;
       a.orders = [];
       a.chain = { cash: after.cash, goods: [...after.goods] };

@@ -62,7 +62,7 @@ const ALL_TOOLS = [
     } },
   { name: 'set_sale',
     description: 'Your market stall: a STANDING instruction that works every round until you change it. Whatever you hold of the good above `keep` is offered for sale at `min_price` or better, automatically — ' +
-      'you do not need to place sell orders yourself. Everyone who trades a good gets the same clearing price, so you often get more than your minimum. Lower min_price if your goods are not selling; raise keep to hold more back. ' +
+      'you do not need to place sell orders yourself. The stall prices itself: it asks the going price, marks down 7% each round nothing sells and up 5% when it sells out, never below min_price (your floor). Raise keep to hold more back. ' +
 'Not for labour. Set stop=true to stop selling that good.',
     input_schema: {
       type: 'object', additionalProperties: false, required: ['good', 'keep', 'min_price'],
@@ -75,7 +75,7 @@ const ALL_TOOLS = [
     } },
   { name: 'set_buy',
     description: 'Your shopping list: a STANDING instruction that works every round until you change it. Whenever you hold less than `target` of the good, you automatically bid for the difference at up to `max_price` ' +
-      '(as far as your free cash goes). Everyone who trades a good gets the same clearing price, so you often pay less than your maximum. Raise max_price if you are not getting what you need; raise target to hold a bigger reserve; ' +
+      '(as far as your free cash goes). It prices itself: it bids the going price, 7% more each round it gets nothing, a little less when it gets everything, never above max_price (your ceiling). Raise target to hold a bigger reserve; ' +
       'target 0 stops buying. Keep target at or below your stall\'s keep for the same good. For food, wood and nets.',
     input_schema: {
       type: 'object', additionalProperties: false, required: ['good', 'target', 'max_price'],
@@ -251,10 +251,10 @@ export function makeTools(W, a) {
       labourTxt,
       `Cash: ${coins(a.cash)} coins. You hold: ${GOODS.map((g, i) => i === LABOUR || (i > WOOD && !W.owned(a, i)) ? '' : `${g} ${W.owned(a, i)}${a.locked[i] ? ` (${a.locked[i]} pledged)` : ''}`).filter(Boolean).join(', ')}.`,
       `Your stall (works every round on its own — leave it alone unless prices have moved; set_sale changes it): ` + (a.sale.some(Boolean)
-        ? a.sale.map((pl, g) => !pl ? '' : g === LABOUR ? `your next shift at ≥${coins(pl.min)}` : `${GOODS[g]} above ${pl.keep} at ≥${coins(pl.min)}`).filter(Boolean).join('; ') + '.'
+        ? a.sale.map((pl, g) => !pl ? '' : g === LABOUR ? `your next shift at ≥${coins(pl.min)}` : `${GOODS[g]} above ${pl.keep}, asking ${coins(pl.ask)} now (floor ${coins(pl.min)})`).filter(Boolean).join('; ') + '.'
         : 'nothing on sale.'),
       `Your shopping list (works every round on its own; set_buy changes it): ` + (a.shop.some(Boolean)
-        ? a.shop.map((pl, g) => pl ? `${GOODS[g]} up to a stock of ${pl.target} at ≤${coins(pl.max)}` : '').filter(Boolean).join('; ') + '.'
+        ? a.shop.map((pl, g) => pl ? `${GOODS[g]} up to a stock of ${pl.target}, bidding ${coins(pl.bid)} now (ceiling ${coins(pl.max)})` : '').filter(Boolean).join('; ') + '.'
         : 'nothing.'),
       loanTxt,
       a.hunger ? `You are hungry: ${a.hunger} missed meal${a.hunger === 1 ? '' : 's'} in a row.` : '',
