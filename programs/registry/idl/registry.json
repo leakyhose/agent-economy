@@ -1,0 +1,698 @@
+{
+  "address": "HvTb4oPkqCnhvvNH7jcacbUVk4rmRrs5jDfXEXtr1KsK",
+  "metadata": {
+    "name": "registry",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Agentic World — agent identity and asset ownership registry"
+  },
+  "instructions": [
+    {
+      "name": "mint_asset",
+      "docs": [
+        "Create the on-chain record for one indivisible asset and vest it in an agent.",
+        "",
+        "The owner is named by their identity PDA, not by a raw pubkey: an asset",
+        "cannot be minted to someone who does not exist in this world."
+      ],
+      "discriminator": [
+        84,
+        175,
+        211,
+        156,
+        56,
+        250,
+        104,
+        118
+      ],
+      "accounts": [
+        {
+          "name": "asset",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "world"
+              },
+              {
+                "kind": "arg",
+                "path": "asset_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner",
+          "docs": [
+            "The agent receiving the asset, proven to exist by its identity PDA."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner.world",
+                "account": "AgentIdentity"
+              },
+              {
+                "kind": "account",
+                "path": "owner.index",
+                "account": "AgentIdentity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "world",
+          "type": "pubkey"
+        },
+        {
+          "name": "asset_id",
+          "type": "u64"
+        },
+        {
+          "name": "asset_class",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "register_agent",
+      "docs": [
+        "Give an agent a real on-chain account.",
+        "",
+        "`world` is the world's identifier (a 32-byte id the host derives from the",
+        "world file, stable across runs). `index` is the agent's index within that",
+        "world's population. Together they seed the PDA, so re-registering the same",
+        "agent fails at account creation — a world cannot be double-populated."
+      ],
+      "discriminator": [
+        135,
+        157,
+        66,
+        195,
+        2,
+        113,
+        175,
+        30
+      ],
+      "accounts": [
+        {
+          "name": "identity",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "world"
+              },
+              {
+                "kind": "arg",
+                "path": "index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "world",
+          "type": "pubkey"
+        },
+        {
+          "name": "index",
+          "type": "u16"
+        },
+        {
+          "name": "entity_type",
+          "type": {
+            "array": [
+              "u8",
+              16
+            ]
+          }
+        },
+        {
+          "name": "wallet",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "transfer_asset",
+      "docs": [
+        "Hand an asset to another agent. Only the current owner's wallet can do this:",
+        "ownership is enforced by the program, not by whoever is driving the client."
+      ],
+      "discriminator": [
+        126,
+        66,
+        109,
+        18,
+        60,
+        172,
+        131,
+        124
+      ],
+      "accounts": [
+        {
+          "name": "asset",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "asset.world",
+                "account": "AssetRecord"
+              },
+              {
+                "kind": "account",
+                "path": "asset.asset_id",
+                "account": "AssetRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "current_owner",
+          "docs": [
+            "Must be the wallet currently recorded as owner. This is the whole point."
+          ],
+          "signer": true
+        },
+        {
+          "name": "new_owner",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "new_owner.world",
+                "account": "AgentIdentity"
+              },
+              {
+                "kind": "account",
+                "path": "new_owner.index",
+                "account": "AgentIdentity"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "update_reputation",
+      "docs": [
+        "Move an agent's reputation. Reputation is peer-attested: the change must be",
+        "signed by the wallet of a *different* agent registered in the same world, so",
+        "no agent can simply vote itself trustworthy."
+      ],
+      "discriminator": [
+        194,
+        220,
+        43,
+        201,
+        54,
+        209,
+        49,
+        178
+      ],
+      "accounts": [
+        {
+          "name": "agent",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent.world",
+                "account": "AgentIdentity"
+              },
+              {
+                "kind": "account",
+                "path": "agent.index",
+                "account": "AgentIdentity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "attestor",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "attestor.world",
+                "account": "AgentIdentity"
+              },
+              {
+                "kind": "account",
+                "path": "attestor.index",
+                "account": "AgentIdentity"
+              }
+            ]
+          }
+        },
+        {
+          "name": "wallet",
+          "docs": [
+            "The attestor's own key must sign. `has_one` above ties it to the PDA."
+          ],
+          "signer": true,
+          "relations": [
+            "attestor"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "delta",
+          "type": "i32"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "AgentIdentity",
+      "discriminator": [
+        11,
+        149,
+        31,
+        27,
+        186,
+        76,
+        241,
+        72
+      ]
+    },
+    {
+      "name": "AssetRecord",
+      "discriminator": [
+        26,
+        40,
+        78,
+        169,
+        45,
+        6,
+        254,
+        10
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "AgentRegistered",
+      "discriminator": [
+        191,
+        78,
+        217,
+        54,
+        232,
+        100,
+        189,
+        85
+      ]
+    },
+    {
+      "name": "AssetMinted",
+      "discriminator": [
+        103,
+        66,
+        89,
+        42,
+        62,
+        44,
+        211,
+        1
+      ]
+    },
+    {
+      "name": "AssetTransferred",
+      "discriminator": [
+        140,
+        41,
+        238,
+        26,
+        65,
+        135,
+        56,
+        36
+      ]
+    },
+    {
+      "name": "ReputationUpdated",
+      "discriminator": [
+        26,
+        36,
+        187,
+        150,
+        235,
+        90,
+        106,
+        89
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "WorldMismatch",
+      "msg": "account belongs to a different world"
+    },
+    {
+      "code": 6001,
+      "name": "NotOwner",
+      "msg": "only the current owner may transfer this asset"
+    },
+    {
+      "code": 6002,
+      "name": "SelfAttestation",
+      "msg": "an agent cannot attest to its own reputation"
+    },
+    {
+      "code": 6003,
+      "name": "NotAttestorWallet",
+      "msg": "signer is not the attesting agent's wallet"
+    },
+    {
+      "code": 6004,
+      "name": "ReputationOverflow",
+      "msg": "reputation would overflow"
+    },
+    {
+      "code": 6005,
+      "name": "TransferToSelf",
+      "msg": "asset is already owned by that agent"
+    }
+  ],
+  "types": [
+    {
+      "name": "AgentIdentity",
+      "docs": [
+        "One per agent. Deliberately thin: an explorer-visible anchor point that other",
+        "instructions resolve against, not a mirror of simulation state."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u16"
+          },
+          {
+            "name": "wallet",
+            "docs": [
+              "The agent's real keypair address — the wallet that signs for it."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "entity_type",
+            "docs": [
+              "World-declared entity type name, zero-padded. Data, never a branch."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "created_slot",
+            "type": "u64"
+          },
+          {
+            "name": "reputation",
+            "type": "i32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AgentRegistered",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u16"
+          },
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "entity_type",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetMinted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_id",
+            "type": "u64"
+          },
+          {
+            "name": "asset_class",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetRecord",
+      "docs": [
+        "One per indivisible asset of a `pda_record` asset class."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_class",
+            "docs": [
+              "World-declared asset class name, zero-padded. Data, never a branch."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "asset_id",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "docs": [
+              "An agent wallet. Always the `wallet` of some `AgentIdentity` in this world."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "transfers",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AssetTransferred",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "asset_id",
+            "type": "u64"
+          },
+          {
+            "name": "asset_class",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "type": "pubkey"
+          },
+          {
+            "name": "to",
+            "type": "pubkey"
+          },
+          {
+            "name": "transfers",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ReputationUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "world",
+            "type": "pubkey"
+          },
+          {
+            "name": "index",
+            "type": "u16"
+          },
+          {
+            "name": "attestor",
+            "type": "u16"
+          },
+          {
+            "name": "delta",
+            "type": "i32"
+          },
+          {
+            "name": "reputation",
+            "type": "i32"
+          }
+        ]
+      }
+    }
+  ]
+}
