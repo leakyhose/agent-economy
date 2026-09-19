@@ -10,3 +10,4 @@ test-ledger/
 reference/
 pnpm-lock.yaml
 runs/
+package-lock.json
