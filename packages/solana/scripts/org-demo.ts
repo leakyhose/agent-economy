@@ -26,8 +26,8 @@ import {
   TransactionInstruction,
   type Signer,
 } from '@solana/web3.js';
-import { clusterFromEnv, connect, explorerUrl, type ClusterConfig } from '../src/cluster.ts';
-import { TxSender } from '../src/sender.ts';
+import { clusterFromEnv, connect, explorerUrl, type ClusterConfig } from '../src/config.ts';
+import { TxSender, signingWith } from '../src/sender.ts';
 import { SolanaEscrowService } from '../src/escrow.ts';
 import { SolanaGovernanceService } from '../src/governance.ts';
 import { SolanaTreasuryService } from '../src/treasury.ts';
@@ -335,7 +335,7 @@ async function runWorld(connection: Connection, payer: Keypair, path: string): P
     // One signature per key, whatever the caller passed.
     const unique = new Map<string, Signer>();
     for (const s of signers) unique.set(s.publicKey.toBase58(), s as Signer);
-    return sender.send(instructions, [...unique.values()]);
+    return sender.send(instructions, signingWith(...([...unique.values()] as Keypair[])));
   };
 
   const keyring = new DemoKeyring();
