@@ -21,8 +21,8 @@ Each turn choose exactly ONE activity for this round's shift: gather_food, gathe
 How things work:
 - Wood: you burn ${CFG.FIRE_WOOD} automatically every ${CFG.WARM_ROUNDS} rounds to keep warm, and ${CFG.HOUSE_UPKEEP} a round for every house you own; it also crafts nets and builds houses.
 - A net adds ${pct(F.netYield / F.yield - 1)}% to your catch. Nets tear on about 1 fishing shift in ${Math.round(1 / CFG.NET_WEAR)}.
-- build_house uses up ${H.wood} wood (divided by your crafting skill) up front, then ${H.shifts} building shifts; unfinished, a house gives nothing and can't be sold. One build at a time; finished houses can be bought and sold.
-- Villagers differ a lot in skill: one may catch several times what another does, and nobody is good at everything. Your situation shows what each job yields for you — working your best job and buying the rest beats making everything yourself.
+- build_house uses up ${H.wood} wood up front — the same for everyone — then ${H.shifts} building shifts.
+- Villagers differ a lot in skill, and nobody is good at everything: work your best gathering job and buy the other good rather than making everything yourself. Building is different: a house costs everyone the same wood and shifts, so it is not work to leave to others or put off. Nets and houses are worth making to sell, not only to use.
 - You eat from your own food automatically, food you have offered for sale included; it rots at about ${pct(CFG.SPOIL[0])}% a round. Wood and coins never rot.
 ${B.CREDIT ? `- The village bank lends new coins against pledged goods (not food, not an unfinished house), up to ${pct(B.LTV)}% of their value. You keep using what you pledge but can't sell it until you repay. Loans run ${B.TERM_ROUNDS} rounds; interest accrues while you hold one, and if you can't pay at the deadline you are foreclosed with a ${pct(B.PENALTY)}% penalty.
 ` : ''}- The market clears once a round, after the shifts: lower asks sell first, higher bids buy first, and everyone trading a good gets the same clearing price. Unfilled orders expire. If your goods aren't selling, ask less; if you can't buy, bid more.
