@@ -26,7 +26,7 @@ except where this amendment overrides them.
 |---|---|---|
 | Six Anchor programs (§8) | **One generic `world` program** — ledger + batch auction, generic over goods and agent count | Six programs is days of Rust. One generic ledger is also the more honest design for a world-agnostic engine. |
 | Postgres in Docker (§1) | **JSONL event log + in-memory state**, behind the same `Repository` port | Compose is overhead we cannot afford today. The port is unchanged, so Postgres slots in later. |
-| Next.js (§5) | **Vite + React** | Faster to running. It is a telemetry dashboard, not a website. |
+| ~~Next.js (§5)~~ | **Next.js (App Router) + React** — reinstated | Briefly traded for Vite to save setup time; the user reinstated Next.js at 11:20 EDT. The dashboard stays a client-side WebSocket telemetry view either way, so the change is build config, not architecture. |
 | Devnet | **Local validator** | Public devnet is ~100 req/10s and airdrops were failing during setup. The prototype's CONTEXT.md reached the same conclusion independently. |
 
 ### Unchanged, and load-bearing
