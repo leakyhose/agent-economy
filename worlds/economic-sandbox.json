@@ -1,153 +1,772 @@
 {
   "name": "Economic Sandbox",
   "seed": 20260919,
-  "time": { "tickMs": 500, "unit": "hour" },
-
+  "time": {
+    "tickMs": 500,
+    "unit": "hour"
+  },
   "resources": [
-    { "id": "SOL",   "onChain": true,  "startPrice": 1,    "divisible": true },
-    { "id": "food",  "onChain": true,  "startPrice": 500,  "spoilage": 0.10 },
-    { "id": "wood",  "onChain": true,  "startPrice": 300,  "spoilage": 0.02 },
-    { "id": "tools", "onChain": true,  "startPrice": 2000, "spoilage": 0 },
-    { "id": "labor", "onChain": false }
+    {
+      "id": "SOL",
+      "onChain": true,
+      "startPrice": 1,
+      "divisible": true
+    },
+    {
+      "id": "food",
+      "onChain": true,
+      "startPrice": 500,
+      "spoilage": 0.1
+    },
+    {
+      "id": "wood",
+      "onChain": true,
+      "startPrice": 300,
+      "spoilage": 0.02
+    },
+    {
+      "id": "tools",
+      "onChain": true,
+      "startPrice": 2000,
+      "spoilage": 0
+    },
+    {
+      "id": "labor",
+      "onChain": false
+    }
   ],
-
   "entityTypes": [
     {
       "id": "person",
       "agent": true,
-      "attributes": { "hunger": 0, "skill": 1, "employer": null },
-      "resources": { "SOL": 5000, "food": 6, "wood": 0, "tools": 0 }
+      "attributes": {
+        "hunger": 0,
+        "skill": 1,
+        "employer": null
+      },
+      "resources": {
+        "SOL": 5000,
+        "food": 6,
+        "wood": 0,
+        "tools": 0
+      }
     },
     {
       "id": "company",
       "agent": true,
-      "attributes": { "name": "unnamed", "headcount": 0 },
-      "resources": { "SOL": 0, "food": 0, "wood": 0, "tools": 0 }
+      "attributes": {
+        "name": "unnamed",
+        "headcount": 0
+      },
+      "resources": {
+        "SOL": 0,
+        "food": 0,
+        "wood": 0,
+        "tools": 0
+      }
     }
   ],
-
   "actions": [
-    { "id": "gather_food", "actorTypes": ["person"], "duration": 6,
-      "description": "Fish or farm for food. Tools double your yield." },
-    { "id": "gather_wood", "actorTypes": ["person"], "duration": 6,
-      "description": "Cut wood to sell or craft with." },
-    { "id": "craft_tool", "actorTypes": ["person"], "duration": 4,
-      "description": "Turn 4 wood into a tool that doubles food yield." },
-    { "id": "sell", "actorTypes": ["person", "company"], "duration": 1,
-      "params": [
-        { "name": "resource", "type": "resource", "required": true },
-        { "name": "quantity", "type": "number", "required": true },
-        { "name": "limit", "type": "number", "required": true }
+    {
+      "id": "gather_food",
+      "actorTypes": [
+        "person"
       ],
-      "description": "Post an ask into the next market round." },
-    { "id": "buy", "actorTypes": ["person", "company"], "duration": 1,
-      "params": [
-        { "name": "resource", "type": "resource", "required": true },
-        { "name": "quantity", "type": "number", "required": true },
-        { "name": "limit", "type": "number", "required": true }
+      "duration": 6,
+      "description": "Fish or farm for food. Tools double your yield."
+    },
+    {
+      "id": "gather_wood",
+      "actorTypes": [
+        "person"
       ],
-      "description": "Post a bid into the next market round." },
-    { "id": "found_company", "actorTypes": ["person"], "duration": 2,
-      "params": [{ "name": "capital", "type": "number", "required": true }],
-      "description": "Spend capital to found a company you own." },
-    { "id": "hire", "actorTypes": ["company"], "duration": 1,
-      "targetTypes": ["person"],
-      "params": [{ "name": "wage", "type": "number", "required": true }],
-      "description": "Offer a person a per-round wage." },
-    { "id": "idle", "actorTypes": ["person", "company"], "duration": 2,
-      "description": "Rest and do nothing." }
+      "duration": 6,
+      "description": "Cut wood to sell or craft with."
+    },
+    {
+      "id": "craft_tool",
+      "actorTypes": [
+        "person"
+      ],
+      "duration": 4,
+      "description": "Turn 4 wood into a tool that doubles food yield."
+    },
+    {
+      "id": "sell",
+      "actorTypes": [
+        "person",
+        "company"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "resource",
+          "type": "resource",
+          "required": true
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Post an ask into the next market round."
+    },
+    {
+      "id": "buy",
+      "actorTypes": [
+        "person",
+        "company"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "resource",
+          "type": "resource",
+          "required": true
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Post a bid into the next market round."
+    },
+    {
+      "id": "found_company",
+      "actorTypes": [
+        "person"
+      ],
+      "duration": 2,
+      "params": [
+        {
+          "name": "capital",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Spend capital to found a company you own."
+    },
+    {
+      "id": "hire",
+      "actorTypes": [
+        "company"
+      ],
+      "duration": 1,
+      "targetTypes": [
+        "person"
+      ],
+      "params": [
+        {
+          "name": "wage",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Offer a person a per-round wage."
+    },
+    {
+      "id": "idle",
+      "actorTypes": [
+        "person",
+        "company"
+      ],
+      "duration": 2,
+      "description": "Rest and do nothing."
+    },
+    {
+      "id": "invest",
+      "actorTypes": [
+        "person"
+      ],
+      "targetTypes": [
+        "company"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "amount",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Buy equity in a company. Stake is an SPL balance you actually hold."
+    },
+    {
+      "id": "propose",
+      "actorTypes": [
+        "person",
+        "company"
+      ],
+      "targetTypes": [
+        "company"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "amount",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "description": "Open a treasury proposal for shareholders to vote on."
+    },
+    {
+      "id": "vote",
+      "actorTypes": [
+        "person"
+      ],
+      "targetTypes": [
+        "company"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "support",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Vote your equity weight on an open proposal."
+    }
   ],
-
   "rules": [
-    { "id": "gather_food_yield", "when": { "action": "gather_food" },
+    {
+      "id": "gather_food_yield",
+      "when": {
+        "action": "gather_food"
+      },
       "effects": [
-        { "op": "increment", "path": "$actor.resources.food",
-          "by": { "add": [2, { "mul": [2, { "ref": "$actor.resources.tools" }] }] } },
-        { "op": "emit", "event": "worked", "data": { "kind": "food" } }
-      ] },
-
-    { "id": "gather_wood_yield", "when": { "action": "gather_wood" },
+        {
+          "op": "increment",
+          "path": "$actor.resources.food",
+          "by": {
+            "add": [
+              2,
+              {
+                "mul": [
+                  2,
+                  {
+                    "ref": "$actor.resources.tools"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "op": "emit",
+          "event": "worked",
+          "data": {
+            "kind": "food"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gather_wood_yield",
+      "when": {
+        "action": "gather_wood"
+      },
       "effects": [
-        { "op": "increment", "path": "$actor.resources.wood", "by": 3 },
-        { "op": "emit", "event": "worked", "data": { "kind": "wood" } }
-      ] },
-
-    { "id": "craft_tool_costs_wood", "when": { "action": "craft_tool" },
-      "require": [{ "gte": [{ "ref": "$actor.resources.wood" }, 4] }],
-      "effects": [
-        { "op": "decrement", "path": "$actor.resources.wood", "by": 4 },
-        { "op": "increment", "path": "$actor.resources.tools", "by": 1 }
-      ] },
-
-    { "id": "sell_requires_stock", "when": { "action": "sell" },
+        {
+          "op": "increment",
+          "path": "$actor.resources.wood",
+          "by": 3
+        },
+        {
+          "op": "emit",
+          "event": "worked",
+          "data": {
+            "kind": "wood"
+          }
+        }
+      ]
+    },
+    {
+      "id": "craft_tool_costs_wood",
+      "when": {
+        "action": "craft_tool"
+      },
       "require": [
-        { "gte": [{ "ref": "$actor.resources.$params.resource" },
-                  { "ref": "$params.quantity" }] },
-        { "gt": [{ "ref": "$params.quantity" }, 0] }
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.wood"
+            },
+            4
+          ]
+        }
       ],
-      "effects": [{ "op": "emit", "event": "ask_posted" }] },
-
-    { "id": "buy_requires_funds", "when": { "action": "buy" },
+      "effects": [
+        {
+          "op": "decrement",
+          "path": "$actor.resources.wood",
+          "by": 4
+        },
+        {
+          "op": "increment",
+          "path": "$actor.resources.tools",
+          "by": 1
+        }
+      ]
+    },
+    {
+      "id": "sell_requires_stock",
+      "when": {
+        "action": "sell"
+      },
       "require": [
-        { "gte": [{ "ref": "$actor.resources.SOL" },
-                  { "mul": [{ "ref": "$params.quantity" }, { "ref": "$params.limit" }] }] },
-        { "gt": [{ "ref": "$params.quantity" }, 0] }
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.$params.resource"
+            },
+            {
+              "ref": "$params.quantity"
+            }
+          ]
+        },
+        {
+          "gt": [
+            {
+              "ref": "$params.quantity"
+            },
+            0
+          ]
+        }
       ],
-      "effects": [{ "op": "emit", "event": "bid_posted" }] },
-
-    { "id": "found_company_requires_capital", "when": { "action": "found_company" },
-      "require": [{ "gte": [{ "ref": "$actor.resources.SOL" }, { "ref": "$params.capital" }] }],
       "effects": [
-        { "op": "decrement", "path": "$actor.resources.SOL", "by": { "ref": "$params.capital" } },
-        { "op": "spawn", "type": "company", "bind": "$new",
-          "attributes": { "name": "Newco", "headcount": 0 } },
-        { "op": "increment", "path": "$new.resources.SOL", "by": { "ref": "$params.capital" } },
-        { "op": "relate", "from": "$actor", "to": "$new", "kind": "owns" },
-        { "op": "settle", "asset": "SOL", "from": "$actor", "to": "$new",
-          "amount": { "ref": "$params.capital" } }
-      ] },
-
-    { "id": "hire_pays_wage", "when": { "action": "hire" },
-      "require": [{ "gte": [{ "ref": "$actor.resources.SOL" }, { "ref": "$params.wage" }] }],
+        {
+          "op": "emit",
+          "event": "ask_posted"
+        }
+      ]
+    },
+    {
+      "id": "buy_requires_funds",
+      "when": {
+        "action": "buy"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "mul": [
+                {
+                  "ref": "$params.quantity"
+                },
+                {
+                  "ref": "$params.limit"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "gt": [
+            {
+              "ref": "$params.quantity"
+            },
+            0
+          ]
+        }
+      ],
       "effects": [
-        { "op": "decrement", "path": "$actor.resources.SOL", "by": { "ref": "$params.wage" } },
-        { "op": "increment", "path": "$target.resources.SOL", "by": { "ref": "$params.wage" } },
-        { "op": "relate", "from": "$target", "to": "$actor", "kind": "employer" },
-        { "op": "increment", "path": "$actor.attributes.headcount", "by": 1 },
-        { "op": "settle", "asset": "SOL", "from": "$actor", "to": "$target",
-          "amount": { "ref": "$params.wage" } }
-      ] },
-
-    { "id": "hunger_rises", "when": { "tick": { "every": 8 } },
-      "effects": [{ "op": "increment", "path": "$each.person.attributes.hunger", "by": 1 }] },
-
-    { "id": "eating", "when": { "tick": { "every": 8 } },
-      "effects": [{ "op": "emit", "event": "meal_time" }] }
+        {
+          "op": "emit",
+          "event": "bid_posted"
+        }
+      ]
+    },
+    {
+      "id": "found_company_requires_capital",
+      "when": {
+        "action": "found_company"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "ref": "$params.capital"
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "decrement",
+          "path": "$actor.resources.SOL",
+          "by": {
+            "ref": "$params.capital"
+          }
+        },
+        {
+          "op": "spawn",
+          "type": "company",
+          "bind": "$new",
+          "attributes": {
+            "name": "Newco",
+            "headcount": 0
+          }
+        },
+        {
+          "op": "increment",
+          "path": "$new.resources.SOL",
+          "by": {
+            "ref": "$params.capital"
+          }
+        },
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$new",
+          "kind": "owns"
+        },
+        {
+          "op": "settle",
+          "asset": "SOL",
+          "from": "$actor",
+          "to": "$new",
+          "amount": {
+            "ref": "$params.capital"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hire_pays_wage",
+      "when": {
+        "action": "hire"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "ref": "$params.wage"
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "decrement",
+          "path": "$actor.resources.SOL",
+          "by": {
+            "ref": "$params.wage"
+          }
+        },
+        {
+          "op": "increment",
+          "path": "$target.resources.SOL",
+          "by": {
+            "ref": "$params.wage"
+          }
+        },
+        {
+          "op": "relate",
+          "from": "$target",
+          "to": "$actor",
+          "kind": "employer"
+        },
+        {
+          "op": "increment",
+          "path": "$actor.attributes.headcount",
+          "by": 1
+        },
+        {
+          "op": "settle",
+          "asset": "SOL",
+          "from": "$actor",
+          "to": "$target",
+          "amount": {
+            "ref": "$params.wage"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hunger_rises",
+      "when": {
+        "tick": {
+          "every": 8
+        }
+      },
+      "effects": [
+        {
+          "op": "increment",
+          "path": "$each.person.attributes.hunger",
+          "by": 1
+        }
+      ]
+    },
+    {
+      "id": "eating",
+      "when": {
+        "tick": {
+          "every": 8
+        }
+      },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "meal_time"
+        }
+      ]
+    },
+    {
+      "id": "invest_buys_equity",
+      "when": {
+        "action": "invest"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.SOL"
+            },
+            {
+              "ref": "$params.amount"
+            }
+          ]
+        },
+        {
+          "gt": [
+            {
+              "ref": "$params.amount"
+            },
+            0
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "decrement",
+          "path": "$actor.resources.SOL",
+          "by": {
+            "ref": "$params.amount"
+          }
+        },
+        {
+          "op": "increment",
+          "path": "$target.resources.SOL",
+          "by": {
+            "ref": "$params.amount"
+          }
+        },
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$target",
+          "kind": "shareholder"
+        },
+        {
+          "op": "settle",
+          "asset": "SOL",
+          "from": "$actor",
+          "to": "$target",
+          "amount": {
+            "ref": "$params.amount"
+          }
+        },
+        {
+          "op": "emit",
+          "event": "equity_purchased"
+        }
+      ]
+    },
+    {
+      "id": "proposal_opens",
+      "when": {
+        "action": "propose"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$target.resources.SOL"
+            },
+            {
+              "ref": "$params.amount"
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "emit",
+          "event": "proposal_opened"
+        }
+      ]
+    },
+    {
+      "id": "vote_recorded",
+      "when": {
+        "action": "vote"
+      },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "vote_cast"
+        }
+      ]
+    }
   ],
-
   "markets": [
-    { "id": "food_market",  "resource": "food",  "currency": "SOL",
-      "mechanism": "batch_auction", "roundTicks": 6 },
-    { "id": "wood_market",  "resource": "wood",  "currency": "SOL",
-      "mechanism": "batch_auction", "roundTicks": 6 },
-    { "id": "tools_market", "resource": "tools", "currency": "SOL",
-      "mechanism": "batch_auction", "roundTicks": 6 }
+    {
+      "id": "food_market",
+      "resource": "food",
+      "currency": "SOL",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    },
+    {
+      "id": "wood_market",
+      "resource": "wood",
+      "currency": "SOL",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    },
+    {
+      "id": "tools_market",
+      "resource": "tools",
+      "currency": "SOL",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    }
   ],
-
-  "population": [{ "type": "person", "count": 24 }],
-
+  "population": [
+    {
+      "type": "person",
+      "count": 24
+    }
+  ],
   "events": [
-    { "id": "drought", "atTick": 200, "description": "Food yields collapse for a while.",
-      "effects": [{ "op": "emit", "event": "shock", "data": { "kind": "drought" } }] }
+    {
+      "id": "drought",
+      "atTick": 200,
+      "description": "Food yields collapse for a while.",
+      "effects": [
+        {
+          "op": "emit",
+          "event": "shock",
+          "data": {
+            "kind": "drought"
+          }
+        }
+      ]
+    }
   ],
-
   "metrics": [
-    { "id": "total_wealth", "aggregate": "sum", "over": "person",
-      "value": { "ref": "$e.resources.SOL" } },
-    { "id": "wealth_gini", "aggregate": "gini", "over": "person",
-      "value": { "ref": "$e.resources.SOL" } },
-    { "id": "companies", "aggregate": "count", "over": "company" },
-    { "id": "mean_food", "aggregate": "mean", "over": "person",
-      "value": { "ref": "$e.resources.food" } }
+    {
+      "id": "total_wealth",
+      "aggregate": "sum",
+      "over": "person",
+      "value": {
+        "ref": "$e.resources.SOL"
+      }
+    },
+    {
+      "id": "wealth_gini",
+      "aggregate": "gini",
+      "over": "person",
+      "value": {
+        "ref": "$e.resources.SOL"
+      }
+    },
+    {
+      "id": "companies",
+      "aggregate": "count",
+      "over": "company"
+    },
+    {
+      "id": "mean_food",
+      "aggregate": "mean",
+      "over": "person",
+      "value": {
+        "ref": "$e.resources.food"
+      }
+    }
+  ],
+  "chain": {
+    "cluster": "localnet",
+    "currency": "SOL",
+    "agentWallets": true,
+    "agentRegistry": true,
+    "onChainMarkets": true,
+    "chainAuthoritative": true,
+    "tokens": {
+      "SOL": {
+        "symbol": "WORLD",
+        "decimals": 4,
+        "initialSupply": 1000000,
+        "fixedSupply": true
+      },
+      "food": {
+        "symbol": "FOOD",
+        "decimals": 0
+      },
+      "wood": {
+        "symbol": "WOOD",
+        "decimals": 0
+      },
+      "tools": {
+        "symbol": "TOOL",
+        "decimals": 0
+      }
+    },
+    "assets": [
+      {
+        "id": "company_equity",
+        "holders": [
+          "person"
+        ],
+        "ownership": "equity_shares"
+      }
+    ]
+  },
+  "organizations": [
+    {
+      "type": "company",
+      "memberTypes": [
+        "person"
+      ],
+      "treasuryResource": "SOL",
+      "governance": {
+        "mechanism": "token_weighted",
+        "threshold": 0.5,
+        "votingTicks": 12,
+        "weightBy": "equity"
+      },
+      "equityToken": {
+        "symbol": "EQTY",
+        "decimals": 0,
+        "initialSupply": 1000
+      }
+    }
   ]
 }

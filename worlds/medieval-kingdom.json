@@ -1,178 +1,786 @@
 {
   "name": "Medieval Kingdom",
   "seed": 13370001,
-  "time": { "tickMs": 500, "unit": "day" },
-
+  "time": {
+    "tickMs": 500,
+    "unit": "day"
+  },
   "resources": [
-    { "id": "gold", "onChain": true,  "startPrice": 1,    "divisible": true },
-    { "id": "food", "onChain": true,  "startPrice": 400,  "spoilage": 0.12 },
-    { "id": "wood", "onChain": true,  "startPrice": 250,  "spoilage": 0.01 },
-    { "id": "iron", "onChain": true,  "startPrice": 900,  "spoilage": 0 },
-    { "id": "land", "onChain": true,  "startPrice": 8000, "spoilage": 0 }
+    {
+      "id": "gold",
+      "onChain": true,
+      "startPrice": 1,
+      "divisible": true
+    },
+    {
+      "id": "food",
+      "onChain": true,
+      "startPrice": 400,
+      "spoilage": 0.12
+    },
+    {
+      "id": "wood",
+      "onChain": true,
+      "startPrice": 250,
+      "spoilage": 0.01
+    },
+    {
+      "id": "iron",
+      "onChain": true,
+      "startPrice": 900,
+      "spoilage": 0
+    },
+    {
+      "id": "land",
+      "onChain": true,
+      "startPrice": 8000,
+      "spoilage": 0
+    }
   ],
-
   "entityTypes": [
-    { "id": "peasant", "agent": true,
-      "attributes": { "hunger": 0, "loyalty": 5 },
-      "resources": { "gold": 800, "food": 4, "wood": 0, "iron": 0, "land": 0 } },
-    { "id": "merchant", "agent": true,
-      "attributes": { "hunger": 0, "reputation": 5 },
-      "resources": { "gold": 6000, "food": 2, "wood": 2, "iron": 1, "land": 0 } },
-    { "id": "noble", "agent": true,
-      "attributes": { "hunger": 0, "titles": 1 },
-      "resources": { "gold": 20000, "food": 10, "wood": 5, "iron": 5, "land": 3 } },
-    { "id": "kingdom", "agent": true,
-      "attributes": { "name": "unnamed", "taxRate": 10, "atWar": false },
-      "resources": { "gold": 50000, "food": 0, "wood": 0, "iron": 0, "land": 20 } }
+    {
+      "id": "peasant",
+      "agent": true,
+      "attributes": {
+        "hunger": 0,
+        "loyalty": 5
+      },
+      "resources": {
+        "gold": 800,
+        "food": 4,
+        "wood": 0,
+        "iron": 0,
+        "land": 0
+      }
+    },
+    {
+      "id": "merchant",
+      "agent": true,
+      "attributes": {
+        "hunger": 0,
+        "reputation": 5
+      },
+      "resources": {
+        "gold": 6000,
+        "food": 2,
+        "wood": 2,
+        "iron": 1,
+        "land": 0
+      }
+    },
+    {
+      "id": "noble",
+      "agent": true,
+      "attributes": {
+        "hunger": 0,
+        "titles": 1
+      },
+      "resources": {
+        "gold": 20000,
+        "food": 10,
+        "wood": 5,
+        "iron": 5,
+        "land": 3
+      }
+    },
+    {
+      "id": "kingdom",
+      "agent": true,
+      "attributes": {
+        "name": "unnamed",
+        "taxRate": 10,
+        "atWar": false
+      },
+      "resources": {
+        "gold": 50000,
+        "food": 0,
+        "wood": 0,
+        "iron": 0,
+        "land": 20
+      }
+    }
   ],
-
   "actions": [
-    { "id": "farm", "actorTypes": ["peasant", "noble"], "duration": 6,
-      "description": "Work the land for food. Owning land raises the yield." },
-    { "id": "chop", "actorTypes": ["peasant"], "duration": 6,
-      "description": "Fell timber." },
-    { "id": "mine", "actorTypes": ["peasant"], "duration": 8,
-      "description": "Dig for iron. Slow, but iron is valuable." },
-    { "id": "buy", "actorTypes": ["peasant", "merchant", "noble", "kingdom"], "duration": 1,
-      "params": [
-        { "name": "resource", "type": "resource", "required": true },
-        { "name": "quantity", "type": "number", "required": true },
-        { "name": "limit", "type": "number", "required": true }
+    {
+      "id": "farm",
+      "actorTypes": [
+        "peasant",
+        "noble"
       ],
-      "description": "Bid for goods at the market." },
-    { "id": "sell", "actorTypes": ["peasant", "merchant", "noble", "kingdom"], "duration": 1,
-      "params": [
-        { "name": "resource", "type": "resource", "required": true },
-        { "name": "quantity", "type": "number", "required": true },
-        { "name": "limit", "type": "number", "required": true }
+      "duration": 6,
+      "description": "Work the land for food. Owning land raises the yield."
+    },
+    {
+      "id": "chop",
+      "actorTypes": [
+        "peasant"
       ],
-      "description": "Offer goods at the market." },
-    { "id": "build", "actorTypes": ["noble", "kingdom"], "duration": 10,
-      "description": "Spend wood and iron to raise a holding, claiming land." },
-    { "id": "form_alliance", "actorTypes": ["kingdom", "noble"], "duration": 2,
-      "targetTypes": ["kingdom", "noble"],
-      "description": "Bind yourself to another power." },
-    { "id": "declare_war", "actorTypes": ["kingdom"], "duration": 2,
-      "targetTypes": ["kingdom"],
-      "description": "Open hostilities. Expensive, and it empties the treasury." },
-    { "id": "swear_fealty", "actorTypes": ["peasant"], "duration": 1,
-      "targetTypes": ["noble"],
-      "description": "Enter a lord's service." },
-    { "id": "idle", "actorTypes": ["peasant", "merchant", "noble", "kingdom"], "duration": 2,
-      "description": "Wait and watch." }
+      "duration": 6,
+      "description": "Fell timber."
+    },
+    {
+      "id": "mine",
+      "actorTypes": [
+        "peasant"
+      ],
+      "duration": 8,
+      "description": "Dig for iron. Slow, but iron is valuable."
+    },
+    {
+      "id": "buy",
+      "actorTypes": [
+        "peasant",
+        "merchant",
+        "noble",
+        "kingdom"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "resource",
+          "type": "resource",
+          "required": true
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Bid for goods at the market."
+    },
+    {
+      "id": "sell",
+      "actorTypes": [
+        "peasant",
+        "merchant",
+        "noble",
+        "kingdom"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "resource",
+          "type": "resource",
+          "required": true
+        },
+        {
+          "name": "quantity",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Offer goods at the market."
+    },
+    {
+      "id": "build",
+      "actorTypes": [
+        "noble",
+        "kingdom"
+      ],
+      "duration": 10,
+      "description": "Spend wood and iron to raise a holding, claiming land."
+    },
+    {
+      "id": "form_alliance",
+      "actorTypes": [
+        "kingdom",
+        "noble"
+      ],
+      "duration": 2,
+      "targetTypes": [
+        "kingdom",
+        "noble"
+      ],
+      "description": "Bind yourself to another power."
+    },
+    {
+      "id": "declare_war",
+      "actorTypes": [
+        "kingdom"
+      ],
+      "duration": 2,
+      "targetTypes": [
+        "kingdom"
+      ],
+      "description": "Open hostilities. Expensive, and it empties the treasury."
+    },
+    {
+      "id": "swear_fealty",
+      "actorTypes": [
+        "peasant"
+      ],
+      "duration": 1,
+      "targetTypes": [
+        "noble"
+      ],
+      "description": "Enter a lord's service."
+    },
+    {
+      "id": "idle",
+      "actorTypes": [
+        "peasant",
+        "merchant",
+        "noble",
+        "kingdom"
+      ],
+      "duration": 2,
+      "description": "Wait and watch."
+    },
+    {
+      "id": "propose",
+      "actorTypes": [
+        "noble",
+        "kingdom"
+      ],
+      "targetTypes": [
+        "kingdom"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "amount",
+          "type": "number",
+          "required": true
+        },
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ],
+      "description": "Put a levy or disbursement before the council."
+    },
+    {
+      "id": "vote",
+      "actorTypes": [
+        "noble"
+      ],
+      "targetTypes": [
+        "kingdom"
+      ],
+      "duration": 1,
+      "params": [
+        {
+          "name": "support",
+          "type": "number",
+          "required": true
+        }
+      ],
+      "description": "Cast your council vote, weighted by titles held."
+    }
   ],
-
   "rules": [
-    { "id": "farm_yield", "when": { "action": "farm" },
+    {
+      "id": "farm_yield",
+      "when": {
+        "action": "farm"
+      },
       "effects": [
-        { "op": "increment", "path": "$actor.resources.food",
-          "by": { "add": [2, { "ref": "$actor.resources.land" }] } },
-        { "op": "emit", "event": "worked", "data": { "kind": "food" } }
-      ] },
-
-    { "id": "chop_yield", "when": { "action": "chop" },
+        {
+          "op": "increment",
+          "path": "$actor.resources.food",
+          "by": {
+            "add": [
+              2,
+              {
+                "ref": "$actor.resources.land"
+              }
+            ]
+          }
+        },
+        {
+          "op": "emit",
+          "event": "worked",
+          "data": {
+            "kind": "food"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chop_yield",
+      "when": {
+        "action": "chop"
+      },
       "effects": [
-        { "op": "increment", "path": "$actor.resources.wood", "by": 3 },
-        { "op": "emit", "event": "worked", "data": { "kind": "wood" } }
-      ] },
-
-    { "id": "mine_yield", "when": { "action": "mine" },
+        {
+          "op": "increment",
+          "path": "$actor.resources.wood",
+          "by": 3
+        },
+        {
+          "op": "emit",
+          "event": "worked",
+          "data": {
+            "kind": "wood"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mine_yield",
+      "when": {
+        "action": "mine"
+      },
       "effects": [
-        { "op": "increment", "path": "$actor.resources.iron", "by": 1 },
-        { "op": "emit", "event": "worked", "data": { "kind": "iron" } }
-      ] },
-
-    { "id": "buy_requires_gold", "when": { "action": "buy" },
+        {
+          "op": "increment",
+          "path": "$actor.resources.iron",
+          "by": 1
+        },
+        {
+          "op": "emit",
+          "event": "worked",
+          "data": {
+            "kind": "iron"
+          }
+        }
+      ]
+    },
+    {
+      "id": "buy_requires_gold",
+      "when": {
+        "action": "buy"
+      },
       "require": [
-        { "gte": [{ "ref": "$actor.resources.gold" },
-                  { "mul": [{ "ref": "$params.quantity" }, { "ref": "$params.limit" }] }] },
-        { "gt": [{ "ref": "$params.quantity" }, 0] }
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.gold"
+            },
+            {
+              "mul": [
+                {
+                  "ref": "$params.quantity"
+                },
+                {
+                  "ref": "$params.limit"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "gt": [
+            {
+              "ref": "$params.quantity"
+            },
+            0
+          ]
+        }
       ],
-      "effects": [{ "op": "emit", "event": "bid_posted" }] },
-
-    { "id": "sell_requires_stock", "when": { "action": "sell" },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "bid_posted"
+        }
+      ]
+    },
+    {
+      "id": "sell_requires_stock",
+      "when": {
+        "action": "sell"
+      },
       "require": [
-        { "gte": [{ "ref": "$actor.resources.$params.resource" },
-                  { "ref": "$params.quantity" }] },
-        { "gt": [{ "ref": "$params.quantity" }, 0] }
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.$params.resource"
+            },
+            {
+              "ref": "$params.quantity"
+            }
+          ]
+        },
+        {
+          "gt": [
+            {
+              "ref": "$params.quantity"
+            },
+            0
+          ]
+        }
       ],
-      "effects": [{ "op": "emit", "event": "ask_posted" }] },
-
-    { "id": "build_costs_materials", "when": { "action": "build" },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "ask_posted"
+        }
+      ]
+    },
+    {
+      "id": "build_costs_materials",
+      "when": {
+        "action": "build"
+      },
       "require": [
-        { "gte": [{ "ref": "$actor.resources.wood" }, 10] },
-        { "gte": [{ "ref": "$actor.resources.iron" }, 4] }
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.wood"
+            },
+            10
+          ]
+        },
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.iron"
+            },
+            4
+          ]
+        }
       ],
       "effects": [
-        { "op": "decrement", "path": "$actor.resources.wood", "by": 10 },
-        { "op": "decrement", "path": "$actor.resources.iron", "by": 4 },
-        { "op": "increment", "path": "$actor.resources.land", "by": 1 },
-        { "op": "emit", "event": "built" }
-      ] },
-
-    { "id": "alliance_binds", "when": { "action": "form_alliance" },
+        {
+          "op": "decrement",
+          "path": "$actor.resources.wood",
+          "by": 10
+        },
+        {
+          "op": "decrement",
+          "path": "$actor.resources.iron",
+          "by": 4
+        },
+        {
+          "op": "increment",
+          "path": "$actor.resources.land",
+          "by": 1
+        },
+        {
+          "op": "emit",
+          "event": "built"
+        }
+      ]
+    },
+    {
+      "id": "alliance_binds",
+      "when": {
+        "action": "form_alliance"
+      },
       "effects": [
-        { "op": "relate", "from": "$actor", "to": "$target", "kind": "ally" },
-        { "op": "relate", "from": "$target", "to": "$actor", "kind": "ally" },
-        { "op": "emit", "event": "alliance_formed" }
-      ] },
-
-    { "id": "war_costs_treasury", "when": { "action": "declare_war" },
-      "require": [{ "gte": [{ "ref": "$actor.resources.gold" }, 10000] }],
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$target",
+          "kind": "ally"
+        },
+        {
+          "op": "relate",
+          "from": "$target",
+          "to": "$actor",
+          "kind": "ally"
+        },
+        {
+          "op": "emit",
+          "event": "alliance_formed"
+        }
+      ]
+    },
+    {
+      "id": "war_costs_treasury",
+      "when": {
+        "action": "declare_war"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$actor.resources.gold"
+            },
+            10000
+          ]
+        }
+      ],
       "effects": [
-        { "op": "decrement", "path": "$actor.resources.gold", "by": 10000 },
-        { "op": "set", "path": "$actor.attributes.atWar", "value": true },
-        { "op": "relate", "from": "$actor", "to": "$target", "kind": "enemy" },
-        { "op": "emit", "event": "war_declared" }
-      ] },
-
-    { "id": "fealty_binds", "when": { "action": "swear_fealty" },
+        {
+          "op": "decrement",
+          "path": "$actor.resources.gold",
+          "by": 10000
+        },
+        {
+          "op": "set",
+          "path": "$actor.attributes.atWar",
+          "value": true
+        },
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$target",
+          "kind": "enemy"
+        },
+        {
+          "op": "emit",
+          "event": "war_declared"
+        }
+      ]
+    },
+    {
+      "id": "fealty_binds",
+      "when": {
+        "action": "swear_fealty"
+      },
       "effects": [
-        { "op": "relate", "from": "$actor", "to": "$target", "kind": "liege" },
-        { "op": "increment", "path": "$actor.attributes.loyalty", "by": 1 },
-        { "op": "emit", "event": "fealty_sworn" }
-      ] },
-
-    { "id": "hunger_rises", "when": { "tick": { "every": 8 } },
-      "effects": [{ "op": "increment", "path": "$each.peasant.attributes.hunger", "by": 1 }] },
-
-    { "id": "eating", "when": { "tick": { "every": 8 } },
-      "effects": [{ "op": "emit", "event": "meal_time" }] }
+        {
+          "op": "relate",
+          "from": "$actor",
+          "to": "$target",
+          "kind": "liege"
+        },
+        {
+          "op": "increment",
+          "path": "$actor.attributes.loyalty",
+          "by": 1
+        },
+        {
+          "op": "emit",
+          "event": "fealty_sworn"
+        }
+      ]
+    },
+    {
+      "id": "hunger_rises",
+      "when": {
+        "tick": {
+          "every": 8
+        }
+      },
+      "effects": [
+        {
+          "op": "increment",
+          "path": "$each.peasant.attributes.hunger",
+          "by": 1
+        }
+      ]
+    },
+    {
+      "id": "eating",
+      "when": {
+        "tick": {
+          "every": 8
+        }
+      },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "meal_time"
+        }
+      ]
+    },
+    {
+      "id": "proposal_opens",
+      "when": {
+        "action": "propose"
+      },
+      "require": [
+        {
+          "gte": [
+            {
+              "ref": "$target.resources.gold"
+            },
+            {
+              "ref": "$params.amount"
+            }
+          ]
+        }
+      ],
+      "effects": [
+        {
+          "op": "emit",
+          "event": "proposal_opened"
+        }
+      ]
+    },
+    {
+      "id": "vote_recorded",
+      "when": {
+        "action": "vote"
+      },
+      "effects": [
+        {
+          "op": "emit",
+          "event": "vote_cast"
+        }
+      ]
+    }
   ],
-
   "markets": [
-    { "id": "food_market", "resource": "food", "currency": "gold",
-      "mechanism": "batch_auction", "roundTicks": 6 },
-    { "id": "wood_market", "resource": "wood", "currency": "gold",
-      "mechanism": "batch_auction", "roundTicks": 6 },
-    { "id": "iron_market", "resource": "iron", "currency": "gold",
-      "mechanism": "batch_auction", "roundTicks": 6 },
-    { "id": "land_market", "resource": "land", "currency": "gold",
-      "mechanism": "batch_auction", "roundTicks": 12 }
+    {
+      "id": "food_market",
+      "resource": "food",
+      "currency": "gold",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    },
+    {
+      "id": "wood_market",
+      "resource": "wood",
+      "currency": "gold",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    },
+    {
+      "id": "iron_market",
+      "resource": "iron",
+      "currency": "gold",
+      "mechanism": "batch_auction",
+      "roundTicks": 6
+    },
+    {
+      "id": "land_market",
+      "resource": "land",
+      "currency": "gold",
+      "mechanism": "batch_auction",
+      "roundTicks": 12
+    }
   ],
-
   "population": [
-    { "type": "peasant",  "count": 18 },
-    { "type": "merchant", "count": 4 },
-    { "type": "noble",    "count": 3 },
-    { "type": "kingdom",  "count": 2, "attributes": { "name": "Aldermarch" } }
+    {
+      "type": "peasant",
+      "count": 18
+    },
+    {
+      "type": "merchant",
+      "count": 4
+    },
+    {
+      "type": "noble",
+      "count": 3
+    },
+    {
+      "type": "kingdom",
+      "count": 2,
+      "attributes": {
+        "name": "Aldermarch"
+      }
+    }
   ],
-
   "events": [
-    { "id": "plague", "atTick": 240, "description": "Sickness thins the villages.",
-      "effects": [{ "op": "emit", "event": "shock", "data": { "kind": "plague" } }] },
-    { "id": "good_harvest", "every": 120, "chance": 0.5,
+    {
+      "id": "plague",
+      "atTick": 240,
+      "description": "Sickness thins the villages.",
+      "effects": [
+        {
+          "op": "emit",
+          "event": "shock",
+          "data": {
+            "kind": "plague"
+          }
+        }
+      ]
+    },
+    {
+      "id": "good_harvest",
+      "every": 120,
+      "chance": 0.5,
       "description": "A bountiful season.",
-      "effects": [{ "op": "emit", "event": "shock", "data": { "kind": "harvest" } }] }
+      "effects": [
+        {
+          "op": "emit",
+          "event": "shock",
+          "data": {
+            "kind": "harvest"
+          }
+        }
+      ]
+    }
   ],
-
   "metrics": [
-    { "id": "total_wealth", "aggregate": "sum", "over": "peasant",
-      "value": { "ref": "$e.resources.gold" } },
-    { "id": "wealth_gini", "aggregate": "gini", "over": "peasant",
-      "value": { "ref": "$e.resources.gold" } },
-    { "id": "land_concentration", "aggregate": "gini", "over": "noble",
-      "value": { "ref": "$e.resources.land" } },
-    { "id": "kingdoms", "aggregate": "count", "over": "kingdom" }
+    {
+      "id": "total_wealth",
+      "aggregate": "sum",
+      "over": "peasant",
+      "value": {
+        "ref": "$e.resources.gold"
+      }
+    },
+    {
+      "id": "wealth_gini",
+      "aggregate": "gini",
+      "over": "peasant",
+      "value": {
+        "ref": "$e.resources.gold"
+      }
+    },
+    {
+      "id": "land_concentration",
+      "aggregate": "gini",
+      "over": "noble",
+      "value": {
+        "ref": "$e.resources.land"
+      }
+    },
+    {
+      "id": "kingdoms",
+      "aggregate": "count",
+      "over": "kingdom"
+    }
+  ],
+  "chain": {
+    "cluster": "localnet",
+    "currency": "gold",
+    "agentWallets": true,
+    "agentRegistry": true,
+    "onChainMarkets": true,
+    "chainAuthoritative": true,
+    "tokens": {
+      "gold": {
+        "symbol": "GOLD",
+        "decimals": 2,
+        "initialSupply": 5000000,
+        "fixedSupply": true
+      },
+      "food": {
+        "symbol": "GRAIN",
+        "decimals": 0
+      },
+      "wood": {
+        "symbol": "TIMBR",
+        "decimals": 0
+      },
+      "iron": {
+        "symbol": "IRON",
+        "decimals": 0
+      }
+    },
+    "assets": [
+      {
+        "id": "land_parcel",
+        "holders": [
+          "peasant",
+          "noble",
+          "kingdom"
+        ],
+        "ownership": "pda_record"
+      }
+    ]
+  },
+  "organizations": [
+    {
+      "type": "kingdom",
+      "memberTypes": [
+        "peasant",
+        "merchant",
+        "noble"
+      ],
+      "treasuryResource": "gold",
+      "governance": {
+        "mechanism": "council",
+        "threshold": 0.6,
+        "votingTicks": 16,
+        "weightBy": "titles"
+      }
+    }
   ]
 }
