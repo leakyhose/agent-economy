@@ -332,6 +332,10 @@ export class Engine {
         actor: proposal.actor,
         target: proposal.target ?? null,
         params: (proposal.params ?? {}) as Json,
+        // The actor's own account of why. Never consulted by validation - it is
+        // the agent talking, not the engine deciding - but it is what makes a
+        // replay legible, so it belongs in the log.
+        reason: proposal.reason ?? null,
       });
 
       try {

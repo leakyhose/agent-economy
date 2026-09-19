@@ -51,7 +51,10 @@ async function main() {
     onFallback: (reason) => console.warn(`[sim] ${reason}`),
   });
   const usesModel = CFG.BRAIN === 'llm' || CFG.BRAIN === 'hybrid' || mix;
-  const kinds: EngineKind[] = ['hybrid', 'utility', 'rule', 'hybrid'];
+  // A quarter pure-LLM so there is always a model talking, a quarter hybrid so
+  // most model spend goes to agents at an actual decision point, and half
+  // deterministic so somebody is reliably on the other side of the book.
+  const kinds: EngineKind[] = ['llm', 'hybrid', 'utility', 'rule'];
   const agents: Agent[] = [];
   let n = 0;
   for (const id of Object.keys(engine.state.entities).sort()) {
@@ -82,8 +85,15 @@ async function main() {
     if (server.running) {
       // Agents propose. Nothing an agent returns can mutate state: every proposal
       // goes through engine.submit, which validates it against the world's rules.
+      // Skip agents the engine would reject as busy. They are mid-action, so a
+      // proposal from them is discarded anyway - and asking a model to think for
+      // an agent that cannot act is the single easiest way to waste money.
+      const ready = agents.filter((a) => {
+        const busy = engine.state.entities[a.id]?.state['busyUntil'];
+        return typeof busy !== 'number' || busy <= engine.state.tick;
+      });
       const proposals = await Promise.all(
-        agents.map((a) => a.act(engine.state, world, recent).catch(() => null)),
+        ready.map((a) => a.act(engine.state, world, recent).catch(() => null)),
       );
       for (const p of proposals) if (p) engine.submit(p as ActionProposal);
 
