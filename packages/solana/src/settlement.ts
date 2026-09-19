@@ -2,8 +2,14 @@ import type { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import type { EntityId, SettlementIntent, SettlementQueue } from '@aw/types';
 import type { Delta } from './auction.ts';
 import type { GoodMap } from './goods.ts';
-import { chunk, settleIx, transferIx, type LedgerAccounts } from './instructions.ts';
-import { MAX_DELTAS_PER_TX, MAX_TRANSFERS_PER_TX } from './program.ts';
+import {
+  MAX_DELTAS_PER_TX,
+  MAX_TRANSFERS_PER_TX,
+  chunk,
+  settleIx,
+  transferIx,
+  type LedgerAccounts,
+} from './ix.ts';
 import type { TxSender } from './sender.ts';
 import type { SolanaWalletService } from './wallet.ts';
 

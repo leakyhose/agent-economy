@@ -5,11 +5,17 @@ import { describe, expect, it } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import type { WorldDefinition } from '@aw/types';
 import { clearAuction, fills, sortAsks, sortBids, type Order } from './auction.ts';
-import { clusterFromEnv, explorerUrl, makeExplorer } from './cluster.ts';
+import { clusterFromEnv, explorerUrl, makeExplorer } from './config.ts';
 import { endowmentsFor, mapWorldGoods, modalEndowment, rosterFromWorld } from './goods.ts';
-import { clearAuctionIx, settleIx } from './instructions.ts';
-import { LEDGER_BYTES, MAX_ORDERS_PER_BOOK, discriminator, loadIdl } from './program.ts';
-import { NullSettlementQueue } from './queue.ts';
+import {
+  LEDGER_BYTES,
+  MAX_ORDERS_PER_BOOK,
+  clearAuctionIx,
+  discriminator,
+  loadIdl,
+  settleIx,
+} from './ix.ts';
+import { NullSettlementQueue } from './settlement.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const load = (f: string) =>

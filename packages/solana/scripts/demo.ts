@@ -17,22 +17,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PublicKey, Transaction } from '@solana/web3.js';
 import type { SettlementIntent, WorldDefinition } from '@aw/types';
-import {
-  BlockhashCache,
-  MAX_ORDERS_PER_BOOK,
-  NullSettlementQueue,
-  SolanaSettlementQueue,
-  TxSender,
-  WorldLedger,
-  clearAuction,
-  clearAuctionIx,
-  clusterFromEnv,
-  connect,
-  loadIdl,
-  sortAsks,
-  sortBids,
-  type Order,
-} from '../src/index.ts';
+import { clearAuction, sortAsks, sortBids, type Order } from '../src/auction.ts';
+import { WorldLedger } from '../src/client.ts';
+import { BlockhashCache, clusterFromEnv, connect } from '../src/config.ts';
+import { MAX_ORDERS_PER_BOOK, clearAuctionIx, loadIdl } from '../src/ix.ts';
+import { TxSender } from '../src/sender.ts';
+import { NullSettlementQueue, SolanaSettlementQueue } from '../src/settlement.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const WORLDS = ['economic-sandbox.json', 'medieval-kingdom.json'];

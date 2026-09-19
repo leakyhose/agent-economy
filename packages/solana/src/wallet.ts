@@ -11,7 +11,7 @@ import {
 } from '@solana/web3.js';
 import type { EntityId, WalletService } from '@aw/types';
 import type { AgentRoster, GoodMap } from './goods.ts';
-import { decodeLedger, type LedgerState } from './program.ts';
+import { decodeLedger, type LedgerState } from './ix.ts';
 
 /**
  * The only module in the system that holds a private key.

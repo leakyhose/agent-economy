@@ -2,7 +2,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import type { WorldDefinition } from '@aw/types';
 import type { Order } from './auction.ts';
 import { sortAsks, sortBids } from './auction.ts';
-import { BlockhashCache, explorerUrl, type ClusterConfig } from './cluster.ts';
+import { BlockhashCache, explorerUrl, type ClusterConfig } from './config.ts';
 import {
   endowmentsFor,
   mapWorldGoods,
@@ -13,23 +13,21 @@ import {
   type GoodMap,
 } from './goods.ts';
 import {
+  LEDGER_BYTES,
+  MAX_ENDOWMENTS_PER_TX,
+  MAX_ORDERS_PER_BOOK,
   chunk,
   clearAuctionIx,
   createLedgerAccountIx,
+  decodeLedger,
   endowIx,
   initializeIx,
   sealIx,
   settleIx,
   transferIx,
   type LedgerAccounts,
-} from './instructions.ts';
-import {
-  LEDGER_BYTES,
-  MAX_ENDOWMENTS_PER_TX,
-  MAX_ORDERS_PER_BOOK,
-  decodeLedger,
   type LedgerState,
-} from './program.ts';
+} from './ix.ts';
 import { TxSender } from './sender.ts';
 import { SolanaWalletService } from './wallet.ts';
 

@@ -4,7 +4,7 @@ import {
   type Signer,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { BlockhashCache } from './cluster.ts';
+import { BlockhashCache } from './config.ts';
 
 /** A program error: the transaction was well-formed and the program said no. */
 export class ProgramRejection extends Error {
