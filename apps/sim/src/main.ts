@@ -7,8 +7,12 @@ import { Engine, JsonlRepository, computeMetrics, loadWorldFile } from '@aw/engi
 import { createAgent, makeLens, type Agent, type EngineKind } from '@aw/agents';
 import type { ActionProposal, SimEvent } from '@aw/types';
 import { CFG } from './config.ts';
+
+const explorer = (sig: string) =>
+  `https://explorer.solana.com/tx/${sig}?cluster=custom&customUrl=${encodeURIComponent(CFG.RPC)}`;
 import { startServer } from './server.ts';
 import { makeSettlement } from './settlement.ts';
+import { settlementsFromFills } from './market-settlement.ts';
 
 async function main() {
   const world = await loadWorldFile(resolve(CFG.WORLD));   // throws loudly on a bad world
@@ -71,7 +75,12 @@ async function main() {
 
       const result = engine.tick();
       recent = result.events.slice(-32);
+      // Two sources of settlement: explicit `settle` effects declared by rules,
+      // and market fills, which a world opts into with chain.onChainMarkets.
       for (const intent of result.settlements) settlement.enqueue(intent);
+      for (const intent of settlementsFromFills(result.events, world, result.tick)) {
+        settlement.enqueue(intent);
+      }
 
       server.broadcast({
         ...result,
@@ -87,7 +96,13 @@ async function main() {
 
   const signatures = await settlement.flush();
   await engine.flush();
+  await engine.snapshot();
   console.log(`[sim] stopped at tick ${engine.state.tick}; ${signatures.length} settled on chain`);
+  for (const sig of signatures.slice(0, 5)) {
+    console.log(`[sim]   ${sig}`);
+    console.log(`[sim]   ${explorer(sig)}`);
+  }
+  if (signatures.length > 5) console.log(`[sim]   ... and ${signatures.length - 5} more`);
   process.exit(0);
 }
 
