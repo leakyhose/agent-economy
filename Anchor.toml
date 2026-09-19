@@ -8,6 +8,7 @@ skip-lint = false
 
 [programs.localnet]
 world = "1SftM8VJKJTbgPprbpjAfhJXLAUSWqgPaX1tscwtk6D"
+org = "75xzyWGNtgiB6cKtTFnZE7giPpUuyap2V6KJxu5rsaF"
 
 [provider]
 cluster = "localnet"
