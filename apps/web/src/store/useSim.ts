@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { create } from 'zustand';
 import type { EntityId, SimEvent, WorldDefinition, WorldState } from '@aw/types';
 import type {
-  BrainChoice, ModelChoice, OrderBook, ServerMessage, SimSource, TransportStatus,
+  BrainChoice, LLMUsage, ModelChoice, OrderBook, ServerMessage, SimSource, TransportStatus,
 } from '../data/contract.ts';
 import { FixtureSource } from '../data/fixtureSource.ts';
 import { DEFAULT_ENDPOINT, LiveSource } from '../data/liveSource.ts';
@@ -69,6 +69,7 @@ export interface SimStore {
   catalogue: { models: ModelChoice[]; brains: BrainChoice[] };
   hasKey: boolean;
   loading: boolean;
+  usage: LLMUsage | null;
   error: string | null;
   ready: boolean;
 
@@ -115,6 +116,7 @@ export const useSim = create<SimStore>((set, get) => {
           ...(message.catalogue ? { catalogue: message.catalogue } : {}),
           hasKey: Boolean(message.hasKey),
           loading: Boolean(message.loading),
+          usage: message.usage ?? null,
         });
         break;
       case 'world':
@@ -173,8 +175,8 @@ export const useSim = create<SimStore>((set, get) => {
       ...(model ? { model } : {}),
       ...(brain ? { brain } : {}),
     });
-    source.send({ type: 'control', command: 'start' });
-    set({ running: true });
+    // Same reasoning as attach: a rebuilt world waits to be started.
+    set({ running: false });
   };
 
   const attach = async (slug: string, kind: 'fixture' | 'live'): Promise<void> => {
@@ -223,8 +225,9 @@ export const useSim = create<SimStore>((set, get) => {
       ...(get().brain ? { brain: get().brain as string } : {}),
     });
     next.send({ type: 'speed', multiplier: get().speed });
-    next.send({ type: 'control', command: 'start' });
-    set({ running: true });
+    // Deliberately not started. A model-backed run costs money from its first
+    // tick, so beginning one is always an explicit act.
+    set({ running: false });
   };
 
   return {
@@ -258,6 +261,7 @@ export const useSim = create<SimStore>((set, get) => {
     catalogue: { models: [], brains: [] },
     hasKey: false,
     loading: false,
+    usage: null,
     error: null,
     ready: false,
 

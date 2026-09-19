@@ -87,6 +87,19 @@ export interface StatusMessage {
   hasKey?: boolean;
   /** The server is rebuilding a population; a large one takes real seconds. */
   loading?: boolean;
+  /** What this run has actually spent. Absent when nothing is metered. */
+  usage?: LLMUsage | null;
+}
+
+/** What the model has cost so far. Mirrors @aw/types. */
+export interface LLMUsage {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+  errors: number;
+  rateLimited: number;
 }
 
 export type ServerMessage =

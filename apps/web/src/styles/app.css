@@ -815,3 +815,25 @@ td.reason {
   align-self: center;
   padding-inline-start: 2px;
 }
+
+/* Metered model spend. Reads as an instrument, not a warning: the number is
+   the point, the breakdown is secondary, and neither should outshout a price. */
+.spend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  line-height: 1.15;
+  padding-inline-start: 4px;
+  white-space: nowrap;
+}
+.spend-value {
+  font: 600 13px/1.15 var(--font-mono, ui-monospace, monospace);
+  color: var(--ink, #e8e8ea);
+  font-variant-numeric: tabular-nums;
+}
+.spend-detail {
+  font: 10px/1.2 var(--font-mono, ui-monospace, monospace);
+  color: var(--ink-dim, #8a8f98);
+  font-variant-numeric: tabular-nums;
+}

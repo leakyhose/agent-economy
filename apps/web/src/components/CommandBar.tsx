@@ -9,15 +9,28 @@ const SCALES = [1, 4, 12];
 /** Round sizes spanning the ledger's 2..320 range, without a free-text box. */
 const HEADCOUNTS = [10, 24, 50, 100, 150, 200, 320];
 
-/** What a run costs per hour, very roughly: a model-backed agent decides a few
- *  times a minute on a prompt of a few hundred tokens. Shown so nobody starts a
- *  300-agent run on the dear model without seeing the number first. */
+/** What a run would cost per hour, very roughly: a model-backed agent decides a
+ *  few times a minute on a prompt of a few hundred tokens. Shown before a run
+ *  starts, so nobody launches 320 agents on the dear model blind. Once the run
+ *  is under way the metered figure replaces it. */
 function costPerHour(price: [number, number] | undefined, agents: number): string | null {
   if (!price || agents <= 0) return null;
   const decisionsPerHour = agents * 0.5 * 60;     // ~half the population, twice a minute
   const usd = decisionsPerHour * (450 / 1e6 * price[0] + 60 / 1e6 * price[1]);
   if (usd < 0.01) return '<$0.01/hr';
   return usd < 1 ? `~$${usd.toFixed(2)}/hr` : `~$${usd.toFixed(usd < 10 ? 1 : 0)}/hr`;
+}
+
+function money(usd: number): string {
+  if (usd === 0) return '$0.00';
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return usd < 10 ? `$${usd.toFixed(3)}` : `$${usd.toFixed(2)}`;
+}
+
+function tokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
 export function CommandBar() {
@@ -48,6 +61,7 @@ export function CommandBar() {
   const catalogue = useSim((s) => s.catalogue);
   const hasKey = useSim((s) => s.hasKey);
   const loading = useSim((s) => s.loading);
+  const usage = useSim((s) => s.usage);
 
   const live = sourceKind === 'live';
   const models = catalogue.models.length > 0 ? catalogue.models : [];
@@ -205,7 +219,32 @@ export function CommandBar() {
               </select>
             </div>
 
-            {cost ? <span className="field-note" title="Very rough: assumes half the population decides twice a minute">{cost}</span> : null}
+            {usage && usage.calls > 0 ? (
+              <div
+                className="spend"
+                title={[
+                  `${usage.calls} model calls`,
+                  `${usage.promptTokens.toLocaleString()} prompt tokens`,
+                  `${usage.completionTokens.toLocaleString()} completion tokens`,
+                  usage.cachedTokens ? `${usage.cachedTokens.toLocaleString()} cached` : null,
+                  usage.errors ? `${usage.errors} errors` : null,
+                  usage.rateLimited ? `${usage.rateLimited} rate limited` : null,
+                  'Priced from this model\u2019s published rate; reset when the world reloads.',
+                ].filter(Boolean).join('\n')}
+              >
+                <span className="spend-value">{money(usage.costUsd)}</span>
+                <span className="spend-detail">
+                  {tokens(usage.promptTokens + usage.completionTokens)} tok
+                  {' \u00b7 '}
+                  {usage.calls} calls
+                  {usage.rateLimited > 0 ? ` \u00b7 ${usage.rateLimited} limited` : ''}
+                </span>
+              </div>
+            ) : cost ? (
+              <span className="field-note" title="Rough forecast: assumes half the population decides twice a minute">
+                {cost}
+              </span>
+            ) : null}
           </>
         )}
       </div>

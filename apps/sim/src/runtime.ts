@@ -10,7 +10,9 @@ import {
   createAgent, createProvider, makeLens,
   type Agent, type EngineKind, type ProviderKind,
 } from '@aw/agents';
-import type { ActionProposal, SimEvent, WorldDefinition, WorldState } from '@aw/types';
+import type {
+  ActionProposal, LLMUsage, SimEvent, WorldDefinition, WorldState,
+} from '@aw/types';
 import { CFG } from './config.ts';
 import { makeSettlement, type Settlement } from './settlement.ts';
 import { settlementsFromFills } from './market-settlement.ts';
@@ -56,6 +58,8 @@ export class Simulation {
   /** Chosen from the dashboard; falls back to the environment's defaults. */
   model: string = CFG.PROVIDER === 'openai' ? CFG.MODEL : 'stub';
   brain: string = CFG.BRAIN;
+  /** Held so the console can read what the run has actually spent. */
+  private provider: { name: string; usage?: () => LLMUsage } | null = null;
 
   constructor(private readonly onFrame: (frame: Frame) => void,
               private readonly log: (line: string) => void = console.log) {
@@ -106,8 +110,10 @@ export class Simulation {
       kind: choice.provider as ProviderKind,
       model: choice.id,
       concurrency: CFG.LLM_CONCURRENCY,
+      ...(choice.price ? { price: choice.price } : {}),
       onFallback: (reason) => this.log(`[sim] ${reason}`),
     });
+    this.provider = provider;
 
     // A population running one policy does not trade: identical agents in
     // identical situations reach identical conclusions, so everyone bids and
@@ -163,6 +169,11 @@ export class Simulation {
     return { min: MIN_AGENTS, max: MAX_AGENTS };
   }
   get catalogue() { return { models: MODELS, brains: BRAINS }; }
+
+  /** What this run has spent so far. Null when nothing is metered. */
+  get usage(): LLMUsage | null {
+    return this.provider?.usage?.() ?? null;
+  }
 
   start(): void { if (this.engine) { this.running = true; this.engine.resume(); } }
   pause(): void { this.running = false; this.engine?.pause(); }

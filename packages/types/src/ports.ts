@@ -63,9 +63,24 @@ export interface Repository {
   loadSnapshot(): Promise<WorldState | null>;
 }
 
+/** What a provider has spent so far. Cost is in US dollars. */
+export interface LLMUsage {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** Tokens served from the provider's cache, where it reports them. */
+  cachedTokens: number;
+  costUsd: number;
+  errors: number;
+  rateLimited: number;
+}
+
 export interface LLMProvider {
   readonly name: string;
   complete(system: string, user: string): Promise<string>;
+  /** Running total for this provider instance. Absent on providers that cost
+   *  nothing to run, so a caller must treat it as optional. */
+  usage?(): LLMUsage;
 }
 
 export type { WorldDefinition, Json };

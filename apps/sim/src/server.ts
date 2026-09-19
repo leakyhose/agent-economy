@@ -63,6 +63,7 @@ export function startServer(port: number) {
     catalogue: sim.catalogue,
     // A model can only be chosen if the server actually has a key for it.
     hasKey: Boolean(process.env['OPENAI_API_KEY']),
+    usage: sim.usage,
   });
 
   wss.on('connection', (ws: WebSocket) => {
@@ -106,7 +107,15 @@ export function startServer(port: number) {
       broadcast(status());
     });
 
-    ws.on('close', () => clients.delete(ws));
+    ws.on('close', () => {
+      clients.delete(ws);
+      // Nobody is watching. A model-backed run would keep spending into an empty
+      // room, so the clock stops until someone comes back and presses Run.
+      if (clients.size === 0 && sim.running) {
+        sim.pause();
+        console.log('[sim] last client disconnected - paused');
+      }
+    });
   });
 
   // The clock. Runs forever; ticks only while the dashboard says to.
