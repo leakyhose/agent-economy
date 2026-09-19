@@ -35,14 +35,14 @@ export const CFG = {
   // cents. A house (~70 coins) can't be bought outright from this, so buying or
   // building one needs savings or a loan. Endowments are a few rounds of runway: enough
   // that nobody starves while the market finds its prices, not enough to live on.
-  START_CASH:  +env.START_CASH  || 6000,
+  START_CASH:  +env.START_CASH  || 10000,
   START_FOOD:  +env.START_FOOD  || 40,
   START_WOOD:  +env.START_WOOD  || 30,
   WARM_ROUNDS: +env.WARM_ROUNDS || 1,                 // each agent's fire burns FIRE_WOOD every N rounds (a meal is every round)
   // Quantities are 5x what they once were (and unit prices a fifth), so nothing is lumpy:
   // no zero-catch shifts, no one-unit trade setting the price everything is valued at.
   MEAL: 5,                                            // food per lifestyle level per meal: lifestyle 2 eats 10
-  FIRE_WOOD: 5,                                       // wood a fire burns each time it is fed
+  FIRE_WOOD: 3,                                       // wood a fire burns each time it is fed
   LLM_CONCURRENCY: +env.LLM_CONCURRENCY || 64,        // every agent decides at once each round: keep it >= AGENTS
   RUN_SECONDS: +env.RUN_SECONDS || 0,                 // 0 = run forever
   PORT:        +env.PORT        || 8787,
@@ -51,8 +51,11 @@ export const CFG = {
 
   // Every job takes one shift, and a shift is one round.
   TASKS: {
-    gather_food: { yield: 10, netYield: 20, place: 'docks' },   // at skill 1: one fisher with a net feeds ~2 people well
-    gather_wood: { yield: 15,               place: 'forest' },
+    // Calibrated so the village runs near capacity, as economies do: a talented fisher with a
+    // net feeds about three people well, a talented woodcutter keeps about four fires and
+    // houses going — so needs take most of the village's labour, and what is left builds.
+    gather_food: { yield: 9, netYield: 18, place: 'docks' },
+    gather_wood: { yield: 12,             place: 'forest' },
     craft_net:   { wood: 20,                place: 'workshop' },
     // A house: the wood (divided by crafting skill, like a net) is used up when the build
     // starts, and the house exists on-chain from then on, unfinished, so it can be pledged
@@ -145,7 +148,7 @@ export const CFG = {
   },
   SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
   ROUND_MS_GUESS: 1500,    // round length assumed before the first round is measured (short is safe: see TERM_SLACK)
-  START_PRICES: [100, 60, 2000, 900, 7000],     // cents: food, wood, nets, labour (one shift's wage), houses
+  START_PRICES: [100, 100, 3000, 1500, 12000],    // cents: food, wood, nets, labour (one shift's wage), houses
   // The price index: a fixed basket (15 meals at lifestyle 1, some firewood, a little of the
   // durables), unchanged since rounds became turns so runs stay comparable. Index 1.00 = this
   // basket at START_PRICES. Inflation is its change over the last INFLATION_ROUNDS.

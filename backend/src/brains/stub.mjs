@@ -34,7 +34,7 @@ export function stubBrain() {
 
       // keep a few rounds of food and firewood; sell the rest, buy what's short
       const keepFood = MEAL * want * 4;
-      const project = v.building !== null ? 0 : crafter && build >= craft ? v.houseWood : crafter ? v.netWood : 0;
+      const project = crafter && build >= craft ? v.trancheWood : crafter ? v.netWood : 0;
       const keepWood = CFG.FIRE_WOOD * 2 + CFG.HOUSE_UPKEEP * v.homes * 4 + project;
       if (v.food > keepFood) order('sell', 'food', v.food - keepFood, p.food * jitter * 0.95);
       if (v.wood > keepWood) order('sell', 'wood', v.wood - keepWood, p.wood * jitter * 0.95);
@@ -73,10 +73,10 @@ export function stubBrain() {
       const g = t.view();
       let act = fish >= cut ? 'gather_food' : 'gather_wood';
       if (crafter && Math.max(craft, build) > Math.max(fish, cut)) {
-        if (g.building !== null) act = 'build_house';
-        else if (build >= craft && g.wood >= v.houseWood) act = 'build_house';
+        if (g.building !== null && g.wood >= v.trancheWood) act = 'build_house';
+        else if (build >= craft && g.wood >= v.trancheWood) act = 'build_house';
         else if (g.wood >= v.netWood && craft > 0) act = 'craft_net';
-      } else if (g.building !== null) act = 'build_house';
+      } else if (g.building !== null && g.wood >= v.trancheWood) act = 'build_house';
       if (v.hunger && v.food < MEAL) act = 'gather_food';
       else if (v.cold && v.wood < CFG.FIRE_WOOD) act = 'gather_wood';
       t.exec(act, { reason: `[stub] ${act.replace('_', ' ')}` });

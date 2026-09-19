@@ -136,6 +136,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // Labour: only your own next shift. Hands you hired are yours to use, not to sell on.
   W.sellable = (a, g) => (g === LABOUR ? Math.min(1, a.goods[g] - a.hands) : holdable(a, g)) - W.reservedGood(a, g);
   W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.skill(a, 'craft_net')));
+  // Building is paid for as it goes: every building shift uses up its share of the house's wood,
+  // so a builder needs a third of the materials to start, not all of them.
+  W.trancheWood = a => Math.ceil(W.houseWood(a) / CFG.TASKS.build_house.shifts);
 
   // ---- wellbeing: the goal ------------------------------------------------------
   const credit = (a, part, x) => { a.wellbeing += x; a.wbParts[part] += x; a.wbNow[part] += x; };
@@ -178,13 +181,13 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       if (W.availGood(a, WOOD) < wood) return `You need ${wood} wood to craft a net; you have ${W.availGood(a, WOOD)} free.`;
       addDelta(a, WOOD, -wood);
     }
-    if (task === 'build_house' && !a.building) {
-      // a new build: the wood goes in now and the (unfinished) house exists from the next settle
-      const wood = W.houseWood(a);
-      if (W.availGood(a, WOOD) < wood) return `You need ${wood} wood to start a house; you have ${W.availGood(a, WOOD)} free.`;
-      addDelta(a, WOOD, -wood); addDelta(a, HOUSES, 1);
-      a.building = { done: 0, wood };
-      emit('build_start', { agent: a.id, name: a.name, wood });
+    if (task === 'build_house') {
+      // every building shift uses its share of the wood; a new build's (unfinished) house exists from the next settle
+      const wood = W.trancheWood(a);
+      if (W.availGood(a, WOOD) < wood) return `A building shift uses ${wood} wood; you have ${W.availGood(a, WOOD)} free. Cut or buy ${wood - W.availGood(a, WOOD)} more (set_buy wood with a higher target gets it for you).`;
+      addDelta(a, WOOD, -wood);
+      if (!a.building) { addDelta(a, HOUSES, 1); a.building = { done: 0, wood: 0 }; emit('build_start', { agent: a.id, name: a.name, wood }); }
+      a.building.wood += wood;
     }
     a.activity = { task, place: T.place, ...(kept ? { kept } : {}) };
     emit('activity', { agent: a.id, name: a.name, task, ...(kept ? { kept } : {}) });
@@ -195,7 +198,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (a.hired) return;                              // its shift is already spoken for
     const j = a.lastJob, task = j && !(j.task === 'build_house' && !a.building) ? j.task : 'idle';
     if (task !== 'idle' && !W.startActivity(a, task, { kept: true })) return;
-    W.startActivity(a, 'idle', { kept: true });
+    // nothing to keep (or no wood for it): nobody stands in the square all day — they go and gather what they gather best
+    W.startActivity(a, W.skill(a, 'gather_food') * CFG.TASKS.gather_food.yield * W.prices[FOOD] >= W.skill(a, 'gather_wood') * CFG.TASKS.gather_wood.yield * W.prices[WOOD]
+      ? 'gather_food' : 'gather_wood', { kept: true });
   };
 
   // ---- a decision: the orders it posts are the agent's orders for this round -------
@@ -214,7 +219,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       if (!plan || a.orders.some(o => o.good === g && o.side === 'sell')) return;
       const bids = a.orders.filter(o => o.good === g && o.side === 'buy');
       if (bids.some(o => o.limit >= plan.min) || (g === LABOUR && bids.length)) return;   // never trade with yourself
-      const qty = g === LABOUR ? Math.min(1, W.sellable(a, g)) : Math.floor(W.sellable(a, g) - plan.keep);
+      const need = g === WOOD && a.building ? W.trancheWood(a) * (W.buildShifts - a.building.done) : 0;
+      const qty = g === LABOUR ? Math.min(1, W.sellable(a, g)) : Math.floor(W.sellable(a, g) - plan.keep - need);
       if (qty < 1) return;
       const o = { agent: a.id, side: 'sell', good: g, qty, limit: plan.min, seq: ++W.seq, stall: true };
       a.orders.push(o);
@@ -228,7 +234,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     endStall(a, ok);
     a.shop.forEach((plan, g) => {
       if (!plan || a.orders.some(o => o.good === g)) return;          // the agent's own order for it, or its stall is selling it
-      const target = g === FOOD ? Math.max(plan.target, 2 * a.lifestyle * CFG.MEAL) : plan.target;
+      const target = g === FOOD ? Math.max(plan.target, 2 * a.lifestyle * CFG.MEAL)
+        : g === WOOD && a.building ? plan.target + W.trancheWood(a) : plan.target;   // a builder orders the next shift's materials
       const free = a.cash - a.orders.filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((t, o) => t + o.qty * o.limit, 0);
       const qty = Math.min(target - W.owned(a, g), Math.floor(free / plan.max));
       if (qty < 1) return;
@@ -246,7 +253,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     return null;
   };
   W.setSale = (a, g, keep, min) => {
-    if (g === LABOUR) keep = 0;
+    // a wage worth taking changes round by round with what one's own shift is worth: no standing offer
+    if (g === LABOUR) return 'Your stall can\'t sell labour: offer your next shift with place_order (sell 1 labour) in the rounds you want to.';
     keep = Math.floor(Number(keep)); min = Math.round(Number(min));
     if (!(keep >= 0) || !(min >= 1)) return 'keep must be 0 or more and min_price positive.';
     a.sale[g] = { keep, min };
@@ -268,7 +276,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       const asked = a.draft.filter(o => o.good === LABOUR && o.side === 'buy').reduce((t, o) => t + o.qty, 0);
       if (side === 'buy' && asked + qty > CFG.MAX_HANDS) return `You can hire at most ${CFG.MAX_HANDS} hands for a round${asked ? ` (you have already bid for ${asked})` : ''}.`;
     }
-    if (side === 'buy' && g === HOUSES && qty * limit > a.cash) return `You have ${(a.cash / 100).toFixed(2)} coins: bid at most that for a house.`;
+    // a house bid beyond the agent's cash is posted at its cash: said in the reply (tools.mjs), not refused
+    if (side === 'buy' && g === HOUSES) { qty = 1; limit = Math.min(limit, a.cash); if (limit < 1) return 'You have no coins to bid with.'; }
     if (side === 'buy' && g !== HOUSES && qty * limit > W.availCash(a))
       return `Not enough free cash: that order needs ${(qty * limit / 100).toFixed(2)}, you have ${(Math.max(0, W.availCash(a)) / 100).toFixed(2)} free — bid at most that in total.`;
     if (side === 'sell' && qty > W.sellable(a, g))
@@ -407,6 +416,11 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     } else if (task === 'build_house') {
       // the house may have been seized or sold (as unfinished it can't be) since the shift began
       for (let h = 0; h <= hands && a.building; h++) {
+        if (h) {                                           // a hand's building shift uses its share of wood too
+          const wood = W.trancheWood(a);
+          if (W.availGood(a, WOOD) < wood) break;
+          addDelta(a, WOOD, -wood); a.building.wood += wood;
+        }
         a.building.done++;
         if (h) by.shifts++;
         if (a.building.done >= W.buildShifts) {
