@@ -64,15 +64,28 @@ footsteps is what "decorative" means — it's what killed Moltlets' credibility 
 ### Account layout
 
 ```rust
-#[account(zero_copy)]                    // 8 + 100*32 bytes
-pub struct Ledger { pub num_agents: u32, pub epoch: u32, pub slots: [AgentSlot; 100] }
+pub const MAX_AGENTS: usize = 320;       // ceiling, see below. Start populated at ~100.
+
+#[account(zero_copy)]                    // 8 + 320*32 = 10,248 bytes
+pub struct Ledger { pub num_agents: u32, pub epoch: u32, pub slots: [AgentSlot; MAX_AGENTS] }
 
 #[zero_copy]
-pub struct AgentSlot {
+pub struct AgentSlot {                   // 32 bytes
     pub cash: u64, pub fish: u32, pub wood: u32, pub ore: u32,
     pub boat: bool, pub axe: bool, pub debt: u64,
 }
 ```
+
+**Start at ~100 agents, but do not hardcode 100.** Size the array to the ceiling and track the
+live count in `num_agents`, so scaling up is a config change and not a migration. Two hard
+walls, and they happen to land in the same place:
+
+- **Anchor `init` caps an account at 10,240 bytes** → 320 slots at 32 bytes each. Past that
+  you need manual allocation or `realloc`.
+- **One V1 transaction holds ~316 orders** at 12 bytes each. Past that the market needs
+  more than one transaction and loses atomicity.
+
+So **~300 agents is the natural ceiling for this design**, and 100 leaves comfortable room.
 
 Plus a thin `AgentIdentity` PDA per agent so the explorer shows real accounts — legitimate
 *because* the health check reads it. This hybrid (thin identity PDAs + one packed hot account)
@@ -236,7 +249,7 @@ frontend renders 20 dots + balances.
 Every version is demoable. Checkpoint to write on the wall: **on-chain clear == off-chain clear
 on the same order set.**
 
-**Descope order:** badge → voice → LLM pricers → twin ghost → newspaper → on-chain auction
+**Descope order:** voice → LLM pricers → twin ghost → newspaper → on-chain auction
 (fallback: clear off-chain, settle on-chain) → lending (never, it's the thesis).
 
 **Working rules:** freeze the byte layout (`Order`, `AgentSlot`, WS message) before splitting
@@ -314,14 +327,24 @@ be a real on-chain instruction a stranger can call.
 
 ---
 
-## 12. Open questions
+## 12. Decisions and what's still open
 
-- 100 agents (village, you can watch someone fish) vs 300 (swarm spectacle, unreadable
-  individuals)? The task-based economy points at 100.
-- Badge Hack ($2,500, zero competition): badge is ESP32-C3, **Lua only, no WiFi/HTTP**, NFC
-  read-only. Bridge would be USB serial → laptop. ~3–4h, **unverified** that a Lua app can
-  write to serial. Only if ahead at 22:00.
-- Rox "Best AI Agent" ($10,000) would mean putting LLM agents visibly back in the loop, which
-  cuts against section 6. Probably don't chase both.
-- Let the audience trade (judge bids on fish from their phone — real wallet, real tx)? Breaks
-  "no outsiders in the world," ~2h. Stretch goal behind repossession.
+**Settled (2026-09-19):**
+
+- **Name:** just `agent-economy`. `Freeport` / `Crownhaven` remain as labels for the two
+  program configs (no-authority vs authority), not as branding.
+- **Agent count:** start at ~100. Design for growth to ~300 — see the ceilings in §3.
+- **Badge Hack: dropped entirely.** Not on the descope ladder, not competing for attention.
+- **Rox "Best AI Agent" ($10,000):** submit to the track as-is, change nothing about the build.
+  Free lottery ticket. Do **not** reweight toward visible LLM decision-making — that trades the
+  heuristic-core defence in §6 for a prize we'd likely lose anyway.
+- **Starting point:** bare repo. The v0 walking skeleton in §8 starts from zero.
+
+**Still open:**
+
+- Let the audience trade (a judge bids on fish from their phone — real wallet, real transaction)?
+  Breaks "no outsiders in the world," ~2h. Stretch goal, sits behind repossession.
+- Voice director, or text/buttons only? Text console is in the plan; voice is a ~45-min skin on
+  top of the same primitives if there's time. Voice was named first-to-cut.
+- Whether to keep the LLM firm-manager pricers (§6) if the schedule tightens — they're the one
+  place LLMs are genuinely defensible, but they're also cuttable.
