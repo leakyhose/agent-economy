@@ -69,6 +69,41 @@ if (last.length) {
   console.log(`held at the end: food ${goods[0]}  wood ${goods[1]}  nets ${goods[2]}  (${(goods[0] / n).toFixed(1)} food per agent)`);
 }
 
+hr('money and the bank');
+if (rounds[0]?.bank) {
+  const sup = rounds.map(r => r.bank.supply), start = meta.config.AGENTS * meta.config.START_CASH;
+  const loans = rounds.flatMap(r => r.bank.loans), fc = rounds.flatMap(r => (r.foreclosures ?? []).map(f => ({ ...f, round: r.round })));
+  const endB = rounds.at(-1).bank;
+  console.log(`money supply ${coins(start)} -> ${coins(sup.at(-1))}   peak ${coins(Math.max(...sup))}   low ${coins(Math.min(...sup))}`);
+  console.log(`loans ${loans.filter(l => l.kind === 'borrow').length} (${coins(loans.filter(l => l.kind === 'borrow').reduce((s, l) => s + l.amount, 0))} minted)   ` +
+    `repayments ${loans.filter(l => l.kind === 'repay').length} (${coins(loans.filter(l => l.kind === 'repay').reduce((s, l) => s + l.amount, 0))} burned)   ` +
+    `still owed ${coins(endB.debtTotal)}   bad debt ${coins(endB.badDebt)}`);
+  console.log(`foreclosures ${fc.length}` + (fc.length ? ': ' + fc.map(f => `r${f.round} ${f.name}${f.seized?.some(q => q) ? ' (collateral seized)' : ''}`).join(', ') : ''));
+  const refused = decisions.flatMap(d => d.actions.filter(x => x.tool === 'borrow' && !x.result.startsWith('Loan requested')));
+  if (refused.length) console.log(`borrow requests refused before reaching the chain: ${refused.length}`);
+  // a price index: food, wood, nets weighted by what a villager uses (8 food : 4 wood : 0.1 net)
+  const cpi = r => (r.prices[0] * 8 + r.prices[1] * 4 + r.prices[2] * 0.1) / (500 * 8 + 300 * 4 + 2000 * 0.1);
+  console.log(`price index 1.00 -> ${cpi(rounds.at(-1)).toFixed(2)}   (money supply x${(sup.at(-1) / start).toFixed(2)})`);
+  const cold = rounds.map(r => r.agents.filter(a => a.cold >= 2).length);
+  console.log(`cold agents per round: avg ${(cold.reduce((s, x) => s + x, 0) / cold.length).toFixed(1)}, max ${Math.max(...cold)}`);
+} else console.log('(run predates the bank)');
+
+// Did agents gravitate to what they're best at, and did doing so pay?
+const bestAt = id => { const sk = meta.agents[id]?.skills; return sk && Object.entries(sk).sort((a, b) => b[1] - a[1])[0][0]; };
+if (meta.agents[0]?.skills) {
+  hr('skills: did agents specialize in what they are best at?');
+  const endCash = final?.chain.slots.map(s => s.cash) ?? last.map(a => a.cash);
+  const rows = meta.agents.map(a => {
+    const mine = decisions.filter(d => d.agent === a.id);
+    return { a, best: bestAt(a.id), share: mine.filter(d => d.activity === bestAt(a.id)).length / Math.max(1, mine.length), cash: endCash[a.id] ?? 0 };
+  });
+  const avg = xs => xs.length ? xs.reduce((s, r) => s + r.cash, 0) / xs.length : 0;
+  const spec = rows.filter(r => r.share >= 0.5), gen = rows.filter(r => r.share < 0.5);
+  console.log(`shifts spent at own best skill: ${pct(rows.reduce((s, r) => s + r.share, 0), rows.length)} on average`);
+  console.log(`specialized (>=50% at best skill): ${spec.length} agents, avg cash ${coins(avg(spec))}   ` +
+    `others: ${gen.length} agents, avg cash ${coins(avg(gen))}`);
+}
+
 hr('final standings (on chain)');
 const standing = (final?.chain.slots ?? last.map(a => ({ cash: a.cash, goods: a.goods }))).map((s, i) => ({ i, ...s }))
   .sort((a, b) => b.cash - a.cash);
@@ -76,7 +111,8 @@ for (const s of standing) {
   const mine = decisions.filter(d => d.agent === s.i);
   const top = {}; for (const d of mine) top[d.activity] = (top[d.activity] ?? 0) + 1;
   const main = Object.entries(top).sort((a, b) => b[1] - a[1])[0];
-  console.log(`${name(s.i).padEnd(9)} cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}   ` +
+  const sk = meta.agents[s.i]?.skills;
+  console.log(`${name(s.i).padEnd(9)} ${sk ? `f${sk.gather_food} w${sk.gather_wood} n${sk.craft_net}  ` : ''}cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}   ` +
     `mostly ${main ? `${main[0]} (${main[1]}/${mine.length})` : '—'}`);
 }
 

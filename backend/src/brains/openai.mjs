@@ -59,12 +59,13 @@ export function openaiBrain() {
         const calls = msg.tool_calls ?? [];
         if (!calls.length) return;
 
+        t.acted.failed = false;
         const results = calls.map(c => {
           let args = {};
           try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* bad JSON: run with no args */ }
           return { role: 'tool', tool_call_id: c.id, content: t.exec(c.function.name, args) };
         });
-        if (t.acted.activity) return;       // chose a shift — done
+        if (t.acted.activity && !t.acted.failed) return;   // chose a shift, nothing refused — done
         messages.push(msg, ...results);
       }
     },

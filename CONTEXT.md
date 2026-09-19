@@ -54,22 +54,43 @@ on-chain. The chain enforces what can't be faked."*
 WORK   →  gather_food / gather_wood / craft_net   (a timed shift, several seconds)
 SELL   →  place limit orders; a batch auction clears once per round, on-chain
 EAT    →  automatic, every few ticks; no food = hunger, which halves output
+WARM   →  automatic, burn 1 wood every 16 ticks; no wood = cold, which also halves output
+BORROW →  pledge wood/nets to the on-chain bank for newly minted coins; repay or be foreclosed
 SPOIL  →  unsold food and wood rot every round; coins never spoil
 ```
 
 Three goods: **food, wood, nets**. A net doubles your fishing catch and is crafted from
-wood. Every agent's only stated goal is to end up with as much money as possible, but
-they must eat, and a hungry agent gathers at half rate.
+wood. **Every agent draws a random skill per job** (0.5–1.5, `CFG.SKILL_RANGE`) from a
+fixed seed (`SEED`), so the same village is reborn every run. Skill multiplies a
+shift's yield and divides the wood a net costs. No job is assigned — agents see their
+skills and choose, so any specialization is emergent. Each agent is also shown what a
+shift of every job earns *at today's prices*, so a good woodcutter can switch to
+fishing when food gets expensive. Every agent's stated goal is to end up with as much
+money as possible **net of bank debt**, but they must eat and keep warm.
 
-**Money is a fixed supply, seeded once.** `AGENTS × START_CASH` coins exist at
-`initialize` and that's all there will ever be — nothing creates or destroys money
-except a trade moving it from one agent's purse to another's. Verified: every saved run
-ends with the same total on-chain cash it started with.
+Wood has two uses: fuel (used up, so wood always has buyers) and nets (capital).
 
-**No credit, no capital beyond nets/tools, no lending, no repossession, no boats.**
-These were all in an earlier design (§8) and are not implemented. The current build is
-a working goods market with real agents, nothing more, nothing less — deliberately, so
-the market and the agent loop could be validated before adding a finance layer on top.
+**Money is created by lending, as in real economies.** Agents start with
+`AGENTS × START_CASH` coins. The only way new coins come into being is the on-chain
+bank: an agent pledges wood/nets and `borrow` mints coins into its purse. `repay`
+burns them (interest burns a bit more). The program tracks `supply` and it always
+equals the sum of every agent's cash — checked on a local validator.
+
+What keeps the money from being worthless — every rule enforced on-chain (`CFG.BANK`):
+- **Backed:** a loan with interest may be at most 50% of the pledged goods' value at the
+  last clearing prices. Food can't be pledged (it rots).
+- **Temporary:** every loan is due ~60s (150 slots) later. Repaying destroys the coins.
+- **Capped:** total outstanding debt ≤ 50% of the starting money supply.
+- **Enforced by anyone:** `liquidate` is **permissionless**. Once the chain's clock
+  passes the due slot, any signer can foreclose: +20% penalty, the debtor's cash is burned
+  toward it, and if that falls short ALL collateral goes to the bank. The simulation's
+  keeper is a separate keypair with no authority, so every foreclosure proves this.
+- **Seized goods are sold, proceeds burned:** the bank posts seized collateral into the
+  auction at 80% of the last price; coins it takes in leave circulation.
+- **Needs:** food and firewood are used up constantly, so everyone always needs coins.
+
+The analyzer reports money supply over time next to a price index. Prices rising much
+faster than supply grows would be the sign of money losing value.
 
 ### Findings from real runs so far (see `backend/runs/`, analyzed with `analyze.mjs`)
 
@@ -78,6 +99,15 @@ the market and the agent loop could be validated before adding a finance layer o
   it — zero trades, frozen price, the whole point of a market absent. Tightening food
   (fewer ticks between meals, lower fishing yield, spoilage) got real trading and a
   moving price (food rose ~30% over one run as it got scarce).
+- **Food was never actually scarce — its price rise was a ratchet.** Across the first
+  three runs agents overproduced food ~1.8× what they ate (100 units rotted in one run),
+  yet the price rose 30–40% and never once fell. Sellers posted at ~1.00× the last
+  price, buyers only appeared when hungry and bid ~1.1×, so every trade was a desperate
+  buyer lifting the ask. Nobody could see the glut: agents were shown only the last
+  price, and an unfilled order expired silently. Fixed: agents now see last round's
+  depth (units offered vs. wanted, best bid/ask) and are told when their order expired
+  unfilled. The first run with this saw food trade in 10/19 rounds (was 6/28) and
+  the first-ever price decline.
 - **Wood is currently a dead market.** Everyone can cut their own wood and craft their
   own net, so nobody needs to buy wood from anyone else — lots of sell orders, almost
   no buy orders, price never moves. The fix is either (a) different agents being better
@@ -98,34 +128,41 @@ the market and the agent loop could be validated before adding a finance layer o
 
 ## 3. What's on Solana today
 
-One Anchor program (`chain/programs/chain/src/lib.rs`), three instructions:
+One Anchor program (`chain/programs/chain/src/lib.rs`), six instructions:
 
 ```rust
-pub const MAX_AGENTS: usize = 320;
+pub const MAX_AGENTS: usize = 200;   // keeps the ledger (9,768 bytes) under the 10 KiB create limit
 pub const N_GOODS: usize = 3;   // food, wood, nets
 
-initialize(num_agents, start_cash, start_food)   // create the ledger, seed purses
+initialize(num_agents, start_cash, start_food, start_wood, terms)  // ledger, purses, bank rules
 settle(deltas: Vec<Delta>)                        // signed goods deltas: catches,
-                                                   //   meals, crafting, spoilage
-clear_auction(good, bids, asks)                   // uniform-price batch auction
+                                                   //   meals, fires, crafting, spoilage
+clear_auction(good, bids, asks)                   // uniform-price batch auction (the bank may sell)
+borrow(agent, amount, collateral)                 // lock wood/nets, MINT coins, record debt
+repay(agent, amount)                              // BURN coins, unlock collateral when paid off
+liquidate(agent)                                  // PERMISSIONLESS foreclosure once overdue
 ```
 
 ```rust
-#[account(zero_copy)]                    // one hot account, 8 + 32 + 8 + 24 + 320*32 bytes
+#[account(zero_copy)]
 pub struct Ledger {
-    pub authority: Pubkey,               // only this key may write — CHECKED on every write
+    pub authority: Pubkey,               // only this key may write — CHECKED on every write but liquidate
     pub num_agents: u32,
     pub round: u32,
     pub last_price: [u64; N_GOODS],
+    pub supply: u64, pub debt_total: u64, pub bad_debt: u64, pub debt_cap: u64,
+    pub ltv_bps: u16, pub rate_bps: u16, pub penalty_bps: u16, pub _pad: u16,
+    pub term_slots: u64,
+    pub bank: AgentSlot,                 // seized collateral awaiting sale
     pub slots: [AgentSlot; MAX_AGENTS],
 }
 #[zero_copy]
-pub struct AgentSlot { pub cash: u64, pub goods: [u32; N_GOODS], pub _pad: u32 }  // 32 bytes
+pub struct AgentSlot { cash: u64, goods: [u32; 3], locked: [u32; 3], debt: u64, due_slot: u64 }  // 48 bytes
 ```
 
-**Every write requires the ledger's `authority` to sign, and the program checks the
-signer matches** (`Write::load_checked`). This closes a real hole from an early
-version, where any transaction could mutate any ledger.
+**Every write except `liquidate` requires the ledger's `authority` to sign, and the
+program checks the signer matches** (`Write::load_checked`). `liquidate` takes any
+signer; the program itself checks the loan is overdue by the chain's `Clock`.
 
 ### What actually happens on-chain, per market round
 
@@ -170,8 +207,8 @@ what fits in one legacy (1232-byte) transaction.
   `mintAuthority: null` moment to show a judge yet.
 - No per-agent on-chain identity (no PDA per agent) — agent #40 is an array index, not
   an account a judge can open in the explorer individually.
-- No permissionless instruction anyone-but-us can call — every write requires our
-  authority signature. The "hand a judge a terminal" demo beat doesn't exist yet.
+- `liquidate` is the one permissionless instruction. There's no standalone CLI yet
+  for a judge to call it from their own terminal. That would be a small script.
 
 ---
 
@@ -209,6 +246,7 @@ would fail.
 ```
 gather_food / gather_wood / craft_net / rest   — choose your next shift (needs a reason)
 place_order                                     — post a limit order for the next round
+borrow / repay                                  — take or pay down a bank loan (settles next round)
 check_market                                    — see recent prices and volumes
 ```
 
@@ -368,7 +406,11 @@ real on-chain instructions. See §8.
 
 ### Still open
 
-- Fixing the dead wood market: differentiated agent skills, or a second use for wood.
+- Wood is still dead even with trades: the first trades run ended with woodcutters
+  holding 25–31 unsold wood each, going hungry and broke (avg cash 22 vs. fishers' 77),
+  and still choosing to cut wood. Netmakers barely crafted and nobody ever bid on a
+  net — LLM agents don't make the capital investment (buy wood → net → more fish) on
+  their own. Needs a second, final-demand use for wood, or stronger net demand.
 - Whether to build the credit/repossession layer (§8) at all given remaining time, or
   stay focused on making the current goods market and its frontend excellent.
 - A real frontend — nothing beyond the barebones dashboard exists yet.

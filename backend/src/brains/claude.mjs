@@ -1,6 +1,6 @@
 // Claude brain. The agent reads its situation, then acts through tools — the same
-// tools the stub uses. One API call per decision in the common case; a second only
-// if it spends its first turn looking around without choosing a shift.
+// tools the stub uses. One API call per decision in the common case; another only
+// if it spends a turn looking around without choosing a shift, or an action was refused.
 import Anthropic from '@anthropic-ai/sdk';
 import { CFG } from '../config.mjs';
 
@@ -54,8 +54,9 @@ export function claudeBrain() {
         const uses = r.content.filter(b => b.type === 'tool_use');
         if (!uses.length) return;
 
+        t.acted.failed = false;
         const results = uses.map(u => ({ type: 'tool_result', tool_use_id: u.id, content: t.exec(u.name, u.input) }));
-        if (t.acted.activity) return;  // chose a shift — done, no need to spend another call
+        if (t.acted.activity && !t.acted.failed) return;  // chose a shift, nothing refused — done
         messages.push({ role: 'assistant', content: r.content }, { role: 'user', content: results });
       }
     },

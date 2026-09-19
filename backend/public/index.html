@@ -27,12 +27,21 @@
   <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div>
   <div class="box" id="book" style="margin:0; min-width:260px; flex:1"></div>
 </div>
+<div id="econ" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
+  <div class="chart" id="k-money"></div><div class="chart" id="k-debt"></div><div class="chart" id="k-jobs"></div>
+  <div class="chart" id="k-needs"></div><div class="chart" id="k-held"></div>
+</div>
+<div id="econ2" style="display:flex; gap:12px; flex-wrap:wrap; margin:10px 0">
+  <div class="box" id="wealth" style="margin:0; width:540px"></div>
+  <div class="box" id="bankfeed" style="margin:0; min-width:300px"></div>
+</div>
 <div class="box" id="events"></div>
 
 <table>
   <thead><tr>
-    <th>agent</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
-    <th class="n">wood</th><th class="n">nets</th><th class="n">hunger</th><th>last thought</th>
+    <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
+    <th class="n">wood</th><th class="n">nets</th><th class="n">hunger</th><th class="n">cold</th>
+    <th class="n">debt</th><th class="n">due</th><th>last thought</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -96,6 +105,107 @@ function chart(g) {
   hit.onmouseleave = () => { hover[g] = null; chart(g); };
 }
 
+// ---- a small multi-line chart over rounds. series: [{ name, color, get(h), dash? }]
+//      stacked: draw as stacked bars instead (for counts that add up, like jobs).
+const khover = {};
+function lines(id, title, series, { fmt = v => v.toFixed(0), stacked = false, note = '', zero = true } = {}) {
+  const el = $(id), h = last.history, W = 300, PH = 110, PAD = 40, top = 6, H = top + PH + 30;
+  const legend = series.map(s => `<span style="color:${s.color}">■ ${s.name} ${fmt(h.length ? s.get(h.at(-1)) : 0)}</span>`).join('  ');
+  const head = `<div class="head"><b>${title}</b></div><div style="font-size:11px">${legend}</div>`;
+  if (h.length < 2) { el.innerHTML = head + '<div style="color:#888;padding:30px 0">waiting for rounds…</div>'; return; }
+  const vals = series.map(s => h.map(s.get));
+  const tops = stacked ? h.map((_, i) => vals.reduce((t, v) => t + v[i], 0)) : vals.flat();
+  let lo = stacked || zero ? Math.min(0, ...vals.flat()) : Math.min(...vals.flat()), hi = Math.max(zero ? 1 : lo + 1, ...tops);
+  if (!zero) { const p = (hi - lo) * 0.1; lo -= p; hi += p; }
+  const x = i => PAD + i / (h.length - 1) * (W - PAD - 4);
+  const y = v => top + (hi - v) / (hi - lo) * PH;
+  let body = '';
+  if (stacked) {
+    const bw = Math.max(1, (W - PAD - 4) / h.length - 1);
+    h.forEach((_, i) => { let acc = 0; series.forEach((s, k) => { const v = vals[k][i]; if (!v) return;
+      body += `<rect x="${x(i) - bw / 2}" y="${y(acc + v)}" width="${bw}" height="${y(acc) - y(acc + v)}" fill="${s.color}"/>`; acc += v; }); });
+  } else {
+    series.forEach((s, k) => { body += `<path d="${vals[k].map((v, i) => `${i ? 'L' : 'M'}${x(i)},${y(v)}`).join(' ')}" fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="4 3"' : ''}/>`; });
+  }
+  const k = khover[id];
+  const tip = k == null ? '' : `<line x1="${x(k)}" x2="${x(k)}" y1="${top}" y2="${top + PH}" stroke="#999" stroke-dasharray="2 2"/>` +
+    `<text x="${x(k) > W / 2 ? x(k) - 6 : x(k) + 6}" y="${top + 10}" text-anchor="${x(k) > W / 2 ? 'end' : 'start'}" font-size="10" fill="#111">` +
+    `r${h[k].round}: ${series.map((s, j) => `${s.name} ${fmt(vals[j][k])}`).join(', ')}</text>`;
+  el.innerHTML = head + `<svg viewBox="0 0 ${W} ${H}">
+    <line x1="${PAD}" x2="${W - 4}" y1="${y(hi)}" y2="${y(hi)}" stroke="#eee"/><line x1="${PAD}" x2="${W - 4}" y1="${y(lo)}" y2="${y(lo)}" stroke="#ccc"/>
+    <text x="${PAD - 4}" y="${y(hi) + 3}" text-anchor="end" font-size="9" fill="#888">${fmt(hi)}</text>
+    <text x="${PAD - 4}" y="${y(lo) + 3}" text-anchor="end" font-size="9" fill="#888">${fmt(lo)}</text>
+    ${body}
+    <text x="${PAD}" y="${top + PH + 12}" font-size="9" fill="#888">round ${h[0].round}</text>
+    <text x="${W - 4}" y="${top + PH + 12}" text-anchor="end" font-size="9" fill="#888">round ${h.at(-1).round}</text>
+    <text x="${PAD}" y="${H - 2}" font-size="9" fill="#666">${note}</text>
+    ${tip}<rect x="${PAD}" y="0" width="${W - PAD}" height="${top + PH}" fill="transparent" data-k="1"/></svg>`;
+  const hit = el.querySelector('rect[data-k]');
+  hit.onmousemove = ev => { const r = hit.getBoundingClientRect();
+    khover[id] = Math.max(0, Math.min(h.length - 1, Math.round((ev.clientX - r.left) / r.width * (h.length - 1)))); econ(); };
+  hit.onmouseleave = () => { khover[id] = null; econ(); };
+}
+
+function econ() {
+  if (!last.history.length || last.history[0].supply === undefined) return;
+  const start = last.bank.startSupply;
+  lines('k-money', 'money in circulation', [
+    { name: 'coins', color: '#2458a6', get: h => h.supply },
+    { name: 'start', color: '#aaa', get: () => start, dash: true },
+  ], { fmt: v => v.toFixed(1), zero: false, note: 'above start = loans minted it; below = burned' });
+  lines('k-debt', 'bank loans', [
+    { name: 'owed to bank', color: '#c77700', get: h => h.debt },
+    { name: 'bad debt (written off)', color: '#b00', get: h => h.badDebt },
+  ], { fmt: v => v.toFixed(1), note: 'bad debt = what foreclosure could not recover' });
+  lines('k-jobs', 'what agents are doing', [
+    { name: 'fish', color: '#2f7fc1', get: h => h.doing.gather_food },
+    { name: 'wood', color: '#8a5a2b', get: h => h.doing.gather_wood },
+    { name: 'craft', color: '#7b4fb0', get: h => h.doing.craft_net },
+    { name: 'idle', color: '#bbb', get: h => h.doing.idle },
+  ], { stacked: true, note: 'agents on each job, per round' });
+  lines('k-needs', 'hungry / cold agents', [
+    { name: 'hungry', color: '#b00', get: h => h.hungry },
+    { name: 'cold', color: '#2a9dbf', get: h => h.cold },
+  ], { note: `out of ${last.agents.length} agents` });
+  lines('k-held', 'goods held by agents', [
+    { name: 'food', color: '#2f7fc1', get: h => h.held[0] },
+    { name: 'wood', color: '#8a5a2b', get: h => h.held[1] },
+    { name: 'nets', color: '#7b4fb0', get: h => h.held[2] },
+  ], { note: 'rising = glut piling up, falling = scarcity' });
+}
+
+// ---- who's rich: cash to the right, debt to the left, net worth = cash - debt
+function wealth() {
+  const ag = [...last.agents].sort((a, b) => (b.cash - b.debt) - (a.cash - a.debt));
+  const max = Math.max(1, ...ag.map(a => Math.max(a.cash, a.debt))), start = last.bank.startSupply / ag.length;
+  const W = 520, L = 90, mid = L + 90, R = W - 80, row = 16;
+  const sx = v => v / max * (R - mid);
+  const bars = ag.map((a, i) => { const yy = i * row + 14;
+    return `<text x="0" y="${yy + 10}" font-size="11">${a.name}</text>` +
+      (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 5}" fill="#c77700"/>` : '') +
+      `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 5}" fill="${a.cash - a.debt >= start ? '#1a7f37' : '#8fbf9a'}"/>` +
+      `<text x="${W}" y="${yy + 10}" font-size="11" text-anchor="end">${(a.cash - a.debt).toFixed(2)}</text>`; }).join('');
+  const sLine = mid + sx(start);
+  $('wealth').innerHTML = `<b>who's winning</b> <span style="color:#666">net worth = cash − debt ` +
+    `(<span style="color:#c77700">■ debt</span> <span style="color:#1a7f37">■ cash</span>, dark = above starting cash)</span>` +
+    `<svg viewBox="0 0 ${W} ${ag.length * row + 20}" width="${W}" height="${ag.length * row + 20}" style="display:block;max-width:100%">${bars}` +
+    `<line x1="${sLine}" x2="${sLine}" y1="10" y2="${ag.length * row + 16}" stroke="#999" stroke-dasharray="3 3"/>` +
+    `<text x="${sLine + 3}" y="9" font-size="9" fill="#888">start ${start.toFixed(0)}</text>` +
+    `<line x1="${mid}" x2="${mid}" y1="10" y2="${ag.length * row + 16}" stroke="#333"/></svg>`;
+}
+
+function bankFeed() {
+  const words = { borrow: ['borrowed', '#c77700'], repay: ['repaid', '#1a7f37'], foreclosed: ['foreclosed, cash taken', '#b00'], seized: ['FORECLOSED, collateral seized', '#b00'] };
+  const items = last.bankFeed.map(f => `<div style="color:${words[f.kind][1]}">r${f.round} · ${f.name} ${words[f.kind][0]} ${f.amount.toFixed(2)}` +
+    (f.seized?.some(q => q) ? ` + ${f.seized.map((q, g) => q ? `${q} ${['food', 'wood', 'nets'][g]}` : '').filter(Boolean).join(', ')}` : '') + `</div>`).join('');
+  const b = last.bank;
+  $('bankfeed').innerHTML = `<b>bank</b><br>in circulation ${b.supply.toFixed(2)} (start ${b.startSupply.toFixed(2)})<br>` +
+    `owed ${b.debt.toFixed(2)} · bad debt ${b.badDebt.toFixed(2)}<br>` +
+    `seized, for sale: ${b.goods.map((q, g) => q ? `${q} ${['food', 'wood', 'nets'][g]}` : '').filter(Boolean).join(', ') || 'nothing'}<br>` +
+    `<span style="color:#666">foreclosures signed by keeper ${b.keeper.slice(0, 8)}… (not the server)</span>` +
+    `<div style="margin-top:6px"><b>loans (recent)</b>${items || '<div style="color:#888">no loans yet</div>'}</div>`;
+}
+
 // ---- the market right now: last round's order book + the latest trades
 function book() {
   const m = last.market;
@@ -124,12 +234,12 @@ async function refresh() {
   if (!running) {
     statusEl.textContent = ` ${s.config.agents} agents, brain: ${s.config.brain}`;
     world.textContent = 'not running'; events.textContent = ''; rows.innerHTML = '';
-    $('market').style.display = 'none';
+    $('market').style.display = 'none'; $('econ').style.display = 'none'; $('econ2').style.display = 'none';
     return;
   }
   statusEl.textContent = ` running ${s.seconds}s · brain: ${s.brain}`;
-  last = s; $('market').style.display = 'flex';
-  chart(0); chart(1); chart(2); book();
+  last = s; $('market').style.display = 'flex'; $('econ').style.display = 'flex'; $('econ2').style.display = 'flex';
+  chart(0); chart(1); chart(2); book(); econ(); wealth(); bankFeed();
 
   const prices = Object.keys(s.prices).map(g => `${g} ${s.prices[g].toFixed(2)} (${s.volumes[g]} sold)`).join(' · ');
   const doing = Object.entries(s.doing).map(([k, v]) => `${k} ${v}`).join(' · ');
@@ -138,7 +248,12 @@ async function refresh() {
     `prices: ${prices}<br>` +
     `doing: ${doing}<br>` +
     `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · ` +
-    `<span class="hungry">hungry ${s.totals.hungry}</span><br>` +
+    `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
+    `bank: money in circulation ${s.bank.supply.toFixed(2)} (started ${s.bank.startSupply.toFixed(2)}) · ` +
+    `owed ${s.bank.debt.toFixed(2)} · bad debt ${s.bank.badDebt.toFixed(2)} · ` +
+    `seized for sale: ${s.bank.goods.map((q, g) => q ? `${q} ${['food', 'wood', 'nets'][g]}` : '').filter(Boolean).join(', ') || 'nothing'}<br>` +
+    (s.foreclosures.length ? `<span class="hungry">foreclosures: ${s.foreclosures.map(f => `r${f.round} ${f.name}`).join(' · ')}</span> ` +
+      `(signed by keeper ${s.bank.keeper.slice(0, 8)}…, not the authority)<br>` : '') +
     `solana: ${s.chain.transactions} transactions · <a target="_blank" href="${s.chain.explorer}">ledger ${s.chain.ledger.slice(0, 8)}…</a>` +
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '');
 
@@ -148,9 +263,12 @@ async function refresh() {
   ).join('') || 'waiting for first market round…';
 
   rows.innerHTML = s.agents.map(a =>
-    `<tr><td>${a.name}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
+    `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
     `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
     `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
+    `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
+    `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
+    `<td class="n ${a.dueIn !== null && a.dueIn <= 0 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + 's'}</td>` +
     `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
   ).join('');
 }

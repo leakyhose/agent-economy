@@ -12,13 +12,13 @@ const REASON = {
 
 export const TOOL_DEFS = [
   { name: 'gather_food',
-    description: `Spend your next shift fishing at the docks. Yields ${CFG.TASKS.gather_food.yield} food, or ${CFG.TASKS.gather_food.netYield} if you own a net. Takes about ${CFG.TASKS.gather_food.ticks * CFG.TICK_MS / 1000}s.`,
+    description: `Spend your next shift fishing at the docks. Owning a net doubles the catch. How much you catch depends on your fishing skill. Takes about ${CFG.TASKS.gather_food.ticks * CFG.TICK_MS / 1000}s.`,
     input_schema: REASON },
   { name: 'gather_wood',
-    description: `Spend your next shift cutting wood in the forest. Yields ${CFG.TASKS.gather_wood.yield} wood. Wood is used to craft nets.`,
+    description: 'Spend your next shift cutting wood in the forest. How much you cut depends on your woodcutting skill. Wood keeps you warm and is used to craft nets.',
     input_schema: REASON },
   { name: 'craft_net',
-    description: `Spend your next shift crafting a fishing net from ${CFG.TASKS.craft_net.wood} wood. A net doubles your catch. Nets can tear.`,
+    description: 'Spend your next shift crafting a fishing net from wood (how much wood depends on your crafting skill). A net doubles its owner\'s catch. Nets can tear.',
     input_schema: REASON },
   { name: 'rest',
     description: 'Do nothing until the next market round.',
@@ -35,6 +35,23 @@ export const TOOL_DEFS = [
         price:    { type: 'number', description: 'coins per unit' },
       },
     } },
+  { name: 'borrow',
+    description: `Borrow newly minted coins from the village bank, enforced on Solana. Pledge wood and/or nets as collateral (food is not accepted): they are locked until the loan is repaid, and locked goods do not rot. You may borrow up to ${CFG.BANK.LTV * 100}% of the collateral's market value, minus ${CFG.BANK.RATE * 100}% interest. The loan is due in about ${Math.round(CFG.BANK.TERM_SLOTS * CFG.SLOT_MS / 1000)}s. If it is not repaid in time, anyone may foreclose: your cash is taken toward the debt plus a ${CFG.BANK.PENALTY * 100}% penalty, and if that is not enough the bank seizes ALL your collateral.`,
+    input_schema: {
+      type: 'object', additionalProperties: false, required: ['amount', 'wood', 'nets', 'reason'],
+      properties: {
+        amount: { type: 'number', description: 'coins to borrow' },
+        wood:   { type: 'integer', minimum: 0, description: 'wood to pledge' },
+        nets:   { type: 'integer', minimum: 0, description: 'nets to pledge' },
+        reason: REASON.properties.reason,
+      },
+    } },
+  { name: 'repay',
+    description: 'Pay coins toward your bank loan. Paid in full, your collateral is released.',
+    input_schema: {
+      type: 'object', additionalProperties: false, required: ['amount'],
+      properties: { amount: { type: 'number', description: 'coins to repay' } },
+    } },
   { name: 'check_market',
     description: 'See recent clearing prices and volumes for every good.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -43,7 +60,7 @@ export const TOOL_DEFS = [
 const ACTIVITIES = new Set(['gather_food', 'gather_wood', 'craft_net', 'rest']);
 
 export function makeTools(W, a) {
-  const acted = { activity: null, orders: 0 };
+  const acted = { activity: null, orders: 0, failed: false };
   const log = { saw: null, actions: [] };      // written to the run log after each decision
 
   function marketText() {
@@ -51,34 +68,80 @@ export function makeTools(W, a) {
     return GOODS.map((g, i) => {
       const now = W.prices[i], then = h[0]?.prices[i] ?? now;
       const pct = then ? Math.round((now - then) / then * 100) : 0;
-      return `${g}: ${coins(now)} (sold ${W.volumes[i]} last round${pct ? `, ${pct > 0 ? '+' : ''}${pct}% recently` : ''})`;
-    }).join('; ');
+      const b = W.lastBook?.[i];
+      const depth = !b ? '' : `; last round ${b.askQty} offered${b.asks ? ` (cheapest ${coins(b.bestAsk)})` : ''}, ` +
+        `${b.bidQty} wanted${b.bids ? ` (best bid ${coins(b.bestBid)})` : ''}, ${W.volumes[i]} sold`;
+      return `${g}: last traded at ${coins(now)}${pct ? ` (${pct > 0 ? '+' : ''}${pct}% recently)` : ''}${depth}`;
+    }).join('\n');
   }
 
   // Everything the agent is told about its situation. The LLM sees this as its prompt.
   function observe() {
     log.saw = describe();
+    a.rotted = [0, 0, 0];                          // shown once, then reset
     return log.saw;
   }
   function describe() {
     const rc = W.reservedCash(a);
     const rf = W.reservedGood(a, FOOD);
+    const F = CFG.TASKS.gather_food, sk = t => W.skill(a, t);
+    // what one shift of each job is worth at today's prices, so switching jobs is a choice
+    const p = W.prices, weak = (a.hunger >= 3 ? CFG.HUNGRY_PENALTY : 1) * (a.cold >= 2 ? CFG.COLD_PENALTY : 1);
+    const fish = (a.goods[NETS] ? F.netYield : F.yield) * sk('gather_food') * weak;
+    const cut = CFG.TASKS.gather_wood.yield * sk('gather_wood') * weak;
+    const due = W.secondsUntilDue(a);
+    const lockedTxt = a.locked.map((q, g) => q ? `${q} ${GOODS[g]}` : '').filter(Boolean).join(' and ');
+    const wanted = g => W.lastBook ? `; last round ${W.lastBook[g].bidQty} ${GOODS[g]} were wanted` : '';
+    // a net's worth to its owner: the extra catch, against the wood it takes
+    const withNet = F.netYield * sk('gather_food') * weak, noNet = F.yield * sk('gather_food') * weak;
+    const netTxt = a.goods[NETS]
+      ? `Your net raises your fishing from ${+noNet.toFixed(1)} to ${+withNet.toFixed(1)} food per shift.`
+      : `A net would raise your fishing from ${+noNet.toFixed(1)} to ${+withNet.toFixed(1)} food per shift ` +
+        `(+${+(withNet - noNet).toFixed(1)} food ≈ +${coins((withNet - noNet) * p[FOOD])} at today's food price). ` +
+        `You can craft one from ${W.netWood(a)} wood (≈${coins(W.netWood(a) * p[WOOD])}) or buy one (last traded at ${coins(p[NETS])}).`;
+    const rot = (a.rotted ?? [0, 0, 0]).map((q, g) => q ? `${q} ${GOODS[g]}` : '').filter(Boolean).join(' and ');
     return [
       `You are ${a.name}.`,
+      `Your skills (1.0 = average): fishing x${sk('gather_food')} → ${+(F.yield * sk('gather_food')).toFixed(1)} food per shift ` +
+        `(${+(F.netYield * sk('gather_food')).toFixed(1)} with a net); woodcutting x${sk('gather_wood')} → ` +
+        `${+(CFG.TASKS.gather_wood.yield * sk('gather_wood')).toFixed(1)} wood per shift; net-crafting x${sk('craft_net')} → a net costs you ${W.netWood(a)} wood.`,
+      `At today's prices one shift earns you about: fishing ${coins(fish * p[FOOD])} (${+fish.toFixed(1)} food${wanted(FOOD)}), ` +
+        `woodcutting ${coins(cut * p[WOOD])} (${+cut.toFixed(1)} wood${wanted(WOOD)}).`,
+      `${netTxt} Nets tear on about 1 fishing shift in ${Math.round(1 / CFG.NET_WEAR)}.`,
       `Cash: ${coins(a.cash)} coins${rc ? ` (${coins(rc)} committed to buy orders)` : ''}.`,
       `Food: ${a.goods[FOOD]}${rf ? ` (${rf} committed to sell)` : ''}. Wood: ${a.goods[WOOD]}. Nets: ${a.goods[NETS]}.`,
-      a.hunger ? `You are HUNGRY — ${a.hunger} missed meal(s). Hungry villagers gather half as much.` : 'You are fed.',
-      `You eat 1 food every ${CFG.EAT_TICKS * CFG.TICK_MS / 1000}s if you have food that isn't committed to a sale.`,
+      a.debt
+        ? `LOAN: you owe the bank ${coins(a.debt)}, due in ${due > 0 ? `about ${due}s` : 'NOW — it can be foreclosed at any moment'}. Pledged: ${lockedTxt}. Your money net of debt: ${coins(a.cash - a.debt)}.`
+        : `No loan. With your free wood and nets pledged, the bank would lend you up to ${coins(W.maxLoan(a, [0, W.availGood(a, WOOD), W.availGood(a, NETS)]))}.`,
+      'Pledged goods are locked with the bank and do not rot.',
+      // same thresholds as finish() in world.mjs
+      a.hunger >= 3 ? `You are HUNGRY — ${a.hunger} missed meals in a row. At 3 or more, your fishing and woodcutting yield half.`
+        : a.hunger ? `You are hungry — ${a.hunger} missed meal(s) in a row. At 3 or more, your fishing and woodcutting yield half.` : 'You are fed.',
+      a.cold >= 2 ? `You are COLD — ${a.cold} missed fires in a row. At 2 or more, your fishing and woodcutting yield half.`
+        : a.cold ? 'Your fire went out once. At 2 missed fires in a row, your fishing and woodcutting yield half.' : 'You are warm.',
+      `You eat 1 food every ${CFG.EAT_TICKS * CFG.TICK_MS / 1000}s and burn 1 wood every ${CFG.WARM_TICKS * CFG.TICK_MS / 1000}s, from goods not committed to a sale.`,
       `Every market round about ${Math.round(CFG.SPOIL[FOOD] * 100)}% of your free food and ${Math.round(CFG.SPOIL[WOOD] * 100)}% of your free wood rots. Coins never spoil.`,
-      `Market (round ${W.round}): ${marketText()}.`,
+      rot ? `Since your last decision: ${rot} rotted.` : '',
+      `Market (round ${W.round}):\n${marketText()}`,
+      `Coins in circulation: ${coins(W.bank.supply)} (${coins(W.bank.debtTotal)} of it owed to the bank).`,
       a.memory.length ? `Recently:\n- ${a.memory.join('\n- ')}` : '',
       'Choose your next shift.',
     ].filter(Boolean).join('\n');
   }
 
+  // A refused action is flagged (the brain gets another turn) and remembered.
+  let refused = null;
+  const no = msg => { refused = msg; return msg; };
   function exec(name, input = {}) {
+    refused = null;
     const result = run(name, input);
-    log.actions.push({ tool: name, input, result });
+    if (refused) {
+      acted.failed = true;
+      const what = name === 'place_order' ? `place_order ${input.side} ${input.quantity} ${input.good}`
+        : name === 'borrow' ? `borrow ${input.amount}` : name === 'repay' ? `repay ${input.amount}` : name;
+      W.remember(a, `Rejected: ${what} — ${refused}`);
+    }
+    log.actions.push({ tool: name, input, result, ...(refused ? { rejected: true } : {}) });
     return result;
   }
   function run(name, input) {
@@ -86,7 +149,7 @@ export function makeTools(W, a) {
       if (acted.activity) return `You already chose to ${acted.activity} this shift.`;
       const task = name === 'rest' ? 'idle' : name;
       const err = W.startActivity(a, task);
-      if (err) return err;
+      if (err) return no(err);
       acted.activity = name;
       if (input.reason) a.thought = String(input.reason).slice(0, 240);
       return name === 'rest' ? 'You rest until the next market round.'
@@ -94,22 +157,35 @@ export function makeTools(W, a) {
     }
     if (name === 'place_order') {
       const g = GOOD_INDEX[input.good];
-      if (g === undefined) return `Unknown good "${input.good}".`;
+      if (g === undefined) return no(`Unknown good "${input.good}".`);
       const err = W.placeOrder(a, input.side, g, input.quantity, Math.round(input.price * 100));
-      if (err) return err;
+      if (err) return no(err);
       acted.orders++;
       return `Order posted: ${input.side} ${input.quantity} ${input.good} at ${Number(input.price).toFixed(2)}. It clears at the next round.`;
     }
+    if (name === 'borrow') {
+      const err = W.requestBorrow(a, Number(input.amount) * 100, [0, Math.floor(input.wood ?? 0), Math.floor(input.nets ?? 0)]);
+      if (err) return no(err);
+      if (input.reason) a.thought = String(input.reason).slice(0, 240);
+      return `Loan requested: ${Number(input.amount).toFixed(2)} coins. You can spend them now; the chain confirms at the next round.`;
+    }
+    if (name === 'repay') {
+      const err = W.requestRepay(a, Number(input.amount) * 100);
+      return err ? no(err) : `Repayment of up to ${Number(input.amount).toFixed(2)} sent; it settles at the next round.`;
+    }
     if (name === 'check_market') return marketText();
-    return `Unknown tool "${name}".`;
+    return no(`Unknown tool "${name}".`);
   }
 
   // structured view for the stub brain (the LLM gets observe() text instead)
   function view() {
     return {
-      cash: a.cash, availCash: W.availCash(a), hunger: a.hunger,
+      cash: a.cash, availCash: W.availCash(a), hunger: a.hunger, cold: a.cold,
       food: W.availGood(a, FOOD), wood: W.availGood(a, WOOD), nets: W.availGood(a, NETS),
       prices: { food: W.prices[FOOD] / 100, wood: W.prices[WOOD] / 100, nets: W.prices[NETS] / 100 },
+      skills: a.skills, netWood: W.netWood(a), debt: a.debt, dueIn: W.secondsUntilDue(a),
+      maxLoan: W.maxLoan(a, [0, W.availGood(a, WOOD), W.availGood(a, NETS)]),
+      yields: { food: CFG.TASKS.gather_food.yield * W.skill(a, 'gather_food'), wood: CFG.TASKS.gather_wood.yield * W.skill(a, 'gather_wood') },
     };
   }
 
