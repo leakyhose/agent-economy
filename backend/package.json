@@ -1,0 +1,14 @@
+{
+  "name": "agent-economy-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "stub": "BRAIN=stub node src/server.mjs",
+    "claude": "BRAIN=claude node src/server.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@solana/web3.js": "^1.99.0"
+  }
+}

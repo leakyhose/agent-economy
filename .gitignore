@@ -10,3 +10,5 @@ chain/test-ledger/
 chain/app/node_modules/
 chain/app/package-lock.json
 *.bak
+.env
+backend/node_modules/
