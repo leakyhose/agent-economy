@@ -1,9 +1,10 @@
-// The village: a clock, agents doing timed work, eating, and an order book that
-// the chain clears every round. Goods changes are queued as deltas and settled on
-// Solana each round; after every round the local view is replaced by what the
-// chain says. The chain is the source of truth — this file is a fast mirror.
+// The village, turn by turn: every round all agents decide, then everyone works a shift,
+// eats, keeps warm, goods rot, and each round's orders clear on-chain.
+// Goods changes are queued as deltas and settled on Solana each round; after every round
+// the local view is replaced by what the chain says. The chain is the source of truth —
+// this file is a fast mirror.
 import { CFG, GOODS, FOOD, WOOD, NETS, HOUSES } from './config.mjs';
-import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, liquidatable, collects, accruedDebt, dividendPerAgent } from './chain.mjs';
+import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, liquidatable, accruedDebt } from './chain.mjs';
 
 const S1 = ['Ka', 'Lo', 'Mi', 'Ro', 'Te', 'Su', 'Na', 'Vi', 'Jo', 'Pe', 'Di', 'Ha', 'Ba', 'Fe', 'Gu', 'Ze'];
 const S2 = ['ra', 'no', 'li', 'ko', 'sa', 'ta', 'vi', 'mo', 'ne', 'du', 'ri', 'la'];
@@ -30,20 +31,22 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     cash: s.cash, goods: [...s.goods],              // mirror: chain + pending deltas
     chain: { cash: s.cash, goods: [...s.goods] },   // last confirmed on-chain state
     locked: none(), debt: 0, principal: 0, dueSlot: 0, accruedSlot: 0,   // the bank loan, mirrored from chain (debt as last accrued)
-    dividends: 0,                                   // bank dividends received, in total
-    activity: null,
+    dueRound: null,                                 // the round the loan is due at (the chain counts slots; see TERM_SLACK)
+    activity: null,                               // this round's shift (kept after it's worked, for the dashboard)
+    lastJob: null,                                  // last round's shift: kept when the agent doesn't answer in time
+    orders: [],                                     // this round's orders: { agent, side, good, qty, limit, seq }; all expire when it clears
+    draft: null,                                    // orders posted during the decision in progress; they become `orders` when it ends
     hunger: 0, cold: 0,
     lifestyle: CFG.LIFESTYLE_START,                 // food per meal, the agent's standing choice
-    wellbeing: 0,                                   // total over the run (the goal, with net worth at the end)
-    wbParts: { eating: 0, warmth: 0, house: 0, rest: 0 },   // the same total, by source
-    wbNow: { eating: 0, warmth: 0, house: 0, rest: 0 },     // the meal period in progress
+    wellbeing: 0,                                   // total over the run: the goal, and the whole score
+    wbParts: { eating: 0, warmth: 0, house: 0 },    // the same total, by source
+    wbNow: { eating: 0, warmth: 0, house: 0 },      // the meal period in progress
     wbRecent: [],                                   // the last few meal periods, by source
-    shifts: { gather_food: 0, gather_wood: 0, craft_net: 0, build_house: 0, rest: 0, idle: 0 },   // finished shifts, by kind (idle = not chosen)
+    shifts: { gather_food: 0, gather_wood: 0, craft_net: 0, build_house: 0, idle: 0 },   // finished shifts, by kind (idle = not chosen)
     building: null,                                 // a house under construction: { done, wood } (it is already one of goods[HOUSES])
     housesBuilt: 0,
     fills: null,                                    // how the agent's orders did in the last round it traded in
-    eatPhase: i % CFG.EAT_TICKS,
-    warmPhase: (i * 3) % CFG.WARM_TICKS,
+    warmPhase: i % CFG.WARM_ROUNDS,
     thought: 'just arrived in the village',
     memory: [],
     traits: { patience: +rnd().toFixed(2), risk: +rnd().toFixed(2) },
@@ -51,29 +54,28 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     decisions: 0,
   }));
 
-  const emptyBook = () => GOODS.map(() => []);
   const W = {
     agents, tick: 0, round: 0,
     prices: [...initial.lastPrice],
     priceHistory: [], volumes: none(),
-    pending: [], book: emptyBook(), inflight: null,
+    pending: [], seq: 0,                             // seq: arrival order of orders, for price-time priority
     events: [], roundBusy: false, lastRound: null, lastBook: null, settlersSupply: null,
+    lastLadder: null,                                // last round's book before clearing, per good (D6)
+    bankSale: {},                                    // per good: the bank's descending sale of seized goods, { anchor, k }
+    slotsPerRound: CFG.ROUND_MS_GUESS / CFG.SLOT_MS, roundMs: CFG.ROUND_MS_GUESS,   // measured every round
     loanOps: [], opsInflight: [],                    // borrow/repay requests for the next round / being sent now
     bankLog: [],                                     // every loan, repayment and foreclosure, for the dashboard
     slot: 0,                                         // the chain's clock, read every round
     bank: null,                                      // the bank's books, from the chain every round
-    marginCalls: 0, overdue: 0,                      // foreclosures so far, by cause
+    overdue: 0,                                      // foreclosures so far (the keeper only acts on overdue loans)
     autoRepaid: 0,                                   // overdue loans collected from the debtor's cash, no penalty
     housesBuilt: 0,                                  // houses finished so far
-    made: none(), shiftsNow: { worked: 0, rested: 0, idle: 0 },   // this round's output and finished shifts (for GDP, employment)
+    made: none(), shiftsNow: { worked: 0, idle: 0 },  // this round's output and finished shifts (for GDP, employment)
     slotAt: Date.now(),                              // when W.slot was read
-    // the shared fish lake: stock now, and last round's catch and regrowth
-    lake: { capacity: CFG.LAKE.CAPACITY * agents.length, stock: CFG.LAKE.CAPACITY * agents.length * CFG.LAKE.START,
-            caught: 0, regrew: 0, caughtNow: 0 },
+    roundSlot: initial.slot, roundAt: Date.now(),    // the chain's slot and the time when the last round ended
   };
-  const bankView = L => ({ supply: L.supply, debtTotal: L.debtTotal, debtTotalNow: L.debtTotalNow, badDebt: L.badDebt, goods: [...L.bank.goods], cash: L.bank.cash,
-    terms: L.terms, books: L.books, equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired,
-    lastDividend: W.bank?.lastDividend ?? null });
+  const bankView = L => ({ supply: L.supply, debtTotal: L.debtTotal, debtTotalNow: L.debtTotalNow, badDebt: L.badDebt, goods: [...L.bank.goods], cash: L.bank.cash, bankBook: [...L.bankBook],
+    terms: L.terms, books: L.books, equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired });
   W.bank = bankView(initial);
   W.slot = initial.slot;
 
@@ -84,8 +86,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   };
   const remember = (a, line) => { a.memory.push(line); if (a.memory.length > 6) a.memory.shift(); };
 
-  // ---- reservations: what an agent has promised to open orders ----------------
-  const ordersOf = (a) => [...W.book.flat(), ...(W.inflight?.flat() ?? [])].filter(o => o.agent === a.id);
+  // ---- reservations: what an agent has promised to its orders -----------------
+  // During a decision, the orders posted so far; after it, this round's orders.
+  const ordersOf = a => a.draft ?? a.orders;
   W.reservedCash = a => ordersOf(a).filter(o => o.side === 'buy').reduce((s, o) => s + o.qty * o.limit, 0);
   W.reservedGood = (a, g) => ordersOf(a).filter(o => o.side === 'sell' && o.good === g).reduce((s, o) => s + o.qty, 0);
   W.availCash = a => a.cash - W.reservedCash(a);
@@ -102,29 +105,24 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.hasHouse = a => W.owned(a, HOUSES) - W.unfinished(a) >= 1;
   // What can be sold: free goods, less a house under construction. Pledged houses are
   // counted as the unfinished one first, so a free finished house stays sellable.
-  W.sellable = (a, g) => W.availGood(a, g) - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
+  const holdable = (a, g) => a.goods[g] - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
+  W.sellable = (a, g) => holdable(a, g) - W.reservedGood(a, g);
   W.houseWood = a => Math.max(1, Math.round(CFG.TASKS.build_house.wood / W.skill(a, 'craft_net')));
 
   // ---- wellbeing: the goal ------------------------------------------------------
   const credit = (a, part, x) => { a.wellbeing += x; a.wbParts[part] += x; a.wbNow[part] += x; };
-  W.lakeShare = () => W.lake.stock / W.lake.capacity;
+  // Fishing conditions, one multiplier. A function, not a constant: Phase 5 moves it mid-run.
+  W.catch = () => CFG.CATCH;
   // Sell-through over the last few rounds: units sold of units offered, per good (1 when nothing was offered).
   W.recentSales = (g, rounds = 5) => {
     const h = W.priceHistory.slice(-rounds);
     return { sold: h.reduce((s, r) => s + (r.volumes[g] ?? 0), 0), offered: h.reduce((s, r) => s + (r.offered?.[g] ?? 0), 0) };
   };
-  W.sellThrough = (g, rounds = 5) => { const r = W.recentSales(g, rounds); return r.offered ? Math.min(1, r.sold / r.offered) : 1; };
-  // What a good is worth for net worth: its last price × the share of what was offered in
-  // the last MARK_ROUNDS that actually sold — so a glut nobody buys isn't counted at the
-  // last price. A minute's window, so one unsold offer in a thin market (houses) doesn't swing it.
-  const MARK_ROUNDS = 20;
-  W.markPrice = g => W.prices[g] * W.sellThrough(g, MARK_ROUNDS);
-  // Net worth: cash, plus every good held (pledged too) at markPrice, minus debt with the
+  // Net worth: cash, plus every good held (pledged too) at its last price, minus debt with the
   // interest accrued to now. A house under construction counts as the wood in it. Cents.
-  W.wealth = a => a.cash - W.debtNow(a) + GOODS.reduce((s, _, g) => s + W.owned(a, g) * W.markPrice(g), 0) -
-    (a.building ? W.markPrice(HOUSES) - a.building.wood * W.markPrice(WOOD) : 0);
-  // The score the goal names: wellbeing so far plus net worth at COINS_PER_POINT.
-  W.score = a => a.wellbeing + W.wealth(a) / 100 / CFG.WELLBEING.COINS_PER_POINT;
+  // It is no longer part of the score — only collateral, the standings and the metrics use it.
+  W.wealth = a => a.cash - W.debtNow(a) + GOODS.reduce((s, _, g) => s + W.owned(a, g) * W.prices[g], 0) -
+    (a.building ? W.prices[HOUSES] - a.building.wood * W.prices[WOOD] : 0);
   W.setLifestyle = (a, level) => {
     level = Math.round(Number(level));
     if (!(level >= 1 && level <= 3)) return 'Lifestyle must be 1, 2 or 3 (food per meal).';
@@ -139,8 +137,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.buildShifts = CFG.TASKS.build_house.shifts;
 
   // ---- what agents can do (called through tools.mjs) --------------------------
-  // rest: true when the agent chose to rest (worth wellbeing); the server's fallback idle is not.
-  W.startActivity = (a, task, { rest = false } = {}) => {
+  // kept: the agent didn't decide in time and repeats its last job.
+  W.startActivity = (a, task, { kept = false } = {}) => {
     const T = CFG.TASKS[task];
     if (task === 'craft_net') {
       const wood = W.netWood(a);
@@ -155,31 +153,36 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       a.building = { done: 0, wood };
       emit('build_start', { agent: a.id, name: a.name, wood });
     }
-    a.activity = { task, endsAt: W.tick + T.ticks, place: T.place, ...(rest ? { rest } : {}) };
-    emit('activity', { agent: a.id, name: a.name, task });
+    a.activity = { task, place: T.place, ...(kept ? { kept } : {}) };
+    emit('activity', { agent: a.id, name: a.name, task, ...(kept ? { kept } : {}) });
     return null;
   };
-
-  // What an agent holds that could become cash, from real numbers: demand last round
-  // and what the bank would lend against it.
-  const cashSources = a => {
-    const free = W.freePledge(a);
-    const held = GOODS.map((_, g) => g).filter(g => free[g] > 0).map(g => {
-      const b = W.lastBook?.[g];
-      return `${free[g]} free ${GOODS[g]}` + (b ? `: last round ${b.bidQty} were wanted${b.bids ? ` at up to ${(b.bestBid / 100).toFixed(2)}` : ''}` : '');
-    });
-    if (!held.length) return ' (You hold nothing free that the bank takes as collateral.)';
-    return ` (You hold ${held.join('; ')}. Pledged, ${held.length > 1 ? 'they' : 'it'} would let you borrow up to ${(W.maxLoan(a, free) / 100).toFixed(2)}.)`;
+  // No decision in time (or no shift chosen): the agent keeps its last job if it still can.
+  W.keepJob = a => {
+    const j = a.lastJob, task = j && !(j.task === 'build_house' && !a.building) ? j.task : 'idle';
+    if (task !== 'idle' && !W.startActivity(a, task, { kept: true })) return;
+    W.startActivity(a, 'idle', { kept: true });
   };
-  W.placeOrder = (a, side, g, qty, limit) => {
+
+  // ---- a decision: the orders it posts are the agent's orders for this round -------
+  W.beginDecision = a => { a.draft = []; a.lastJob = a.activity; a.activity = null; };
+  // ok: the agent answered in time. Otherwise it has no orders this round.
+  W.endDecision = (a, ok) => { a.orders = ok ? a.draft : []; a.draft = null; };
+
+  W.placeOrder = (a, side, g, qty, limit, reason) => {
     qty = Math.floor(qty); limit = Math.round(limit);
+    if (!a.draft) return 'This round has already run; nothing was done.';
     if (qty < 1 || limit < 1) return 'Quantity and price must be positive.';
+    // no trading with yourself: a self-trade could print a price (the collateral price) in an empty book
+    const cross = a.draft.find(o => o.good === g && o.side !== side && (side === 'buy' ? o.limit <= limit : o.limit >= limit));
+    if (cross) return `That would cross your own ${cross.side} order for ${GOODS[g]} at ${(cross.limit / 100).toFixed(2)}: you can't trade with yourself.`;
     if (side === 'buy' && qty * limit > W.availCash(a))
-      return `Not enough free cash: that order needs ${(qty * limit / 100).toFixed(2)}, you have ${(W.availCash(a) / 100).toFixed(2)}.${cashSources(a)}`;
+      return `Not enough free cash: that order needs ${(qty * limit / 100).toFixed(2)}, you have ${(Math.max(0, W.availCash(a)) / 100).toFixed(2)} free — bid at most that in total.`;
     if (side === 'sell' && qty > W.sellable(a, g))
       return `You only have ${Math.max(0, W.sellable(a, g))} ${GOODS[g]} free to sell${g === HOUSES && a.building ? ' (a house under construction can\'t be sold)' : ''}.`;
-    W.book[g].push({ agent: a.id, side, good: g, qty, limit });
-    emit('order', { agent: a.id, name: a.name, side, good: GOODS[g], qty, price: limit });
+    const seq = ++W.seq;
+    a.draft.push({ agent: a.id, side, good: g, qty, limit, seq });
+    emit('order', { agent: a.id, name: a.name, side, good: GOODS[g], qty, price: limit, seq, ...(reason ? { reason: String(reason).slice(0, 200) } : {}) });
     return null;
   };
 
@@ -191,7 +194,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.debtNow = (a, slot = W.nowSlot()) => accruedDebt(a, W.bank.terms, slot);
   W.slotsPerMin = () => Math.round(60_000 / CFG.SLOT_MS);
   W.ratePerMin = () => W.bank.terms.rateBps / 10_000 * W.slotsPerMin() / W.bank.terms.ratePeriodSlots;
-  W.termMinutes = () => W.bank.terms.allowedTerms.map(t => t / W.slotsPerMin());
+  // Interest is charged by the slot, so what a round costs depends on how long rounds take: measured.
+  W.ratePerRound = () => W.bank.terms.rateBps / 10_000 * W.slotsPerRound / W.bank.terms.ratePeriodSlots;
+  W.termRounds = () => CFG.BANK.TERM_ROUNDS;
+  W.termSlots = rounds => Math.min(65_535, Math.max(1, Math.floor(rounds * W.slotsPerRound * CFG.BANK.TERM_SLACK)));
   // The mirror moves at once (so an agent can spend a loan in the same breath), and is
   // replaced by what the chain actually did when the round settles.
   const applyLoan = (a, op) => {
@@ -200,7 +206,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (op.kind === 'borrow') {
       // a new loan's clock starts now (the chain's own due slot replaces this when it settles);
       // a top-up keeps its due slot
-      if (!a.debt) a.dueSlot = now + op.termSlots;
+      if (!a.debt) { a.dueSlot = now + op.termSlots; a.dueRound = op.dueRound; }
       a.cash += op.amount; a.debt += op.amount; a.principal += op.amount;
       op.collateral.forEach((q, g) => { a.goods[g] -= q; a.locked[g] += q; });
     } else {
@@ -212,44 +218,45 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     }
   };
   W.collateralValue = locked => locked.reduce((s, q, g) => s + q * W.prices[g], 0);
-  W.freePledge = a => GOODS.map((_, g) => PLEDGEABLE[g] ? Math.max(0, W.availGood(a, g)) : 0);
+  // What an agent could pledge right now. A house under construction is worth nothing and
+  // can't be sold, so the bank doesn't take one: only finished, unreserved houses count.
+  W.pledgeable = (a, g) => PLEDGEABLE[g] ? Math.max(0, g === HOUSES ? W.sellable(a, g) : W.availGood(a, g)) : 0;
+  W.freePledge = a => GOODS.map((_, g) => W.pledgeable(a, g));
   // What the bank may still lend anyone: its capital caps all loans at equity / kappa
   // (the chain's lendingCap, against debt as last accrued). Loans asked for but not yet on-chain count too.
   W.bankCommitted = () => W.bank.debtTotal +
     [...W.opsInflight, ...W.loanOps].filter(o => o.kind === 'borrow').reduce((s, o) => s + o.amount, 0);
   W.bankRoom = () => Math.max(0, W.bank.lendingCap - W.bankCommitted());
   // new coins the bank would lend on top of what's owed: the collateral limit, and the bank's
-  // capital. The debt is taken as it will be a round from now, when the request lands.
-  const SOON = Math.ceil(CFG.ROUND_TICKS * CFG.TICK_MS * 2 / CFG.SLOT_MS);
+  // capital. The debt is taken as it will be when the request lands: after the decisions, at settlement.
+  const SOON = Math.ceil((CFG.DECIDE_TIMEOUT_MS + 2000) / CFG.SLOT_MS);
   W.loanLimits = (a, extra = none()) => {
     const value = W.collateralValue((a.debt > 0 ? a.locked : none()).map((q, g) => q + extra[g]));
     const owed = a.debt ? W.debtNow(a, W.nowSlot() + SOON) : 0;
     return { collateral: Math.max(0, Math.floor(value * W.bank.terms.ltvBps / 10_000) - owed), bank: W.bankRoom() };
   };
   W.maxLoan = (a, extra) => { const l = W.loanLimits(a, extra); return Math.min(l.collateral, l.bank); };
-  // Pledging a house under construction makes it a construction loan (for the log).
-  W.requestBorrow = (a, amount, collateral, termMinutes) => {
+  W.requestBorrow = (a, amount, collateral) => {
     amount = Math.round(amount);
-    const t = W.bank.terms, terms = W.termMinutes();
+    const t = W.bank.terms, termRounds = W.termRounds();
     if (amount < 1) return 'Borrow a positive amount.';
     if (!t.ltvBps) return 'The bank is not lending: credit is switched off.';
-    if (a.debt && W.nowSlot() > a.dueSlot) return 'Your loan is overdue: it can\'t be topped up, only repaid or collected.';
-    termMinutes = Math.round(Number(termMinutes));
-    if (!a.debt && !terms.includes(termMinutes)) return `Choose a term of ${terms.join(', ')} minutes.`;
+    if (a.debt && (W.nowSlot() > a.dueSlot || (a.dueRound && W.round + 1 >= a.dueRound)))
+      return 'Your loan is due: it can\'t be topped up, only repaid or collected.';
     if (collateral.some((q, g) => q && !PLEDGEABLE[g])) return `The bank does not take ${GOODS.filter((_, g) => collateral[g] && !PLEDGEABLE[g]).join(' or ')} as collateral${collateral[FOOD] ? ' (food rots)' : ''}.`;
-    for (let g = 0; g < GOODS.length; g++) if (collateral[g] > W.availGood(a, g))
-      return `You only have ${W.availGood(a, g)} ${GOODS[g]} free to pledge.`;
+    for (let g = 0; g < GOODS.length; g++) if (collateral[g] > W.pledgeable(a, g))
+      return `You only have ${W.pledgeable(a, g)} ${GOODS[g]} free to pledge` +
+        (g === HOUSES && a.building ? ' (a house under construction can\'t be pledged).' : '.');
     const lim = W.loanLimits(a, collateral);
     if (amount > lim.collateral) return `Not enough collateral: that pledge lets you borrow at most ${(lim.collateral / 100).toFixed(2)}.`;
     if (amount > lim.bank) return `The bank cannot lend that much: its capital (${(W.bank.equity / 100).toFixed(2)}) lets it lend ` +
       `at most ${(W.bank.lendingCap / 100).toFixed(2)} in all, and ${(W.bankCommitted() / 100).toFixed(2)} is already owed or requested. ` +
       `It can lend you at most ${(lim.bank / 100).toFixed(2)} right now.`;
-    const construction = a.building && collateral[HOUSES] > 0 && a.locked[HOUSES] < W.unfinished(a);
     // a top-up keeps its due slot on-chain, whatever term is sent; send the shortest
-    const op = { kind: 'borrow', agent: a.id, amount, termSlots: a.debt ? t.allowedTerms[0] : termMinutes * W.slotsPerMin(), collateral,
-                 topUp: !!a.debt, ...(construction ? { construction } : {}) };
+    const op = { kind: 'borrow', agent: a.id, amount, termSlots: a.debt ? 1 : W.termSlots(termRounds), collateral,
+                 topUp: !!a.debt, ...(a.debt ? {} : { termRounds, dueRound: W.round + 1 + termRounds }) };
     W.loanOps.push(op); applyLoan(a, op);
-    emit('borrow', { agent: a.id, name: a.name, amount, term: op.topUp ? null : termMinutes, collateral, construction });
+    emit('borrow', { agent: a.id, name: a.name, amount, term: op.topUp ? null : termRounds, termSlots: op.termSlots, collateral });
     return null;
   };
   W.requestRepay = (a, amount) => {
@@ -264,27 +271,25 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     emit('repay', { agent: a.id, name: a.name, amount: all });
     return null;
   };
-  W.secondsUntilDue = a => a.debt ? Math.round((a.dueSlot - W.nowSlot()) * CFG.SLOT_MS / 1000) : null;
+  // Rounds left before the loan is collected, counting the coming one (0 = overdue).
+  W.roundsUntilDue = a => a.debt && a.dueRound ? Math.max(0, a.dueRound - W.round) : null;
 
-  // ---- the clock -------------------------------------------------------------
+  // ---- a round's work, meals, fires and rot ----------------------------------------
   function finish(a) {
     const { task } = a.activity;
     const T = CFG.TASKS[task];
-    const weak = (a.hunger >= 3 ? CFG.HUNGRY_PENALTY : 1) * (a.cold >= 2 ? CFG.COLD_PENALTY : 1);
     if (task === 'gather_food') {
       // a pledged net fishes too; only a free one can tear (the chain holds the pledged one)
       const hasNet = W.usableNets(a) > 0, freeNet = W.availGood(a, NETS) > 0;
-      const share = W.lakeShare();
-      const got = Math.min(Math.floor(W.lake.stock), roll((hasNet ? T.netYield : T.yield) * W.skill(a, task) * weak * share));
-      W.lake.stock -= got; W.lake.caughtNow += got; W.made[FOOD] += got;
+      const got = roll((hasNet ? T.netYield : T.yield) * W.skill(a, task) * W.catch());
+      W.made[FOOD] += got;
       addDelta(a, FOOD, got);
-      remember(a, `You caught ${got} food${hasNet ? ` using your ${freeNet ? '' : 'pledged '}net` : ''} (lake ${Math.round(share * 100)}% full)` +
-        `${weak < 1 ? ' (weakened by hunger or cold)' : ''}.`);
+      remember(a, `You caught ${got} food${hasNet ? ` using your ${freeNet ? '' : 'pledged '}net` : ''}.`);
       if (freeNet && rnd() < CFG.NET_WEAR) { addDelta(a, NETS, -1); remember(a, 'Your net tore and is gone.'); }
     } else if (task === 'gather_wood') {
-      const got = roll(T.yield * W.skill(a, task) * weak);
+      const got = roll(T.yield * W.skill(a, task));
       addDelta(a, WOOD, got); W.made[WOOD] += got;
-      remember(a, `You cut ${got} wood${weak < 1 ? ' (weakened by hunger or cold)' : ''}.`);
+      remember(a, `You cut ${got} wood.`);
     } else if (task === 'craft_net') {
       addDelta(a, NETS, 1); W.made[NETS]++;
       remember(a, 'You finished crafting a net.');
@@ -298,20 +303,17 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
           emit('house_built', { agent: a.id, name: a.name });
         } else remember(a, `You worked on your house: ${a.building.done} of ${W.buildShifts} building shifts done.`);
       }
-    } else if (task === 'idle' && a.activity.rest) {
-      credit(a, 'rest', CFG.WELLBEING.REST);
     }
-    const kind = task === 'idle' && a.activity.rest ? 'rest' : task;
-    a.shifts[kind] = (a.shifts[kind] ?? 0) + 1;
-    W.shiftsNow[kind === 'rest' ? 'rested' : kind === 'idle' ? 'idle' : 'worked']++;
-    a.activity = null;
+    a.shifts[task] = (a.shifts[task] ?? 0) + 1;
+    W.shiftsNow[task === 'idle' ? 'idle' : 'worked']++;
   }
 
   // A meal: eat what the lifestyle calls for (or what's left), and count the meal
-  // period's wellbeing — the food, the fire, the house.
+  // period's wellbeing — the food, the fire, the house. Food committed to a sale is
+  // eaten too (the agent's asks shrink): asking high doesn't keep food from the table.
   function eat(a) {
     const WB = CFG.WELLBEING;
-    const n = Math.max(0, Math.min(a.lifestyle, W.availGood(a, FOOD)));
+    const n = Math.max(0, Math.min(a.lifestyle, a.goods[FOOD]));
     if (n) { addDelta(a, FOOD, -n); a.hunger = 0; }
     else { a.hunger++; if (a.hunger === 1 || a.hunger % 3 === 0) remember(a, `You went hungry (${a.hunger} missed meal${a.hunger > 1 ? 's' : ''}).`); }
     credit(a, 'eating', WB.EAT[n]);
@@ -319,23 +321,21 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (W.hasHouse(a)) credit(a, 'house', WB.HOUSE);
     a.wbRecent.push({ tick: W.tick, ate: n, ...a.wbNow });
     if (a.wbRecent.length > 6) a.wbRecent.shift();
-    a.wbNow = { eating: 0, warmth: 0, house: 0, rest: 0 };
+    a.wbNow = { eating: 0, warmth: 0, house: 0 };
   }
 
   // Wood's second use: a fire. Like food, it's used up, so wood always has buyers.
-  // A house holds the heat: a fire lasts HOUSE_WARMTH times longer (see step()).
   function warm(a) {
-    if (W.availGood(a, WOOD) >= 1) { addDelta(a, WOOD, -1); a.cold = 0; }
+    if (a.goods[WOOD] >= 1) { addDelta(a, WOOD, -1); a.cold = 0; }
     else { a.cold++; if (a.cold === 1 || a.cold % 3 === 0) remember(a, `You had no wood for your fire and went cold (${a.cold} time${a.cold > 1 ? 's' : ''}).`); }
   }
 
-  // Goods rot; coins don't. Only FREE stock rots — goods committed to a sale are
-  // safe until the round clears.
+  // Goods rot; coins don't. Goods committed to a sale rot too (pledged ones don't: the
+  // chain holds them), so an ask nobody takes is no shelter.
   W.spoiled = none();
   function spoil() {
     for (const a of agents) for (let g = 0; g < GOODS.length; g++) {
-      // a house keeps some food fresh
-      const rate = CFG.SPOIL[g], free = W.availGood(a, g) - (g === FOOD && W.hasHouse(a) ? CFG.HOUSE_STORE : 0);
+      const rate = CFG.SPOIL[g], free = a.goods[g];
       if (!rate || free <= 0) continue;
       const n = roll(free * rate);
       if (n > 0) {
@@ -345,51 +345,76 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     }
   }
 
-  // The lake regrows once a round, logistically: fastest at half full, slowly when
-  // nearly empty or nearly full. A few fish always swim in, so it can't die out.
-  function regrow() {
-    const L = W.lake, K = L.capacity, { REGROWTH, FLOOR } = CFG.LAKE;
-    const grow = Math.min(K - L.stock, REGROWTH * Math.max(L.stock, FLOOR * K) * (1 - L.stock / K));
-    L.stock += grow;
-    L.regrew = grow; L.caught = L.caughtNow; L.caughtNow = 0;
-  }
-
-  // The village clock stops while a market round settles on-chain, so from the village's
-  // point of view every round is instant: nothing happens mid-settlement, and no round is
-  // ever skipped. Agents already thinking keep thinking; their orders join the next round.
-  W.step = () => {
-    if (W.roundBusy) return;
-    W.tick++;
+  // One round, after every agent has decided (or timed out): the shift each chose, a meal,
+  // fires, rot, then the market. Nothing else moves while it settles on-chain.
+  // decide: how the decisions went (the slowest answer is how long the round waited).
+  W.playRound = async (decide = null) => {
+    W.tick = W.round + 1;
     for (const a of agents) {
-      if (a.activity && W.tick >= a.activity.endsAt) finish(a);
-      if ((W.tick + a.eatPhase) % CFG.EAT_TICKS === 0) eat(a);
-      if ((W.tick + a.warmPhase) % (CFG.WARM_TICKS * (W.hasHouse(a) ? CFG.HOUSE_WARMTH : 1)) === 0) warm(a);
+      if (!a.activity) W.keepJob(a);
+      finish(a);
+      eat(a);
+      if ((W.tick + a.warmPhase) % CFG.WARM_ROUNDS === 0) warm(a);
     }
-    if (W.tick % CFG.ROUND_TICKS === 0) {
-      spoil();
-      regrow();
-      W.runRound().catch(e => emit('error', { message: e.message }));
-    }
+    spoil();
+    await W.runRound(decide);
   };
 
-  // ---- a market round: settle deltas, loans, the keeper, the dividend, one auction per good, read the chain back
+  // ---- a market round: settle deltas, loans, the keeper, one auction per good, read the chain back
   // Whatever fails, the round ends (roundBusy is always released) and the next one starts from the chain.
-  W.runRound = async () => {
+  W.runRound = async (decide = null) => {
     if (W.roundBusy) { emit('round_skipped', {}); return; }
     W.roundBusy = true;
-    try { await round(); }
-    finally { W.inflight = null; W.opsInflight = []; W.roundBusy = false; }
+    try { await round(decide); }
+    catch (e) { emit('error', { message: e.message }); }
+    finally { W.opsInflight = []; W.roundBusy = false; }
   };
 
-  async function round() {
+  // The clearing the chain does (lib.rs clear_auction), replayed: the walk, the price
+  // (the midpoint of the last matched bid and ask, rounded down), and each order's fill,
+  // filled greedily in the order sent. Orders: { qty, limit }, bids desc and asks asc.
+  W.replayClear = (bids, asks, last) => {
+    let i = 0, j = 0, br = bids[0]?.qty ?? 0, ar = asks[0]?.qty ?? 0, volume = 0, lb = 0, la = 0;
+    while (i < bids.length && j < asks.length && bids[i].limit >= asks[j].limit) {
+      const q = Math.min(br, ar);
+      volume += q; lb = bids[i].limit; la = asks[j].limit; br -= q; ar -= q;
+      if (!br && ++i < bids.length) br = bids[i].qty;
+      if (!ar && ++j < asks.length) ar = asks[j].qty;
+    }
+    const fill = side => { let rem = volume; return side.map(o => { const q = Math.min(o.qty, rem); rem -= q; return q; }); };
+    if (!volume) return { volume, price: last, bidFills: bids.map(() => 0), askFills: asks.map(() => 0) };
+    return { volume, price: Math.max(1, Math.floor((lb + la) / 2)), bidFills: fill(bids), askFills: fill(asks) };
+  };
+
+  // Last round's book before clearing, per good: the top levels each side, what's beyond them.
+  const LEVELS = 3;
+  const levels = side => {
+    const out = [];
+    for (const o of side) { if (out.at(-1)?.[0] === o.limit) out.at(-1)[1] += o.qty; else out.push([o.limit, o.qty]); }
+    return { top: out.slice(0, LEVELS), more: Math.max(0, out.length - LEVELS), count: out.length };
+  };
+
+  // The bank's sale of seized goods: from the higher of its anchor and the price before the
+  // seizure, 5% lower each round nothing sells, never below what it has them on its books at.
+  // It never re-anchors on its own prints. Returns the price it asks at, or null.
+  W.bankAsk = (g, held = W.bank.goods[g], book = W.bank.bankBook?.[g] ?? 0) => {
+    if (!held) return null;
+    const st = W.bankSale[g] ??= { anchor: W.prices[g], k: 0 };
+    const floor = Math.ceil(book / held);
+    return { price: Math.max(1, floor, Math.round(st.anchor * (1 - CFG.BANK_SALE_STEP * st.k))), floor, qty: held };
+  };
+
+  async function round(decide) {
     const t0 = Date.now();
     const batch = W.pending; W.pending = [];
-    const book = W.book; W.book = emptyBook(); W.inflight = book;
+    // the book: the orders every agent posted this round
+    const book = GOODS.map((_, g) => agents.flatMap(a => a.orders.filter(o => o.good === g)));
+    const live = agents.filter(a => a.orders.length).length;
+    for (const o of book.flat()) { o.sentQty = 0; o.filled = 0; }
     const ops = W.loanOps; W.loanOps = []; W.opsInflight = ops;
     const made = W.made, shifts = W.shiftsNow;
-    W.made = none(); W.shiftsNow = { worked: 0, rested: 0, idle: 0 };
+    W.made = none(); W.shiftsNow = { worked: 0, idle: 0 };
     const sigs = [], liquidated = [];
-    let dividend = null, mid0 = null;             // dividends paid before this round, from the chain
     let settled = batch.length ? null : none();   // net goods settled per good (null if the settle failed)
     // On-chain balances right before the auctions: every change after them is a fill. Stays
     // null if the round fails before the auctions, and then no fills are reported.
@@ -401,8 +426,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       const b = book[g].filter(o => o.side === 'buy'), s = book[g].filter(o => o.side === 'sell');
       return { bids: b.length, bidQty: b.reduce((t, o) => t + o.qty, 0), asks: s.length, askQty: s.reduce((t, o) => t + o.qty, 0),
                bestBid: Math.max(0, ...b.map(o => o.limit)), bestAsk: s.length ? Math.min(...s.map(o => o.limit)) : null,
-               bankQty: 0, sold: 0 };
+               bankQty: 0, bankPrice: null, sold: 0 };
     });
+    // what went to each good's auction, and how it went (for the ladder, fills and remainders)
+    const sent = GOODS.map(() => ({ bids: [], asks: [], ok: false, last: 0 }));
     const spoiled = W.spoiled; W.spoiled = none();
 
     try {
@@ -415,20 +442,20 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         } catch (e) { emit('error', { message: `settle: ${e.message}` }); }
       }
 
-      // loans — each agent's in the order asked, agents in parallel (one tx each, and
-      // waiting on them one by one would outlast a round). The program has the final say.
+      // loans — each agent's in the order asked, agents in parallel. The program has the final say.
       const byAgent = new Map();
       for (const op of ops) byAgent.set(op.agent, [...(byAgent.get(op.agent) ?? []), op]);
-      const rate = `${+(W.ratePerMin() * 100).toFixed(2)}% a minute`;
+      const rate = `≈${+(W.ratePerRound() * 100).toFixed(2)}% a round`;
       await Promise.all([...byAgent.values()].map(async list => { for (const op of list) {
         const a = agents[op.agent];
         try {
           sigs.push(op.kind === 'borrow' ? await chain.borrow(op.agent, op.amount, op.termSlots, op.collateral) : await chain.repay(op.agent, op.amount));
           op.ok = true;
+          if (op.kind === 'borrow' && !op.topUp) a.dueRound = op.dueRound;
           remember(a, op.kind === 'repay' ? `You repaid ${(op.amount / 100).toFixed(2)} of your loan (interest first).`
-            : op.topUp ? `The bank added ${(op.amount / 100).toFixed(2)} new coins to your loan; it is due at the same time as before.`
-            : `The bank lent you ${(op.amount / 100).toFixed(2)} new coins for ${op.termSlots / W.slotsPerMin()} minute${op.termSlots > W.slotsPerMin() ? 's' : ''}` +
-              `${op.construction ? ' against your unfinished house' : ''}. Interest: ${rate} on what you borrowed, charged for the time you hold it.`);
+            : op.topUp ? `The bank added ${(op.amount / 100).toFixed(2)} new coins to your loan; it is due at the same round as before.`
+            : `The bank lent you ${(op.amount / 100).toFixed(2)} new coins for ${op.termRounds} rounds (due at the end of round ${op.dueRound}). ` +
+              `Interest: ${rate} on what you borrowed, charged for the time you hold it.`);
         } catch (e) {
           // the program's own reason, e.g. "the bank has reached its lending cap"
           const why = e.message.match(/Error Message: (.*)/)?.[1] ?? e.message.replace(/^chain tx failed: /, '');
@@ -437,14 +464,17 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       } }));
 
       // The keeper — a stranger with no authority over the ledger — calls `liquidate` on
-      // every loan past its due slot, and on every margin call (debt above MARGIN of the
-      // collateral at last prices). The chain decides what happens: an overdue loan whose
+      // every loan past its due slot. The chain decides what happens: an overdue loan whose
       // debtor has the cash is collected from it (no penalty); otherwise it's a foreclosure.
+      // `liquidate` still permits margin calls on-chain, but the keeper never cites one:
+      // a falling price is not a reason to seize a villager's goods (see CFG.BANK.MARGIN).
       let mid = await chain.fetch();
       W.slot = mid.slot; W.slotAt = Date.now();
+      // An overdue loan is collected at the round it was promised for, not before: its
+      // on-chain deadline was set a little early (TERM_SLACK) so that it has passed by then.
       await Promise.all(agents.map(async a => {
         const s = mid.slots[a.id], reason = liquidatable(s, mid, mid.slot);
-        if (!reason) return;
+        if (reason !== 'overdue' || (a.dueRound && W.round + 1 < a.dueRound)) return;
         try {
           const sig = await chain.liquidate(a.id); sigs.push(sig);
           liquidated.push({ agent: a.id, name: a.name, reason, before: s, sig });
@@ -479,11 +509,11 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
           f.taken = b.cash - s.cash + f.refund;
           const penalty = Math.floor(debt * T.penaltyBps / 10_000);
           f.writtenOff = Math.max(0, b.principal - Math.max(0, f.taken - (debt - b.principal + penalty)));
-          W[f.reason === 'margin' ? 'marginCalls' : 'overdue']++;
-          const why = f.reason === 'margin'
-            ? `FORECLOSED on a margin call: your debt ${(debt / 100).toFixed(2)} was more than ${T.marginBps / 100}% of your collateral's value at last prices.`
-            : `FORECLOSED: your loan of ${(debt / 100).toFixed(2)} was overdue and your cash could not cover it.`;
+          W.overdue++;
+          const why = `FORECLOSED: your loan of ${(debt / 100).toFixed(2)} was overdue and your cash could not cover it.`;
           const seized = list(f.seized), back = list(f.returned);
+          // the bank's sale of what it seized starts again from the price before the seizure
+          f.seized.forEach((q, g) => { if (q > 0) W.bankSale[g] = { anchor: Math.max(W.bankSale[g]?.anchor ?? 0, W.prices[g]), k: 0 }; });
           remember(a, `${why} ${(f.taken / 100).toFixed(2)} of your coins went to the debt plus a ${T.penaltyBps / 100}% penalty` +
             (seized ? `; the bank seized ${seized}, valued at ${FIRE_SALE_BPS / 100}% of the last price` : '') +
             (f.refund ? `, and refunded you ${(f.refund / 100).toFixed(2)} (what that was worth beyond what you owed)` : '') +
@@ -496,38 +526,36 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         }
         delete f.before;
       }
-      // The bank's surplus above the capital it must keep goes to every agent equally.
-      // Permissionless too: the keeper sends it only when the books show a surplus.
-      // It goes out alongside the auctions: it only adds cash, so bids validated without it stay valid.
-      mid0 = mid.books.dividendsPaid;
-      const txs = dividendPerAgent(mid) > 0 ? [chain.payDividend().catch(e => { emit('error', { message: `dividend: ${e.message}` }); return null; })] : [];
+      const txs = [];
       base = mid.slots.map(x => ({ cash: x.cash, goods: [...x.goods] }));
       bankGoods = [...mid.bank.goods];
 
       const cashLeft = base.map(e => e.cash);
       const goodsLeft = base.map(e => [...e.goods]);
       for (let g = 0; g < GOODS.length; g++) {
-        // validate against on-chain balances so the auction can never revert
-        const asks = book[g].filter(o => o.side === 'sell')
-          .sort((x, y) => x.limit - y.limit || x.agent - y.agent)
-          .map(o => ({ ...o, qty: Math.min(o.qty, goodsLeft[o.agent][g]) }))
-          .filter(o => { if (o.qty < 1) return false; goodsLeft[o.agent][g] -= o.qty; return true; });
-        // the bank fire-sells seized collateral at the foreclosure discount; the proceeds rebuild its equity
-        if (bankGoods[g]) {
-          bookStats[g].bankQty = bankGoods[g];
-          asks.push({ agent: BANK, side: 'sell', good: g, qty: bankGoods[g], limit: Math.max(1, Math.round(W.prices[g] * FIRE_SALE_BPS / 10_000)) });
-          asks.sort((x, y) => x.limit - y.limit || x.agent - y.agent);
+        // price-time priority: better price first, then the older order (never the agent's index)
+        let asks = book[g].filter(o => o.side === 'sell').sort((x, y) => x.limit - y.limit || x.seq - y.seq);
+        // the bank sells seized collateral, queued last at its price
+        const bank = W.bankAsk(g, bankGoods[g], mid.bankBook[g]);
+        if (bank) {
+          bookStats[g].bankQty = bank.qty; bookStats[g].bankPrice = bank.price;
+          asks.push({ agent: BANK, side: 'sell', good: g, qty: bank.qty, limit: bank.price, seq: Infinity });
+          asks.sort((x, y) => x.limit - y.limit || x.seq - y.seq);
         }
-        const bids = book[g].filter(o => o.side === 'buy')
-          .sort((x, y) => y.limit - x.limit || x.agent - y.agent)
-          .map(o => ({ ...o, qty: Math.min(o.qty, Math.floor(cashLeft[o.agent] / o.limit)) }))
-          .filter(o => { if (o.qty < 1) return false; cashLeft[o.agent] -= o.qty * o.limit; return true; });
-        // one atomic transaction per good — trim to what fits
+        let bids = book[g].filter(o => o.side === 'buy').sort((x, y) => y.limit - x.limit || x.seq - y.seq);
+        // one atomic transaction per good: trim to what fits first, so trimmed orders hold no cash or goods
         while (bids.length + asks.length > chain.MAX_ORDERS_PER_TX) (bids.length > asks.length ? bids : asks).pop();
-        if (bids.length && asks.length) txs.push(chain.clear(g, bids, asks));
+        // then check against on-chain balances, so the auction can never revert
+        const take = (o, q) => ({ agent: o.agent, qty: q, limit: o.limit, seq: o.seq, src: o });
+        asks = asks.map(o => take(o, o.agent === BANK ? o.qty : Math.min(o.qty, goodsLeft[o.agent][g])))
+          .filter(o => { if (o.qty < 1) return false; if (o.agent !== BANK) goodsLeft[o.agent][g] -= o.qty; return true; });
+        bids = bids.map(o => take(o, Math.min(o.qty, Math.floor(cashLeft[o.agent] / o.limit))))
+          .filter(o => { if (o.qty < 1) return false; cashLeft[o.agent] -= o.qty * o.limit; return true; });
+        Object.assign(sent[g], { bids, asks, last: mid.lastPrice[g] });
+        if (bids.length && asks.length) txs.push(chain.clear(g, bids, asks).then(sig => { sent[g].ok = true; return sig; }));
       }
       // Cash and goods were split between goods above, so the auctions can't conflict: send
-      // them (and the dividend) together instead of waiting on each confirmation in turn.
+      // them together instead of waiting on each confirmation in turn.
       for (const r of await Promise.allSettled(txs)) {
         if (r.status === 'fulfilled') { if (r.value) sigs.push(r.value); }
         else emit('error', { message: r.reason?.message ?? String(r.reason) });
@@ -542,17 +570,6 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     // books inside every instruction that can move it, so this is a read, not a guard.
     W.settlersSupply = await chain.settlersSupply();
     W.slot = L.slot; W.slotAt = Date.now();
-    if (mid0 !== null && L.books.dividendsPaid > mid0) {
-      const total = L.books.dividendsPaid - mid0;
-      dividend = { round: W.round + 1, perAgent: total / L.numAgents, total };
-      // one notice per agent, replaced rather than stacked, so small frequent dividends
-      // don't push foreclosures and trades out of a six-line memory
-      for (const a of agents) {
-        a.dividends += dividend.perAgent;
-        a.memory = a.memory.filter(m => !m.startsWith('The bank paid every villager'));
-        remember(a, `The bank paid every villager a dividend of ${(dividend.perAgent / 100).toFixed(2)} from its profit (round ${dividend.round}).`);
-      }
-    }
     const fills = none(), trades = [], dgs = [];
     if (base) for (let g = 0; g < GOODS.length; g++) fills[g] += Math.max(0, bankGoods[g] - L.bank.goods[g]);   // foreclosure sales
     for (const a of agents) {
@@ -565,30 +582,51 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       }
     }
     for (let g = 0; g < GOODS.length; g++) bookStats[g].sold = fills[g];
+
+    // Replay each good's clearing to know every order's fill (the chain reports only balances),
+    // and check it against what the chain did.
+    const got = agents.map(() => none()), ladder = [], orderLog = [], noBankPrice = none().map(() => null);
+    for (let g = 0; g < GOODS.length; g++) {
+      const S = sent[g], r = W.replayClear(S.ok ? S.bids : [], S.ok ? S.asks : [], S.last);
+      if (S.ok && r.price !== L.lastPrice[g]) emit('error', { message: `replayed ${GOODS[g]} price ${r.price} but the chain printed ${L.lastPrice[g]}` });
+      for (const [side, fl, sign] of [[S.bids, r.bidFills, 1], [S.asks, r.askFills, -1]]) side.forEach((o, k) => {
+        o.filled = fl[k] ?? 0;
+        if (o.agent !== BANK) { Object.assign(o.src, { sentQty: o.qty, filled: o.filled }); got[o.agent][g] += sign * o.filled; }
+        orderLog.push({ g, side: sign > 0 ? 'buy' : 'sell', agent: o.agent === BANK ? 'bank' : o.agent, qty: o.qty, limit: o.limit,
+                        seq: Number.isFinite(o.seq) ? o.seq : null, filled: o.filled });
+      });
+      // the D5 check: what the same book would have printed without the bank's sale
+      if (bookStats[g].bankQty && S.ok) { const nb = W.replayClear(S.bids, S.asks.filter(o => o.agent !== BANK), S.last); noBankPrice[g] = nb.volume ? nb.price : null; }
+      const qty = xs => xs.reduce((t, o) => t + o.qty, 0);
+      ladder[g] = { asks: levels(S.asks), bids: levels(S.bids), price: L.lastPrice[g], sold: fills[g], offered: qty(S.asks), wanted: qty(S.bids) };
+      // the bank's sale: nothing sold → 5% lower next round; some sold → same price; sold out → over
+      if (base && bankGoods[g]) {
+        if (!L.bank.goods[g]) delete W.bankSale[g];
+        else if (bankGoods[g] === L.bank.goods[g] && W.bankSale[g]) W.bankSale[g].k++;
+      }
+    }
+    if (base) for (const a of agents) for (let g = 0; g < GOODS.length; g++) if (got[a.id][g] !== dgs[a.id][g])
+      emit('error', { message: `replayed fills for ${a.name} ${GOODS[g]}: ${got[a.id][g]}, chain: ${dgs[a.id][g]}` });
+    W.lastLadder = ladder;
+
     for (const a of agents) {
       const after = L.slots[a.id];
-      // How each of the agent's orders did, beside the whole market's sell-through —
-      // otherwise a seller never learns there was a glut at their price. Orders that
-      // didn't fill expire.
-      const lines = [];
-      for (let g = 0; g < GOODS.length; g++) {
-        const mine = book[g].filter(o => o.agent === a.id), dg = dgs[a.id][g], st = bookStats[g];
-        const cleared = fills[g] ? `${GOODS[g]} cleared at ${(L.lastPrice[g] / 100).toFixed(2)}` : `no ${GOODS[g]} traded`;
-        for (const [side, word, done] of [['sell', 'asks', Math.max(0, -dg)], ['buy', 'bids', Math.max(0, dg)]]) {
-          const os = mine.filter(o => o.side === side);
-          if (!os.length) continue;
-          const qty = os.reduce((s, o) => s + o.qty, 0);
-          const at = [...new Set(os.map(o => (o.limit / 100).toFixed(2)))].join(' and ');
-          lines.push(`your ${qty} ${GOODS[g]} ${word} at ${at}: ${done} filled (${cleared}; ` +
-            (side === 'sell' ? `${st.sold} of ${st.askQty + st.bankQty} offered sold)` : `${st.sold} of ${st.bidQty} wanted bought)`));
-        }
-      }
-      if (lines.length) a.fills = { round: W.round + 1, lines };
+      // How each of the agent's orders did. Then they expire: nothing stands into the next round.
+      const lines = a.orders.map(o => {
+        const n = GOODS[o.good], sell = o.side === 'sell', l = ladder[o.good];
+        const head = `your ${o.qty} ${n} ${sell ? 'ask' : 'bid'} at ${(o.limit / 100).toFixed(2)}`;
+        if (!o.sentQty) return `${head}: not sent — you no longer had the ${sell ? n : 'cash'}.`;
+        return `${head}: ${o.sentQty < o.qty ? `only ${o.sentQty} sent, ` : ''}${o.filled} ${sell ? 'sold' : 'bought'}` +
+          (o.filled ? ` at ${(l.price / 100).toFixed(2)}.` : ` — ${l.offered} were offered, ${l.wanted} wanted.`);
+      });
+      a.fills = lines.length ? { round: W.round + 1, lines } : null;
+      a.orders = [];
       a.chain = { cash: after.cash, goods: [...after.goods] };
       a.cash = after.cash;
       a.goods = [...after.goods];
       a.locked = [...after.locked]; a.debt = after.debt; a.principal = after.principal;
       a.dueSlot = after.dueSlot; a.accruedSlot = after.accruedSlot;
+      if (!after.debt) a.dueRound = null;
     }
     // re-apply what arrived mid-round
     for (const d of W.pending) agents[d.agent].goods[d.good] += d.delta;
@@ -598,35 +636,39 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       a.building = null; remember(a, 'Your unfinished house is gone, so that build is over.');
     }
     for (const o of ops) W.bankLog.push({ round: W.round + 1, kind: o.kind, name: agents[o.agent].name, amount: o.amount, ok: !!o.ok,
-      ...(o.kind === 'borrow' ? { term: o.topUp ? null : o.termSlots / W.slotsPerMin(), construction: !!o.construction } : {}) });
+      ...(o.kind === 'borrow' ? { term: o.topUp ? null : o.termRounds } : {}) });
     for (const f of liquidated) W.bankLog.push({ round: W.round + 1, kind: f.kind, reason: f.reason, name: f.name,
       amount: f.taken, debt: f.debt, seized: f.seized, returned: f.returned, refund: f.refund ?? 0 });
-    if (dividend) W.bank.lastDividend = dividend;
     W.bank = bankView(L);
 
     W.prices = L.lastPrice; W.round++; W.volumes = fills; W.lastBook = bookStats;
+    // how long a round takes (decisions included), in slots and ms: loan terms and interest per round use it
+    const dSlots = L.slot - W.roundSlot, dMs = Date.now() - W.roundAt;
+    W.slotsPerRound = W.round === 1 ? dSlots : 0.7 * W.slotsPerRound + 0.3 * dSlots;
+    W.roundMs = W.round === 1 ? dMs : 0.7 * W.roundMs + 0.3 * dMs;
+    W.roundSlot = L.slot; W.roundAt = Date.now();
     const m = metrics(L, fills, bookStats, made, shifts);
     const doing = Object.fromEntries(Object.keys(CFG.TASKS).map(k => [k, 0]));
     for (const a of agents) if (a.activity) doing[a.activity.task]++;
     W.priceHistory.push({ round: W.round, prices: [...L.lastPrice], volumes: [...fills],
       supply: L.supply, debt: L.debtTotalNow, badDebt: L.badDebt, doing,
-      equity: L.equity, lendingCap: L.lendingCap, dividends: L.books.dividendsPaid, writtenOff: L.books.writtenOff,
-      marginCalls: W.marginCalls, overdue: W.overdue, autoRepaid: W.autoRepaid,
+      equity: L.equity, lendingCap: L.lendingCap, writtenOff: L.books.writtenOff,
+      overdue: W.overdue, autoRepaid: W.autoRepaid,
       hungry: agents.filter(a => a.hunger > 0).length, cold: agents.filter(a => a.cold >= 2).length,
       held: GOODS.map((_, g) => agents.reduce((s, a) => s + a.goods[g], 0)),
-      // sell-through (sold of offered, offered incl. the bank's fire sale), the lake, the goal
-      offered: bookStats.map(b => b.askQty + b.bankQty), wanted: bookStats.map(b => b.bidQty),
-      lake: W.lake.stock / W.lake.capacity, caught: W.lake.caught, regrew: W.lake.regrew,
-      wellbeing: m.wellbeing, lifestyle: agents.reduce((s, a) => s + a.lifestyle, 0) / agents.length, resting: doing.idle, ...m });
+      // sell-through (sold of offered, offered incl. the bank's fire sale), the goal
+      offered: bookStats.map(b => b.askQty + b.bankQty), wanted: bookStats.map(b => b.bidQty), catch: W.catch(),
+      wellbeing: m.wellbeing, lifestyle: agents.reduce((s, a) => s + a.lifestyle, 0) / agents.length, ...m });
     if (W.priceHistory.length > 1000) W.priceHistory.shift();
-    W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs };
+    W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs, decide };
     const sum = f => L.slots.reduce((s, x) => s + f(x), 0);
     emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sig: sigs.at(-1),
-                    book: bookStats, trades, spoiled, foreclosures: liquidated.filter(f => f.kind === 'foreclosed'),
+                    book: bookStats, ladder, orders: orderLog, live, noBankPrice, decide,
+                    roundMs: dMs, slotsPerRound: dSlots, trades, spoiled, foreclosures: liquidated.filter(f => f.kind === 'foreclosed'),
                     collected: liquidated.filter(f => f.kind === 'collected'), made, metrics: m,
                     bank: { supply: L.supply, debtTotal: L.debtTotal, debtTotalNow: L.debtTotalNow, badDebt: L.badDebt, goods: L.bank.goods,
                             cash: L.bank.cash, bankBook: L.bankBook,
-                            equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired, books: L.books, dividend,
+                            equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired, books: L.books,
                             // chain-side sums, so every round's invariants can be checked from the log
                             sumCash: sum(x => x.cash), sumDebt: sum(x => x.debt), sumPrincipal: sum(x => x.principal),
                             settlers: W.settlersSupply,
@@ -634,14 +676,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                             slotsOk: L.slots.every(x => x.principal <= x.debt && (x.debt || (!x.principal && x.locked.every(q => !q)))),
                             goodsTotal: GOODS.map((_, g) => sum(x => x.goods[g] + x.locked[g]) + L.bank.goods[g]), settled,
                             loans: ops.map(o => ({ kind: o.kind, agent: o.agent, amount: o.amount, ok: !!o.ok,
-                              ...(o.kind === 'borrow' ? { term: o.topUp ? null : o.termSlots / W.slotsPerMin(), construction: !!o.construction,
+                              ...(o.kind === 'borrow' ? { term: o.topUp ? null : o.termRounds, termSlots: o.termSlots, dueRound: o.dueRound,
                                                           collateral: o.collateral } : {}) })) },
-                    lake: { stock: Math.round(W.lake.stock), capacity: W.lake.capacity, caught: W.lake.caught, regrew: +W.lake.regrew.toFixed(1) },
+                    catch: W.catch(),
                     agents: agents.map(a => ({ id: a.id, cash: a.cash, goods: a.goods, locked: a.locked, debt: a.debt, debtNow: W.debtNow(a),
                       hunger: a.hunger, cold: a.cold,
-                      activity: a.activity?.task ?? null, rest: !!a.activity?.rest, lifestyle: a.lifestyle,
+                      activity: a.activity?.task ?? null, kept: !!a.activity?.kept, lifestyle: a.lifestyle,
                       building: a.building ? a.building.done : null, house: W.hasHouse(a), housesBuilt: a.housesBuilt,
-                      wellbeing: +a.wellbeing.toFixed(2), wbParts: a.wbParts, wealth: Math.round(W.wealth(a)), score: +W.score(a).toFixed(2), shifts: a.shifts })) });
+                      wellbeing: +a.wellbeing.toFixed(2), wbParts: a.wbParts, wealth: Math.round(W.wealth(a)), shifts: a.shifts })) });
   }
 
   // ---- how the economy is doing, once a round ------------------------------------
@@ -649,7 +691,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // finished) at this round's prices — gross output, so wood that went into a net or a
   // house is counted twice. Price index: the CFG.PRICE_BASKET at today's prices over the
   // same basket at START_PRICES; inflation is its change over INFLATION_ROUNDS.
-  // Employment: finished shifts that were work, of all shifts (work, rest, idle).
+  // Employment: finished shifts that were work, of all shifts (work or idle).
   // Slack: goods offered for sale this round that didn't sell, at this round's prices.
   // Gini: of net worth (W.wealth, negatives as 0). Credit: debt with interest accrued to now.
   const START_BASKET = CFG.PRICE_BASKET.reduce((s, w, g) => s + w * CFG.START_PRICES[g], 0);
@@ -662,7 +704,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const unsold = bookStats.map((b, g) => Math.max(0, b.askQty + b.bankQty - fills[g]));
     const offeredValue = bookStats.reduce((s, b, g) => s + (b.askQty + b.bankQty) * p[g], 0);
     const slack = unsold.reduce((s, q, g) => s + q * p[g], 0);
-    const all = shifts.worked + shifts.rested + shifts.idle;
+    const all = shifts.worked + shifts.idle;
     const wb = agents.reduce((s, a) => s + a.wellbeing, 0);
     const wbRound = (wb - wbBefore) / n; wbBefore = wb;
     return {

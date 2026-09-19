@@ -36,6 +36,8 @@ function broadcast(e) {
   for (const res of sseClients) res.write(line);
   sim?.log.write(JSON.stringify(e) + '\n');
   if (e.type === 'round') {
+    // the keeper's liquidate signature for each collection / foreclosure, for the dashboard's bank feed
+    for (const f of [...e.foreclosures, ...e.collected]) if (f.sig) sim.sigs.set(`${e.round}|${f.kind}|${f.name}`, f.sig);
     const W = sim.W, acts = {};
     for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; acts[k] = (acts[k] ?? 0) + 1; }
     const st = sim.brain.stats();
@@ -44,9 +46,9 @@ function broadcast(e) {
       ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} idle ${acts.idle ?? 0}` +
       ` | hungry ${W.agents.filter(a => a.hunger > 0).length} cold ${W.agents.filter(a => a.cold >= 2).length}` +
       ` | gdp ${coins(e.metrics.gdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
+      (e.decide ? ` | waited ${(e.decide.slowest / 1000).toFixed(1)}s${e.decide.timeouts ? ` (${e.decide.timeouts} timed out)` : ''}` : '') +
       (e.collected.length ? ` | collected ${e.collected.map(f => f.name).join(', ')}` : '') +
-      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => `${f.name} (${f.reason})`).join(', ')}` : '') +
-      (e.bank.dividend ? ` | dividend ${coins(e.bank.dividend.perAgent)} each` : '') + ` | ${e.txs} tx ${e.ms}ms` +
+      (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => f.name).join(', ')}` : '') + ` | ${e.txs} tx ${e.ms}ms` +
       (st.calls ? ` | llm ${st.calls} calls $${st.cost.toFixed(3)}` : ''));
   }
   if (e.type === 'error') console.error(`  ! ${e.message}`);
@@ -58,15 +60,19 @@ async function start() {
   const brain = await makeBrain();
   const chain = await connectChain();
   // The bank's terms, fixed on-chain for the life of the ledger. A minute is 60000 / SLOT_MS
-  // slots: interest is RATE_PER_MIN per minute held, a term is 1..MAX_TERM_MINUTES minutes.
+  // slots: interest is RATE_PER_MIN per minute held. Terms are chosen in rounds, whose length
+  // the chain can't know, so the chain accepts any whole number of slots (unit 1) and the sim
+  // sends each new loan's term as rounds × the measured slots per round (world.mjs termSlots).
   // No credit (CREDIT=0) is LTV 0, which the program enforces: every borrow fails.
   const B = CFG.BANK, money = CFG.AGENTS * CFG.START_CASH, bps = x => Math.round(x * 10_000);
   const minute = Math.round(60_000 / CFG.SLOT_MS);
   await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, CFG.START_PRICES,
     Math.round(B.SEED * money), {
       ltvBps: B.CREDIT ? bps(B.LTV) : 0, rateBps: bps(B.RATE_PER_MIN), ratePeriodSlots: minute,
+      // marginBps 10000 is the loosest lib.rs allows (ltv_bps <= margin_bps <= 10000); the
+      // keeper never cites a margin call anyway, so the chain's margin path is dead.
       penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA), marginBps: bps(B.MARGIN),
-      termUnitSlots: minute, maxTermUnits: B.MAX_TERM_MINUTES, equityFloor: Math.round(B.EQUITY_FLOOR * money),
+      termUnitSlots: 1, maxTermUnits: 65_535, equityFloor: Math.round(B.EQUITY_FLOOR * money),
     });
   const W = createWorld(chain, await chain.fetch(), { onEvent: e => sim && broadcast(e) });
 
@@ -81,36 +87,61 @@ async function start() {
     config: { ...CFG, RPC: undefined },
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
-  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir,
+  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, sigs: new Map(),
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
   console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
   console.log(`SETTLERS  ${chain.mint.toBase58()}   (mint authority: itself — no key for it exists)`);
 
-  const alive = () => sim && sim.gen === myGen;
-  async function agentLoop(a) {
-    await sleep(Math.random() * CFG.STAGGER_MS);          // staggered wake-up
+  const alive = () => sim && sim.gen === myGen && !sim.stopping;
+  // One agent's turn: its brain decides, and the round waits up to DECIDE_TIMEOUT_MS. A late
+  // answer is discarded: the call is aborted, and any tool it still tries is refused, so it can
+  // never touch a round that has already run. Without an answer the agent keeps its last job
+  // and has no orders this round.
+  async function decideOne(a) {
+    const t0 = Date.now(), tools = makeTools(W, a), ac = new AbortController();
+    tools.signal = ac.signal;
+    W.beginDecision(a);
+    let timer;
+    const outcome = await Promise.race([
+      Promise.resolve().then(() => brain.decide(a, tools)).then(() => 'ok', e => { W.emit('error', { agent: a.id, message: e.message }); return 'error'; }),
+      new Promise(r => { timer = setTimeout(() => r('timeout'), CFG.DECIDE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    tools.close();
+    if (outcome === 'timeout') ac.abort();
+    const ok = outcome === 'ok' && tools.answered();
+    W.endDecision(a, ok);
+    if (ok) a.decisions++;
+    if (!a.activity) W.keepJob(a);
+    const ms = Date.now() - t0;
+    W.emit('decision', { agent: a.id, name: a.name, round: W.round + 1, ms, outcome: ok ? 'ok' : outcome === 'ok' ? 'no answer' : outcome,
+                         kept: !!a.activity?.kept, thought: a.thought, activity: a.activity?.task,
+                         orders: a.orders.map(o => ({ side: o.side, good: GOODS[o.good], qty: o.qty, limit: o.limit, seq: o.seq })),
+                         saw: tools.log.saw, actions: tools.log.actions });
+    return { ms, timedOut: outcome === 'timeout', ok };
+  }
+  // The clock: every round, all agents decide at once; the round waits for the slowest (up to
+  // the timeout), then plays out — shifts, meals, fires, rot, the market — and settles on-chain.
+  async function clock() {
     while (alive()) {
-      if (a.activity) { await sleep(CFG.TICK_MS); continue; }
-      const tools = makeTools(W, a);
-      try { await brain.decide(a, tools); } catch (e) { W.emit('error', { agent: a.id, message: e.message }); }
+      const t0 = Date.now();
+      const res = await Promise.all(W.agents.map(decideOne));
       if (!alive()) return;
-      a.decisions++;
-      if (!a.activity) W.startActivity(a, 'idle');
-      W.emit('decision', { agent: a.id, name: a.name, thought: a.thought, activity: a.activity?.task,
-                           saw: tools.log.saw, actions: tools.log.actions });
+      const ms = res.map(r => r.ms).sort((x, y) => x - y);
+      await W.playRound({ waitMs: Date.now() - t0, slowest: ms.at(-1), median: ms[ms.length >> 1],
+                          timeouts: res.filter(r => r.timedOut).length, noAnswer: res.filter(r => !r.ok && !r.timedOut).length });
     }
   }
-  W.agents.forEach(agentLoop);
-  sim.clock = setInterval(() => W.step(), CFG.TICK_MS);
+  sim.clock = clock().catch(e => console.error(`clock stopped: ${e.stack}`));
   return 'started';
 }
 
 async function stop() {
   if (!sim) return 'not running';
-  clearInterval(sim.clock);
   const s = sim;
-  while (s.W.roundBusy) await sleep(50);
+  s.stopping = true;
+  await s.clock;                  // the round in progress finishes; a decision phase in progress is dropped
   sim = null;
   const L = await s.chain.fetch();
   fs.writeFileSync(path.join(s.dir, 'final.json'), JSON.stringify({
@@ -132,20 +163,20 @@ function state() {
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, brain: brain.name, tick: W.tick, round: W.round,
+    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs),
+    decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
     volumes: Object.fromEntries(GOODS.map((g, i) => [g, W.volumes[i]])),
     bank: { supply: W.bank.supply / 100, startSupply: CFG.AGENTS * CFG.START_CASH / 100,
             debt: W.bank.debtTotalNow / 100, badDebt: W.bank.badDebt / 100, goods: W.bank.goods,
-            creditOn: W.bank.terms.ltvBps > 0, ratePerMin: W.ratePerMin(), terms: W.termMinutes(), autoRepaid: W.autoRepaid,
+            creditOn: W.bank.terms.ltvBps > 0, ratePerMin: W.ratePerMin(), ratePerRound: W.ratePerRound(), terms: W.termRounds(), autoRepaid: W.autoRepaid,
             equity: W.bank.equity / 100, lendingCap: W.bank.lendingCap / 100, capitalRequired: W.bank.capitalRequired / 100,
             books: Object.fromEntries(Object.entries(W.bank.books).map(([k, v]) => [k, v / 100])),
-            dividends: W.bank.books.dividendsPaid / 100, lastDividend: W.bank.lastDividend,
-            marginCalls: W.marginCalls, overdue: W.overdue,
+            overdue: W.overdue,
             keeper: chain.keeper.publicKey.toBase58() },
     totals: { money: sum(a => a.cash) / 100, food: sum(a => a.goods[0]), wood: sum(a => a.goods[1]),
-              nets: sum(a => a.goods[2]), boats: sum(a => a.goods[3]), houses: W.agents.filter(a => W.hasHouse(a)).length,
+              nets: sum(a => a.goods[2]), houses: W.agents.filter(a => W.hasHouse(a)).length,
               building: W.agents.filter(a => a.building).length, housesBuilt: W.housesBuilt, hungry: W.agents.filter(a => a.hunger > 0).length,
               cold: W.agents.filter(a => a.cold >= 2).length },
     doing,
@@ -157,9 +188,10 @@ function state() {
     llm: brain.stats(),
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: a.skills, cash: a.cash / 100,
-      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], boats: a.goods[3], houses: W.owned(a, HOUSES), house: W.hasHouse(a),
+      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.owned(a, HOUSES), house: W.hasHouse(a),
       building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
-      debt: W.debtNow(a) / 100, dueIn: W.secondsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
+      debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
+      orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
     })),
     events: W.events.filter(e => e.type === 'round' || e.type === 'error').slice(-15).reverse(),
@@ -168,17 +200,20 @@ function state() {
     // live market: price history for the charts, last round's order book, recent trades
     history: W.priceHistory.map(h => ({ ...h, prices: h.prices.map(p => p / 100),
       supply: h.supply / 100, debt: h.debt / 100, badDebt: h.badDebt / 100, equity: h.equity / 100,
-      lendingCap: h.lendingCap / 100, dividends: h.dividends / 100, writtenOff: h.writtenOff / 100,
+      lendingCap: h.lendingCap / 100, writtenOff: h.writtenOff / 100,
       gdp: h.gdp / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 })),
     // every loan, repayment and foreclosure, newest first
     bankFeed: W.bankLog.slice(-14).reverse().map(f => ({ ...f, amount: f.amount / 100, ...(f.debt ? { debt: f.debt / 100 } : {}),
-      ...(f.refund ? { refund: f.refund / 100 } : {}) })),
+      ...(f.refund ? { refund: f.refund / 100 } : {}), sig: sim.sigs.get(`${f.round}|${f.kind}|${f.name}`) ?? null })),
     market: (() => {
       const rounds = W.events.filter(e => e.type === 'round');
       const last = rounds.at(-1);
       return {
         book: last ? last.book.map((b, g) => ({ good: GOODS[g], ...b,
-          bestBid: b.bestBid ? b.bestBid / 100 : null, bestAsk: b.bestAsk ? b.bestAsk / 100 : null })) : [],
+          bestBid: b.bestBid ? b.bestBid / 100 : null, bestAsk: b.bestAsk ? b.bestAsk / 100 : null, bankPrice: b.bankPrice ? b.bankPrice / 100 : null })) : [],
+        ladder: (W.lastLadder ?? []).map((l, g) => ({ good: GOODS[g], asks: l.asks, bids: l.bids, price: l.price / 100, sold: l.sold,
+          offered: l.offered, wanted: l.wanted, bankSale: (s => s && { qty: s.qty, price: s.price / 100 })(W.bankAsk(g)) })),
+        live: last?.live ?? 0,
         trades: rounds.slice(-8).flatMap(r => (r.trades ?? []).filter(t => t.side === 'buy')
           .map(t => ({ round: r.round, name: W.agents[t.agent].name, good: t.good, qty: t.qty, price: t.price / 100 }))).slice(-12).reverse(),
       };
@@ -238,12 +273,12 @@ if (CFG.RUN_SECONDS) {
   console.log(`\ninvariants: ${inv.map(([k, v]) => `${k} ${ok(v)}`).join('; ')}`);
   console.log(`SETTLERS ${chain.mint.toBase58()}: ${coins(settlers)} in existence, all of it minted by the bank's rules`);
   console.log(`bank: equity ${coins(L.equity)} (seed ${coins(b.bankSeed)}), lending cap ${coins(L.lendingCap)}, interest ${coins(b.interestIncome)}, ` +
-    `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}, ` +
-    `dividends ${coins(b.dividendsPaid)}; ${W.autoRepaid} collected at the deadline; foreclosures ${W.marginCalls} margin call, ${W.overdue} overdue`);
+    `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}; ` +
+    `${W.autoRepaid} collected at the deadline, ${W.overdue} foreclosed overdue`);
   const m = W.priceHistory.at(-1) ?? {};
   console.log(`houses built ${W.housesBuilt}, being built ${W.agents.filter(a => a.building).length}, homeowners ${m.homeowners}   ` +
     `GDP ${coins(W.priceHistory.reduce((s, h) => s + h.gdp, 0))} over the run   avg wellbeing ${m.wellbeing}   price index ${m.priceIndex}   wealth gini ${m.gini}`);
-  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${sumS(x => x.goods[2])}   boats ${sumS(x => x.goods[3])}`);
+  console.log(`hungry ${W.agents.filter(a => a.hunger > 0).length}/${CFG.AGENTS}   nets ${sumS(x => x.goods[2])}`);
   console.log(`richest ${rich.slice(0, 3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   console.log(`poorest ${rich.slice(-3).map(a => `${a.name} ${coins(a.cash)}`).join(', ')}`);
   const st = brain.stats(); if (st.calls) console.log(`llm ${st.calls} calls, ${st.errors} errors, $${st.cost.toFixed(3)}`);

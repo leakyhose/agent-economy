@@ -213,3 +213,166 @@ bank fire-sale rounds). Flaws, ranked:
    0 bids"): true information that gives a reason to undercut.
 7. **Fine as is:** 96-order trim (max seen 20), frozen clock, rounding, goods-order cash
    allocation (fix the small trim-after-cash bug), time labels (~20% off).
+
+## Step D: the market fix (spec, from the market audit and research #4–#6)
+
+Agreed with the user 2026-09-19. Two builders in parallel: **on-chain** (D4 only, `lib.rs` +
+`chain.mjs`) and **sim** (everything else). Evidence and sources are in the research reports
+summarized above; baselines are from `runs/2026-09-19T17-04-02`.
+
+**D1. Price-time priority.** At the same limit, the older order fills first (sort by limit, then
+arrival `seq`; never by agent index). A standing order keeps its `seq`; a new or changed order gets
+a new one. Within one round everyone decides at once, so arrival order there is effectively the
+model's response time — acceptable. The bank's orders queue last at their price (`seq = +∞`).
+The program only checks sortedness by limit, so this is JS-only.
+
+**D2. Standing orders.** An order stands until it fills or the agent's next decision replaces it
+(each decision's `place_order` calls replace that agent's standing orders; posting nothing at a
+decision cancels them). Track the remainder after partial fills by replaying the chain's fill walk.
+The observation lists them: `Standing: sell 5 food at 5.20 (30 ahead of you as of last round)`.
+Committed goods still rot and can still be eaten/burned — meals and fires first shrink the agent's
+own asks — so asking high is not a way to shelter goods.
+
+**D3. Turn-based rounds.** Each round: every agent decides at the same time (all LLM calls in
+parallel), the clock waits until all have answered (timeout ≈ 15s → the agent keeps its last job
+and standing orders), then the round's work, meals, fires and the market run. A shift = one round.
+Meals, fires and loan terms are stated in rounds, and loan terms are converted to slots on-chain
+from the measured round length (or rounds become the on-chain unit — builder's call, state it).
+All time labels shown to agents must be true. Calls per minute should fall (one decision per agent
+per round).
+
+**D4. Clearing price (on-chain).** After the existing walk, clamp the reference price into the full
+clearing range:
+```
+nb = next unfilled bid limit (0 if none); na = next unfilled ask limit (u64::MAX if none)
+     // a partly filled order counts as unfilled at its limit
+lo = max(last_filled_ask, nb); hi = min(last_filled_bid, na); require lo <= hi
+price = clamp(last_price[g], lo, hi), at least 1
+```
+Same as today when nothing crosses. Tests (last price 500 unless noted): glut bid 1@535 vs asks
+10@520 → 520; shortage bids 10@480 vs ask 1@450 → 480; bid 2@510 vs ask 2@490 → 500 (last 600 →
+510, last 400 → 490); bids 2@520,3@505 vs asks 2@480,4@510 → 505; no cross → unchanged; one side
+empty → unchanged; manipulation bids 1@5000,1@500 vs ask 1@500 → 500; penny ask 1@1 + 2@500 vs bid
+2@500 → 500; equal limits → first ask in the ladder fills, 500; bank ask partly filled → books and
+supply correct; last price 1 → 1, bid at u32::MAX → no overflow; sortedness still enforced.
+
+**D5. Bank sale of seized goods: descending.** Per good `W.bankSale[g] = {anchor, k}`. On seizure:
+`anchor = max(anchor, price before the sale)`, `k = 0`. Each round the bank asks everything it holds
+at `max(bookUnit, round(anchor × (1 − 0.05k)))` where `bookUnit = ceil(bank_book[g] / bank goods[g])`
+(= 80% of the seizure price); after the clear: no bank fill → `k++`; partial → keep `k`; sold out →
+clear the state. Never re-anchor on the bank's own print. Agents are told: "The bank is selling 6
+wood from foreclosures at 3.10; the price drops 5% each round it goes unsold."
+
+**D6. Depth ladder (behind `CFG.LADDER`, default on).** Replace the cheapest-ask/best-bid wording
+with last round's book before clearing, top 3 levels per side, then the result:
+`food: last traded 5.22. Last round: asks 5.20×38 · 5.35×4 · 5.50×6 (+3 higher); bids 5.25×3. 3
+sold at 5.22; 45 offered went unsold.` Own fills: `your 5 food asks at 5.20: 0 filled — 30 food at
+5.20 or less was queued ahead of yours; buyers took 3.` Empty book: `boat: no orders, last traded
+80.00`. No indicative price, nothing that steers. Keep per round `W.lastLadder[g]` (top 3 `[price,
+qty]` per side + remaining level count, price, sold, unsold/unfilled) and per order `seq`, queue-ahead
+(better prices + same price with earlier `seq`, computed before clearing) and filled qty. Add an
+optional `reason` to `place_order`. **Trim** so the observation gets shorter overall: the own-fill
+"(X of Y offered sold)" repeat; "You eat N food every…/burn 1 wood…" (the lifestyle line has it);
+"Pledged goods are locked…do not rot" (prompt + borrow tool have it); the "about 10%… rots" line
+(prompt has it); "Coins in circulation…" (only when the central bank acts).
+
+**D7. Small fixes.** Refuse an order that would cross the agent's own opposite-side order in the
+same good (self-trade can set the collateral price in an empty book). Trim to 96 orders before
+deducting cash, not after. Time labels true (solved by D3).
+
+**Verify** (free stub + D4's on-chain tests). Next real runs should show, against the 17-04-02
+baselines: food sells below the previous best ask > 0% (was 0%); price cuts that break the floor
+after a hopeless ask ≫ 4/245; food price falls in glut rounds; asks-only food rounds < 47/99;
+share of agents with a live order ≫ 57%; tied-price fills not correlated with agent index; bank
+sale prints within ~3% of the no-bank clear; distinct ask levels per round not collapsing to 1
+(herding check).
+
+**Not changed now:** house tuning (open question to the user), collateral valued at a median of
+prints (later, on-chain), 96-order limit, rounding.
+
+## Step E: dashboard declutter (queued after step D)
+
+Agreed with the user 2026-09-19: too many charts, all the same size. A viewer should see at a glance
+whether the economy is growing, what money and credit are doing, and who's winning.
+
+- **Big (the demo):** GDP over time; money supply + credit outstanding on one chart (room above it
+  for the future central-bank panel, and policy markers later); prices of all goods on ONE chart
+  (lines, normalized or dual-scale — readable); the stacked jobs chart; "who's winning" wealth bars;
+  the bank feed (loans, collections, foreclosures, with Solana tx links).
+- **Small tiles** (number + tiny sparkline, click to expand to a full chart): inflation, average
+  wellbeing, employment, Gini, houses built, lake level, bank capital.
+- **Collapsed "details" section:** order book / depth, loans coming due (collected / foreclosed /
+  margin call), hungry & cold, goods held, slack, per-good price charts, round log, the full agent
+  table (collapsed or top 10 with "show all").
+- Keep the plain monospace style and existing chart helpers; no new libraries. Responsive enough for
+  a laptop screen during a demo. Check with a headless-Chrome screenshot.
+
+## Step F: fix what the step-D run showed (runs/2026-09-19T19-12-49, credit off, 79 rounds)
+
+**Diagnosis (three read-only audits agree):** the step-D machinery is correct — ladder text matched the
+books in 11,700/11,700 lines, standing orders/priority/replay exact, conservation every round, no
+errors. The economy stalled because of what agents are told and how they decide:
+- **Every order sat at the last price** (583/583 food asks at 5.00; 0/164 bids above; 465 order
+  reasons cite "the established market price"; "undercut" appears 0 times in 2,370 thoughts). Any
+  clearing rule prints that number — replaying all four rules gives identical prices. Keep D4.
+  Step D made it worse in one way: 67% of food asks were re-posts "to keep my place in the queue".
+  The median observation says "last price/last traded" 14 times.
+- **Costs in coins, benefits in points, no exchange rate:** fishing "≈15.39" next to "rest +1
+  wellbeing" (really 0.2 vs 1.0 pts); house cost in coins vs +1.5 pts/round. Result: 6 rests in the
+  run, lifestyle 1 for 28–30 agents all run (562 times with 8+ food rotting), 1 house built although
+  building was affordable ~25× over (18 agents talked about it; Rosa-19 built and finished +47 pts).
+- **No plan memory, no horizon:** a 3-round house needs 3 consistent decisions from a model that
+  re-decides every round from scratch and doesn't know how many rounds remain.
+- **Little reason to trade:** 28/30 agents fish for themselves; wood sell-through ~4%; inequality
+  tracks fishing skill (r = 0.74). Food rot takes 36% of the catch; the lake can't physically feed
+  lifestyle 2 for everyone (sustainable max 48/round = 1.6 per agent).
+
+### F-info: what agents are told (tools.mjs, prompt.mjs) — the biggest lever
+1. **One unit.** State "1 wellbeing point = 10 coins of end net worth" and show every option in
+   points too: each job's shift value (at sell-through), rest, lifestyle levels, a house (+1.5 pts a
+   round = 15 coins a round), and the house's payback in rounds.
+2. **Prices:** lead each good with sell-through and best bid; mention the last price once per good;
+   "no trades yet (reference price X)" for goods that never traded (boats/houses said "last traded").
+   Show each standing order's age ("unfilled for 12 rounds") and the rot on goods tied up in it.
+   State the rule plainly: "a lower ask fills before all higher asks; everyone who trades gets the
+   one clearing price; at the same price the older order fills first." Drop the "re-post to keep
+   your place" sentence and "You cannot set the price" (→ "the price is set from everyone's limits").
+3. **Horizon:** fixed-length runs (`RUN_ROUNDS`, e.g. 80) and "round N of 80" in the observation.
+4. **Houses:** value the wood consistently (same valuation as net worth, last price alongside);
+   "you hold X free wood, a house needs Y"; "food for the 3 build rounds at your lifestyle: need N,
+   have M".
+5. **Lifestyle line:** projected rot of current food, and what surplus food sells for at sell-through.
+6. **Contradictions:** "You are fed" with 0 meals of food; "Market (round 0)"; `set_lifestyle`
+   answering "now choose your shift" after the shift is chosen.
+
+### F-mech: mechanics and agent loop (world.mjs, server.mjs, brains)
+7. **Standing orders persist until changed**, with a `cancel_orders` tool (or post quantity 0), and a
+   maximum life of ~8 rounds so prices get re-chosen. No re-posting needed to keep queue place.
+8. **Reflect-and-plan** (from item 4, pulled forward): every ~5 rounds a no-tools call with reasoning
+   `low` writes a <80-word plan (job, lifestyle, build or not, prices); shown in later observations
+   as "Your plan (round 30): …". So "build a house" survives across rounds.
+9. **Timed-out decisions:** discard everything a timed-out call did (today its `set_lifestyle` sticks).
+10. **Orders eaten/burned to zero:** report "your 1 food ask at 5.00 was withdrawn: eaten first".
+    "Free to sell" shows stock after this round's meal and fire.
+11. **Credit off:** no "pledged, you could borrow up to 0.00" in rejection messages.
+12. **Logging:** store the job reason and the lifestyle reason separately (`thought` is overwritten
+    by the last tool); dashboard shows the last job instead of "deciding".
+
+### F-econ: calibration (config.mjs)
+13. Food rot `SPOIL[0]` 0.10 → 0.05. `LAKE.CAPACITY` 60 → 80 per villager (sustainable max ≈ 2.1
+    per agent, so lifestyle 2 is possible). Keep regrowth 0.107. Keep `HOUSE` 1.5 until the info fixes
+    are measured.
+14. Wider skill spread (`SKILL_RANGE` 0.3–1.7) so more agents gain from trading instead of
+    self-supplying. (Changes the seeded village — note it.)
+
+### F-measure: metrics (analyze.mjs, dashboard)
+15. Durables valued properly: don't let one unsold ask zero a house/boat/net (apply sell-through
+    only after several offers, else last trade). GDP reported two ways: all output at last prices,
+    and output that sold.
+16. Before any credit run: collateral valued at a stale price is a risk (wood backed loans at 3.00
+    with 4% sell-through). The on-chain LTV uses `last_price`; mitigation now = show agents the
+    honest value; on-chain haircut is later work (FUTURE_PLAN).
+
+**Verify:** stub check, then a real 20–40-round run. Targets vs this run: food ask prices per round
+> 1 distinct level; any trades below 5.00; rest shifts ≫ 6; lifestyle 2+ share ≫ 5%; houses ≫ 1;
+share of asks that are plain re-posts ≪ 67%.

@@ -55,12 +55,13 @@ faked."*
 ## 2. The economy
 
 ```
-WORK   →  gather_food / gather_wood / craft_net / build_house / rest   (a timed shift, several seconds)
-SELL   →  place limit orders; a batch auction clears once per round, on-chain
-EAT    →  automatic every meal; the agent's lifestyle sets 1, 2 or 3 food per meal
-WARM   →  automatic, burn 1 wood every 16 ticks (a house makes it last 2× as long)
+ROUND  →  every agent decides at once; the clock waits for the slowest (up to DECIDE_TIMEOUT_MS, 8s)
+WORK   →  gather_food / gather_wood / craft_net / build_house / rest   (one shift = one round)
+SELL   →  standing limit orders; a batch auction clears once per round, on-chain
+EAT    →  one meal a round; the agent's lifestyle sets 1, 2 or 3 food per meal
+WARM   →  burn 1 wood every 2 rounds (a house makes it last 2× as long)
 BORROW →  pledge wood/nets/boats/houses to the on-chain bank for newly minted coins
-SPOIL  →  free food and wood rot every round; coins never spoil
+SPOIL  →  food and wood rot every round, offered or not (pledged goods don't); coins never spoil
 ```
 
 Five goods: **food, wood, nets, boats, houses**. A net doubles your catch and is crafted
@@ -69,22 +70,23 @@ from wood. Boats can be owned, traded and pledged, but nothing builds them yet.
 **Houses are built:** `build_house` uses up 16 wood (÷ crafting skill) when the build
 starts, and the house goes on-chain at once, unfinished — so it can be pledged for a
 construction loan — then takes 3 building shifts. Unfinished, it gives nothing and can't
-be sold; a build left for other work waits. Finished, it gives +1.5 wellbeing a meal,
+be sold; a build left for other work waits. Finished, it gives +1.5 wellbeing a round,
 halves firewood and keeps up to 10 food from rotting, and it can be sold. Agents see a
 payback line from real numbers: the wood at market plus the shifts' forgone earnings,
-what a house gives a minute, and what a loan against it costs a minute.
+what a house gives a round, and what a loan against it costs a round.
 
 **The goal is wellbeing**, counted every meal period (numbers in `CFG.WELLBEING`, shown
 to agents in the prompt): eating 1/2/3 food → +1.0/+1.6/+2.0, a missed meal −2; warm
 +0.5, cold −1; owning a house +1.5; each rest shift +1.0. At the end, every 10 coins of
 net worth adds 1 point: cash, plus goods at last price × the share of what was offered
-in the last minute that sold (so an unsold glut isn't counted at full price), an
+in the last 20 rounds that sold (so an unsold glut isn't counted at full price), an
 unfinished house as the wood in it, minus debt with interest to now. Lifestyle is a
 standing choice (`set_lifestyle`), so food demand rises with income and falls when food
 is dear. Rest has value, so working is a choice. After 3 missed meals or 2 missed fires, yield halves.
 
 **Fish come from one shared lake** (`CFG.LAKE`): catch scales with how full it is, and
-it regrows logistically each round. Overfishing lowers everyone's catch.
+it regrows logistically each round (scaled so it feeds the same per meal as before rounds
+became turns). Overfishing lowers everyone's catch.
 
 **Skills:** every agent draws a random skill per job (0.5–1.5) from a fixed `SEED`, so
 the same village is reborn every run. No job is assigned; agents see their skills, what
@@ -111,16 +113,19 @@ Rules, all enforced on-chain (dials in `CFG.BANK`):
 - **Capital limit:** all loans together ≤ equity / `KAPPA` (0.10). Defaults eat equity,
   which tightens lending for everyone.
 - **Interest by time held:** `RATE_PER_MIN` (5%) a minute on the principal, accrued per
-  slot, nothing up front. The borrower picks a term of 1, 2 or 3 minutes; a top-up keeps
-  the due slot. Repaying pays interest first; under 1 coin left owing is forgiven.
+  slot, nothing up front; agents see it per round at the measured round length. The
+  borrower picks a term of 10, 20 or 30 rounds (`TERM_ROUNDS`): the chain counts slots, so
+  a new loan is sent with 0.8 × term × measured slots per round, and the keeper collects
+  at the promised round, not before. A top-up keeps the due round. Repaying pays interest
+  first; under 1 coin left owing is forgiven.
 - **At the deadline, by anyone:** `liquidate` is permissionless once a loan is overdue or
   on a margin call (debt > `MARGIN` of the collateral). Overdue with the cash to cover it,
   the debt is simply collected from the debtor's cash — no penalty, collateral released.
   Otherwise it's a foreclosure: a 10% penalty, cash collected first, then only as many
-  goods as needed are seized at 80% of the last price and fire-sold into the auction; a
+  goods as needed are seized at 80% of the last price and sold into the auction (descending, §4); a
   seized item worth more than the shortfall is refunded in cash, and the rest go back.
   Losses bigger than the bank's cash become `bad_debt`. The keeper — a separate keypair
-  with no authority — calls it on every overdue loan right after its due slot.
+  with no authority — calls it on every overdue loan at its due round.
 - **Dividend:** half the equity above `KAPPA × loans` plus a floor (the seed + 10%) is
   paid to every agent equally by the permissionless `pay_dividend`, once per round.
 - **Books:** every identity in the `lib.rs` header (`Σ agent cash + bank cash = start
@@ -179,13 +184,15 @@ the loan is overdue by the chain's `Clock` or under margin at last prices.
 3. Each good's order book goes to `clear_auction`. **Orders are pre-sorted off-chain;
    the program verifies sortedness in one O(n) pass** rather than sorting on-chain. An
    unsorted book is rejected (verified with a real transaction).
-4. The clearing price is the midpoint of the last crossing bid/ask; every filled order
-   settles atomically in that transaction.
+4. The clearing price is the last price, clamped into the range where the book clears
+   (the exchange-auction "closest to the reference price" rule), so a one-unit order can't
+   move it without trading through every real order. Every fill settles atomically in that
+   transaction.
 5. The backend reads the ledger back and replaces its local mirror — **the chain is the
    source of truth**.
 
-The village clock freezes while a round settles; auctions and the dividend go out in
-parallel (~1.2s per round at 30 agents).
+Nothing moves while a round settles: rounds are turns, so the next decisions start only
+after it. Auctions and the dividend go out in parallel (~1.2s per round at 30 agents).
 
 ### Measured compute (early load test, `solana-test-validator`)
 
@@ -243,10 +250,23 @@ All three are in FUTURE_PLAN.md §6.
 
 ## 4. The market
 
-Uniform-price batch auction, one round every `ROUND_TICKS` ticks (default 6 × 500ms =
-3s), per good, cleared on-chain (§3). Agents post orders with `place_order`; the backend
-checks them against each agent's **free** (uncommitted) cash and goods first, so the
-chain is never sent an order that would fail.
+Uniform-price batch auction, once a round, per good, cleared on-chain (§3). Agents post
+orders with `place_order` (optional `reason`); the backend checks them against the agent's
+cash and goods first, so the chain is never sent an order that would fail.
+
+- **Price-time priority:** at the same limit the older order (lower arrival `seq`) fills
+  first, never the lower agent index. The bank's sale queues last at its price.
+- **Standing orders:** what doesn't fill stands; each decision's orders replace the
+  agent's standing ones (re-posting the same side, good and price at no larger quantity
+  keeps its `seq`; posting none cancels them). An agent that times out keeps them.
+  Remainders come from replaying the chain's fill walk, checked against the balances.
+  Meals, fires and rot shrink an agent's own asks first.
+- **Depth ladder** (`CFG.LADDER`): agents see last round's book before clearing (top 3
+  levels a side), what sold and went unsold, and for each of their orders how much was
+  queued ahead of it.
+- **The bank's sale of seized goods descends:** from the price before the seizure, 5%
+  lower each round nothing sells, never below its book value; never re-anchored on its own print.
+- **No self-trades:** an order that would cross the agent's own opposite order is refused.
 
 **Not an AMM:** its price is a function of reserves, not of agents disagreeing, and it
 guarantees liquidity, which would hide scarcity.
@@ -261,11 +281,11 @@ Every decision goes through the same tools (`backend/src/tools.mjs`), whichever 
 answers:
 
 ```
-gather_food / gather_wood / craft_net / build_house / rest   — choose your next shift (needs a reason)
+gather_food / gather_wood / craft_net / build_house / rest   — choose this round's shift (needs a reason)
 set_lifestyle                                                 — food per meal, 1–3
-place_order                                                   — limit order for the next round
-borrow / repay                                                — bank loan, term 1–3 min (settles next round)
-check_market                                                  — recent prices and volumes
+place_order                                                   — limit order; stands until filled or replaced
+borrow / repay                                                — bank loan, term 10/20/30 rounds (settles this round)
+check_market                                                  — last round's book, prices and volumes
 ```
 
 | Brain | File | Notes |
@@ -279,8 +299,10 @@ per-turn observation: cash and goods (free vs. committed), hunger, wellbeing, la
 level, prices, sell-through, and a short memory of what just happened, including
 rejected actions.
 
-Decisions happen **only when an agent finishes a shift**, not every tick, which keeps
-cost low. Wake-ups are staggered over `STAGGER_MS`.
+**One decision per agent per round**, all in parallel. The round waits up to
+`DECIDE_TIMEOUT_MS` (8s); a late call is aborted and anything it still tries is refused,
+so it never touches a round that has run; the agent keeps its last job and standing
+orders. Each round logs how long it waited for its slowest agent.
 
 ### Cost, measured
 

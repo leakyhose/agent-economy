@@ -15,19 +15,23 @@ const coins = c => (c / 100).toFixed(2);
 const rounds = ev.filter(e => e.type === 'round');
 // older runs had 3 or 4 goods (no boats, no houses), a bank without equity, no metrics; read what the run has
 const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'].slice(0, rounds[0]?.prices.length ?? final?.chain.lastPrice.length ?? 3);
-const G = GOODS.map((_, g) => g);
+const G = GOODS.map((_, g) => g);                       // every slot, incl. the dead boat slot (index order = the chain's)
+const SHOWN = G.filter(g => GOODS[g] !== 'boats');      // boats are never made or shown; old runs logged zeros for them
+const perGood = f => SHOWN.map(g => f(GOODS[g], g)).join('  ');
 const decisions = ev.filter(e => e.type === 'decision');
 const name = id => meta.agents[id]?.name ?? `#${id}`;
 const pct = (a, b) => b ? `${Math.round(a / b * 100)}%` : '—';
 const avg = xs => xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
 const giniOf = xs => { const v = [...xs].sort((a, b) => a - b), n = v.length, sum = v.reduce((s, x) => s + x, 0);
   return n && sum ? v.reduce((acc, x, i) => acc + (2 * (i + 1) - n - 1) * x, 0) / (n * sum) : 0; };
+// runs since step D count time in rounds (turns); older ones in 3s rounds and minutes
+const turns = !!meta.config.BANK?.TERM_ROUNDS;
 const hr = t => console.log(`\n── ${t} ${'─'.repeat(Math.max(0, 60 - t.length))}`);
 
 console.log(`run ${path.basename(dir)}   brain ${meta.brain}   ${meta.agents.length} agents   ${rounds.length} rounds   ${decisions.length} decisions`);
 
 hr('market: did agents try to trade, and did it work?');
-for (const g of G) {
+for (const g of SHOWN) {
   const b = rounds.map(r => r.book?.[g]).filter(Boolean);
   const withBids = b.filter(x => x.bids).length, withAsks = b.filter(x => x.asks).length;
   const both = b.filter(x => x.bids && x.asks).length;
@@ -39,6 +43,84 @@ for (const g of G) {
     (noCross ? `   (${noCross} rounds where best bid < best ask)` : ''));
   const p = rounds.map(r => r.prices[g]);
   if (p.length) console.log(`       price ${coins(p[0])} -> ${coins(p.at(-1))}   range ${coins(Math.min(...p))}–${coins(Math.max(...p))}`);
+}
+
+// ---- market quality (FIX_PLAN step D). Newer runs log every order sent to each auction
+// with its arrival seq and fill; for older runs the books are rebuilt from
+// the order events between rounds, and fills from the round's trades (approximate).
+hr('market quality: priority, price discovery');
+{
+  const N = meta.agents.length, logged = rounds.some(r => r.orders);
+  const books = logged ? rounds.map(r => r.orders.filter(o => o.agent !== 'bank'))
+    : (() => {
+      const out = rounds.map(() => []); let k = 0;
+      for (const e of ev) {
+        if (e.type === 'round') k++;
+        else if (e.type === 'order' && k < rounds.length) out[k].push({ g: GOODS.indexOf(e.good), side: e.side, agent: e.agent, qty: e.qty, limit: e.price, filled: 0 });
+      }
+      out.forEach((os, i) => {            // a round's trades, handed out to that agent's orders best price first
+        for (const t of rounds[i].trades ?? []) {
+          let left = t.qty;
+          for (const o of os.filter(o => o.agent === t.agent && GOODS[o.g] === t.good && o.side === t.side)
+            .sort((x, y) => t.side === 'sell' ? x.limit - y.limit : y.limit - x.limit)) { const q = Math.min(left, o.qty - o.filled); o.filled += q; left -= q; }
+        }
+      });
+      return out;
+    })();
+  console.log(logged ? '(from the orders each auction was sent; "was" = this analysis of run 17-04-02, before step D)' : '(older run: books rebuilt from order events, fills from trades — approximate)');
+  const live = rounds.map((r, i) => r.live ?? new Set(books[i].map(o => o.agent)).size);
+  console.log(`agents with an order: ${pct(avg(live), N)} per round on average (was 57%)`);
+  const F = 0, foodR = rounds.map((r, i) => ({ r, i, b: r.book?.[F] })).filter(x => x.b);
+  const asksOnly = foodR.filter(x => x.b.asks && !x.b.bids).length;
+  console.log(`food rounds with asks but no bids: ${asksOnly}/${foodR.length} (was 47/99)`);
+  // the print below the cheapest ask of the round before: sellers undercutting the old floor
+  const below = foodR.filter(x => x.i > 0 && x.r.volumes[F] > 0 && rounds[x.i - 1].book?.[F]?.asks);
+  console.log(`food traded below the previous round's cheapest ask: ${below.filter(x => x.r.prices[F] < rounds[x.i - 1].book[F].bestAsk).length} of ${below.length} trading rounds (was 0/51)`);
+  // after a food ask that filled nothing, does the agent's next food ask go below that round's cheapest ask?
+  let hopeless = 0, broke = 0;
+  for (let i = 0; i < books.length; i++) {
+    const asks = books[i].filter(o => o.g === F && o.side === 'sell'), floor = Math.min(...asks.map(o => o.limit));
+    for (const o of asks.filter(o => !o.filled)) {
+      const next = books.slice(i + 1).map(b => b.find(x => x.g === F && x.side === 'sell' && x.agent === o.agent)).find(Boolean);
+      if (!next) continue;
+      hopeless++; if (next.limit < floor) broke++;
+    }
+  }
+  console.log(`after an unfilled food ask, the agent's next ask broke below that round's floor: ${broke}/${hopeless} (was 17/802)`);
+  const levels = books.map(b => new Set(b.filter(o => o.g === F && o.side === 'sell').map(o => o.limit)).size).filter((n, i) => books[i].filter(o => o.g === F && o.side === 'sell').length >= 2);
+  if (levels.length) console.log(`distinct food ask prices per round (rounds with 2+ asks): avg ${avg(levels).toFixed(1)}, a single price in ${levels.filter(n => n === 1).length}/${levels.length} rounds (was 2.8, 16/96)`);
+  // ties: orders at the same price, same side and good, that filled differently. With price-time
+  // priority the lower agent index should win about half of them.
+  let ties = 0, lowWon = 0;
+  for (const b of books) {
+    const groups = {};
+    for (const o of b) if (typeof o.agent === 'number') (groups[`${o.g}${o.side}${o.limit}`] ??= []).push(o);
+    for (const os of Object.values(groups)) for (let x = 0; x < os.length; x++) for (let y = x + 1; y < os.length; y++) {
+      const fx = os[x].filled / os[x].qty, fy = os[y].filled / os[y].qty;
+      if (fx === fy || os[x].agent === os[y].agent) continue;
+      ties++; if ((fx > fy) === (os[x].agent < os[y].agent)) lowWon++;
+    }
+  }
+  console.log(`tied orders that filled differently: lower agent index won ${lowWon} of ${ties} (${pct(lowWon, ties)}; 50% = no index bias; was 434/479)`);
+  // the bank's sale of seized goods: its print against what the same book would have printed without it
+  const sales = rounds.flatMap(r => (r.noBankPrice ?? []).map((p, g) => ({ r, g, p })).filter(x => x.p != null && x.r.book[x.g].bankQty));
+  if (sales.length) {
+    const d = sales.map(x => (x.r.prices[x.g] - x.p) / x.p);
+    console.log(`bank sale rounds ${sales.length}: print vs the no-bank clear avg ${(avg(d) * 100).toFixed(1)}%, worst ${(Math.min(...d) * 100).toFixed(1)}% (target within ~3%)`);
+  } else if (logged) console.log('bank sale: no round where the bank sold into a crossing book');
+  const bankAsks = rounds.filter(r => r.book?.some(b => b.bankPrice != null));
+  if (bankAsks.length) console.log(`  bank asks by round: ${bankAsks.slice(0, 12).map(r => `r${r.round} ${r.book.map((b, g) => b.bankPrice != null ? `${GOODS[g]} ${b.bankQty}@${coins(b.bankPrice)}` : '').filter(Boolean).join(',')}`).join('  ')}`);
+  // turns: how long each round waited for the slowest agent, and how many didn't answer in time
+  const dec = rounds.map(r => r.decide).filter(Boolean);
+  const mins = final ? (new Date(final.stoppedAt) - new Date(meta.startedAt)) / 60_000 : null;
+  if (dec.length) {
+    const w = dec.map(d => d.slowest).sort((a, b) => a - b), q = p => w[Math.min(w.length - 1, Math.floor(p * w.length))];
+    console.log(`round wait (slowest agent): median ${(q(0.5) / 1000).toFixed(1)}s  p90 ${(q(0.9) / 1000).toFixed(1)}s  max ${(w.at(-1) / 1000).toFixed(1)}s   ` +
+      `timed out ${dec.reduce((s, d) => s + d.timeouts, 0)} of ${dec.length * N} turns, no answer ${dec.reduce((s, d) => s + (d.noAnswer ?? 0), 0)}   ` +
+      `round length avg ${(avg(rounds.map(r => r.roundMs ?? 0)) / 1000).toFixed(1)}s`);
+  }
+  if (mins) console.log(`calls per minute ${((final.llm.calls ?? 0) / mins).toFixed(0)}   decisions per minute ${(decisions.length / mins).toFixed(0)}   rounds per minute ${(rounds.length / mins).toFixed(1)}` +
+    ` (was 511, 329, 16.5)`);
 }
 
 hr('what agents chose to do');
@@ -55,14 +137,14 @@ if (rejected.length) {
   for (const o of rejected) { const k = o.result.split(':')[0].slice(0, 50); why[k] = (why[k] ?? 0) + 1; }
   console.log('  rejections: ' + Object.entries(why).map(([k, v]) => `"${k}" x${v}`).join('; '));
 }
-const noAct = decisions.filter(d => !d.actions.some(x => ['gather_food', 'gather_wood', 'craft_net', 'build_house', 'rest'].includes(x.tool)));
+const noAct = decisions.filter(d => !d.actions.some(x => ['gather_food', 'gather_wood', 'craft_net', 'build_house', 'rest'].includes(x.tool)));   // rest: old runs
 if (noAct.length) console.log(`decisions that never chose a shift (sat idle): ${noAct.length} (${pct(noAct.length, decisions.length)})`);
 
 hr('needs, waste and money');
 const hungryRounds = rounds.map(r => r.agents?.filter(a => a.hunger > 0).length ?? 0);
 const spoiled = G.map(g => rounds.reduce((s, r) => s + (r.spoiled?.[g] ?? 0), 0));
 console.log(`hungry agents per round: avg ${(hungryRounds.reduce((s, x) => s + x, 0) / Math.max(1, hungryRounds.length)).toFixed(1)}, max ${Math.max(0, ...hungryRounds)}`);
-console.log(`spoiled: ${GOODS.map((n, g) => `${n} ${spoiled[g]}`).join('  ')}`);
+console.log(`spoiled: ${perGood((n, g) => `${n} ${spoiled[g]}`)}`);
 const last = rounds.at(-1)?.agents ?? [];
 if (last.length) {
   const cash = last.map(a => a.cash).sort((a, b) => a - b), n = cash.length, gini = giniOf(cash);
@@ -70,7 +152,7 @@ if (last.length) {
   console.log(`money that changed hands: ${coins(moved)}   cash gini ${gini.toFixed(2)}   ` +
     `poorest ${coins(cash[0])}  median ${coins(cash[Math.floor(n / 2)])}  richest ${coins(cash.at(-1))}`);
   const goods = G.map(g => last.reduce((s, a) => s + a.goods[g], 0));
-  console.log(`held at the end: ${GOODS.map((n, g) => `${n} ${goods[g]}`).join('  ')}  (${(goods[0] / n).toFixed(1)} food per agent)`);
+  console.log(`held at the end: ${perGood((n, g) => `${n} ${goods[g]}`)}  (${(goods[0] / n).toFixed(1)} food per agent)`);
 }
 
 hr('the economy, round by round');
@@ -81,29 +163,31 @@ if (rounds[0]?.metrics) {
   const made = G.map(g => M.reduce((s, m) => s + (m.made[g] ?? 0), 0));
   console.log(`GDP ${coins(M.reduce((s, m) => s + m.gdp, 0))} over ${M.length} rounds; per round by quarter of the run: ` +
     [0, 1, 2, 3].map(k => M.slice(k * q, (k + 1) * q)).filter(x => x.length).map(x => coins(avg(x.map(m => m.gdp)))).join(' → '));
-  console.log(`  made: ${GOODS.map((n, g) => `${n} ${made[g]}`).join('  ')}`);
+  console.log(`  made: ${perGood((n, g) => `${n} ${made[g]}`)}`);
   const pi = M.map(m => m.priceIndex), infl = M.map(m => m.inflation).filter(x => x != null);
   console.log(`price index ${pi[0].toFixed(2)} → ${pi.at(-1).toFixed(2)}   range ${Math.min(...pi).toFixed(2)}–${Math.max(...pi).toFixed(2)}   ` +
-    (infl.length ? `inflation per minute: last ${(infl.at(-1) * 100).toFixed(1)}%, average ${(avg(infl) * 100).toFixed(1)}%` : 'inflation: run shorter than a minute'));
-  const sh = M.reduce((s, m) => ({ worked: s.worked + m.shifts.worked, rested: s.rested + m.shifts.rested, idle: s.idle + m.shifts.idle }), { worked: 0, rested: 0, idle: 0 });
+    (infl.length ? `inflation per ${meta.config.INFLATION_ROUNDS ?? 20} rounds: last ${(infl.at(-1) * 100).toFixed(1)}%, average ${(avg(infl) * 100).toFixed(1)}%` : 'inflation: run too short'));
+  // rested: gone since phase 1, but old runs logged it, so it still counts toward all shifts
+  const allOf = m => m.shifts.worked + (m.shifts.rested ?? 0) + m.shifts.idle;
+  const sh = M.reduce((s, m) => ({ worked: s.worked + m.shifts.worked, rested: s.rested + (m.shifts.rested ?? 0), idle: s.idle + m.shifts.idle }), { worked: 0, rested: 0, idle: 0 });
   console.log(`employment ${pct(sh.worked, sh.worked + sh.rested + sh.idle)} of ${sh.worked + sh.rested + sh.idle} shifts worked ` +
-    `(rested ${sh.rested}, idle/unchosen ${sh.idle}); by quarter: ` +
+    `(${sh.rested ? `rested ${sh.rested}, ` : ''}idle/unchosen ${sh.idle}); by quarter: ` +
     [0, 1, 2, 3].map(k => M.slice(k * q, (k + 1) * q)).filter(x => x.length).map(x => {
-      const w = x.reduce((s, m) => s + m.shifts.worked, 0), all = x.reduce((s, m) => s + m.shifts.worked + m.shifts.rested + m.shifts.idle, 0);
+      const w = x.reduce((s, m) => s + m.shifts.worked, 0), all = x.reduce((s, m) => s + allOf(m), 0);
       return pct(w, all); }).join(' → '));
   const unsold = G.map(g => M.reduce((s, m) => s + (m.unsold[g] ?? 0), 0));
   console.log(`slack (offered, unsold): ${coins(M.reduce((s, m) => s + m.slack, 0))} in all, avg ${pct(avg(M.filter(m => m.slackShare != null).map(m => m.slackShare)), 1)} of the value offered per round; ` +
-    `units unsold ${GOODS.map((n, g) => `${n} ${unsold[g]}`).join('  ')}`);
-  console.log(`wellbeing per agent ${M[0].wellbeing} → ${M.at(-1).wellbeing}  (avg ${(avg(M.map(m => m.wbRound)) * 20).toFixed(1)} a minute)   ` +
+    `units unsold ${perGood((n, g) => `${n} ${unsold[g]}`)}`);
+  console.log(`wellbeing per agent ${M[0].wellbeing} → ${M.at(-1).wellbeing}  (avg ${turns ? `${avg(M.map(m => m.wbRound)).toFixed(2)} a round` : `${(avg(M.map(m => m.wbRound)) * 20).toFixed(1)} a minute`})   ` +
     `net-worth gini ${M[0].gini.toFixed(2)} → ${M.at(-1).gini.toFixed(2)}`);
   const cr = M.map(m => m.credit);
   console.log(`credit outstanding ${coins(cr.at(-1))} at the end (peak ${coins(Math.max(...cr))})   money ${coins(M[0].money)} → ${coins(M.at(-1).money)}`);
-  const cons = rounds.flatMap(r => r.bank.loans).filter(l => l.kind === 'borrow' && l.construction && l.ok !== false);
-  console.log(`houses: ${M.at(-1).housesBuilt} built, ${M.at(-1).building} unfinished at the end, ${M.at(-1).homeowners} of ${meta.agents.length} agents live in one; ` +
-    `${cons.length} construction loans (${coins(cons.reduce((s, l) => s + l.amount, 0))})`);
+  console.log(`houses: ${M.at(-1).housesBuilt} built, ${M.at(-1).building} unfinished at the end, ${M.at(-1).homeowners} of ${meta.agents.length} agents live in one`);
   const lastA = rounds.at(-1).agents;
-  if (lastA[0]?.score !== undefined) console.log(`end score (wellbeing + net worth / ${meta.config.WELLBEING?.COINS_PER_POINT ?? 10} coins): ` +
-    `avg ${avg(lastA.map(a => a.score)).toFixed(1)}   homeowners ${avg(lastA.filter(a => a.house).map(a => a.score)).toFixed(1)}   others ${avg(lastA.filter(a => !a.house).map(a => a.score)).toFixed(1)}`);
+  // the score is wellbeing alone; net worth is reported beside it, not added to it
+  if (lastA[0]?.wellbeing !== undefined) console.log(`end wellbeing: avg ${avg(lastA.map(a => a.wellbeing)).toFixed(1)}   ` +
+    `homeowners ${avg(lastA.filter(a => a.house).map(a => a.wellbeing)).toFixed(1)}   others ${avg(lastA.filter(a => !a.house).map(a => a.wellbeing)).toFixed(1)}   ` +
+    `net worth avg ${coins(avg(lastA.map(a => a.wealth ?? 0)))} coins`);
 } else console.log('(not recorded: the run predates GDP and the other metrics)');
 
 hr('money and the bank');
@@ -122,14 +206,15 @@ if (rounds[0]?.bank) {
   if (onChainNo.length) console.log(`refused on-chain: ${onChainNo.filter(l => l.kind === 'borrow').length} borrows, ${onChainNo.filter(l => l.kind === 'repay').length} repays`);
   const terms = {};
   for (const l of loans) if (l.kind === 'borrow' && l.term) terms[l.term] = (terms[l.term] ?? 0) + 1;
-  if (Object.keys(terms).length) console.log(`terms chosen (new loans): ${Object.entries(terms).map(([k, v]) => `${k} min ×${v}`).join('  ')}`);
+  if (Object.keys(terms).length) console.log(`terms chosen (new loans): ${Object.entries(terms).map(([k, v]) => `${k} ${turns ? 'rounds' : 'min'} ×${v}`).join('  ')}`);
+  // margin calls are gone; old runs still have them in the log, so they are still counted
+  const margin = fc.filter(f => f.reason === 'margin').length;
   if (rounds.at(-1).collected) console.log(`loans come due: ${col.length} collected from cash at the deadline (no penalty, ${coins(col.reduce((s, f) => s + f.taken, 0))}), ` +
-    `${fc.filter(f => f.reason === 'overdue').length} foreclosed overdue, ${fc.filter(f => f.reason === 'margin').length} margin calls`);
+    `${fc.filter(f => f.reason === 'overdue').length} foreclosed overdue${margin ? `, ${margin} margin calls` : ''}`);
   const why = f => [f.reason && (f.reason === 'margin' ? 'margin call' : 'overdue'),
     goodsOf(f.seized) && `seized ${goodsOf(f.seized)}`, goodsOf(f.returned) && `returned ${goodsOf(f.returned)}`].filter(Boolean).join(', ');
   const goodsOf = q => q?.map((n, g) => n ? `${n} ${GOODS[g]}` : '').filter(Boolean).join('+');
-  console.log(`foreclosures ${fc.length}` + (fc.length ? ` (${fc.filter(f => f.reason === 'margin').length} margin call, ${fc.filter(f => f.reason === 'overdue').length} overdue): ` +
-    fc.map(f => `r${f.round} ${f.name}${why(f) ? ` (${why(f)})` : ''}`).join('; ') : ''));
+  console.log(`foreclosures ${fc.length}` + (fc.length ? `: ` + fc.map(f => `r${f.round} ${f.name}${why(f) ? ` (${why(f)})` : ''}`).join('; ') : ''));
   const refused = decisions.flatMap(d => d.actions.filter(x => x.tool === 'borrow' && !x.result.startsWith('Loan requested')));
   if (refused.length) console.log(`borrow requests refused before reaching the chain: ${refused.length}` +
     ` (${refused.filter(x => x.result.startsWith('The bank cannot lend')).length} at the bank's lending limit)`);
@@ -140,9 +225,7 @@ if (rounds[0]?.bank) {
       `lending cap now ${coins(endB.lendingCap)}`);
     console.log(`  over time: ` + rounds.filter((_, i) => i % step === 0 || i === rounds.length - 1).map(r => `r${r.round} ${coins(r.bank.equity)}`).join('  '));
     console.log(`  income: interest ${coins(b.interestIncome)}  penalties ${coins(b.penalties)}  sales of seized goods ${coins(b.recovered)}   ` +
-      `out: written off ${coins(b.writtenOff)}  dividends ${coins(b.dividendsPaid)}${b.refunds !== undefined ? `  refunds ${coins(b.refunds)}` : ''}   bad debt ${coins(b.badDebt)}`);
-    const divs = rounds.filter(r => r.bank.dividend);
-    if (divs.length) console.log(`  dividends paid in ${divs.length} rounds, ${coins(divs.reduce((s, r) => s + r.bank.dividend.perAgent, 0))} per agent in all`);
+      `out: written off ${coins(b.writtenOff)}${b.refunds !== undefined ? `  refunds ${coins(b.refunds)}` : ''}   bad debt ${coins(b.badDebt)}`);
   }
   // a price index for runs that didn't record one: food, wood, nets weighted by what a villager uses (8 food : 4 wood : 0.1 net)
   const cpi = r => r.metrics?.priceIndex ?? (r.prices[0] * 8 + r.prices[1] * 4 + r.prices[2] * 0.1) / (500 * 8 + 300 * 4 + 2000 * 0.1);
@@ -230,8 +313,9 @@ for (const s of standing) {
   const main = Object.entries(top).sort((a, b) => b[1] - a[1])[0];
   const sk = meta.agents[s.i]?.skills;
   const end = last[s.i];
-  console.log(`${name(s.i).padEnd(9)} ${sk ? `f${sk.gather_food} w${sk.gather_wood} n${sk.craft_net}  ` : ''}cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}${s.goods.length > 3 ? `  boats ${s.goods[3]}` : ''}` +
-    `${s.goods.length > 4 ? `  houses ${s.goods[4] + (s.locked?.[4] ?? 0)}${end?.building != null ? ' (1 unfinished)' : ''}` : ''}${end?.score !== undefined ? `  score ${end.score.toFixed(1)}` : ''}   ` +
+  console.log(`${name(s.i).padEnd(9)} ${sk ? `f${sk.gather_food} w${sk.gather_wood} n${sk.craft_net}  ` : ''}cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}` +
+    `${s.goods.length > 4 ? `  houses ${s.goods[4] + (s.locked?.[4] ?? 0)}${end?.building != null ? ' (1 unfinished)' : ''}` : ''}` +
+    `${end?.wellbeing !== undefined ? `  wellbeing ${end.wellbeing.toFixed(1)}` : ''}${end?.wealth !== undefined ? `  net worth ${coins(end.wealth)}` : ''}   ` +
     `mostly ${main ? `${main[0]} (${main[1]}/${mine.length})` : '—'}`);
 }
 

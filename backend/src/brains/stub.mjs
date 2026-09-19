@@ -44,18 +44,14 @@ export function stubBrain() {
       // the bank: borrow when broke and holding collateral, repay as soon as affordable
       // (a fresh view: the sell orders above committed some goods)
       // Impatient ones repay early; the rest let the bank collect at the deadline.
-      const f = t.view(), term = f.terms[Math.floor(rnd() * f.terms.length)];
-      if (f.debt && f.availCash > f.debtNow && (a.traits.patience < 0.5 || f.dueIn < 5)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
-      else if (!f.debt && f.credit && f.unfinishedFree && f.maxLoan > 100 && cash < p.food * 12) {
-        // a construction loan: the unfinished house is the collateral, to eat while building
-        const amount = Math.floor(f.maxLoan * 0.8) / 100;
-        t.exec('borrow', { amount, term_minutes: term, wood: 0, nets: 0, boats: 0, houses: 1, reason: 'a loan against the house I am building' });
-      } else if (!f.debt && f.credit && cash < p.food * 3 && f.maxLoan > 100) {
+      const f = t.view();
+      if (f.debt && f.availCash > f.debtNow && (a.traits.patience < 0.5 || f.dueIn <= 2)) t.exec('repay', { amount: f.debtNow / 100 + 0.5 });
+      else if (!f.debt && f.credit && cash < p.food * 3 && f.maxLoan > 100) {
         // pledged nets still fish, so the net goes in the pledge too
-        const pledge = { wood: Math.max(0, f.wood - 3), nets: f.nets, boats: f.boats };
-        const value = pledge.wood * p.wood + pledge.nets * p.nets + pledge.boats * p.boats;   // coins
-        const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100;       // under LTV
-        if (amount >= 1) t.exec('borrow', { amount, term_minutes: term, ...pledge, reason: 'short of cash' });
+        const pledge = { wood: Math.max(0, f.wood - 3), nets: f.nets };
+        const value = pledge.wood * p.wood + pledge.nets * p.nets;                     // coins
+        const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100; // under LTV
+        if (amount >= 1) t.exec('borrow', { amount, ...pledge, reason: 'short of cash' });
       }
 
       // pick the shift
@@ -64,7 +60,6 @@ export function stubBrain() {
       if (g.building !== null && !v.hunger && rnd() < 0.8) act = 'build_house';          // keep building, mostly
       else if (wantsHouse && g.wood >= v.houseWood && !v.hunger) act = 'build_house';     // enough wood saved: start
       else if (v.wood >= v.netWood + (wantsHouse ? v.houseWood : 0) && (crafter || !v.netsUsable)) act = 'craft_net';
-      else if (!v.hunger && !v.cold && v.food >= 4 * want && v.wood >= 2 && rnd() < 0.2) act = 'rest';   // fed and warm: take a break
       else {
         // a shift's output is worth what sells of it (sell-through), plus what you'd use yourself
         const st = x => 0.3 + 0.7 * x;

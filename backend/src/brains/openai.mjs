@@ -23,7 +23,7 @@ export function openaiBrain() {
   const client = new OpenAI();
   const limit = semaphore(CFG.LLM_CONCURRENCY);
   const [pin, pout] = PRICE[CFG.MODEL] ?? [0, 0];
-  const s = { calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0 };
+  const s = { calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0 };
 
   return {
     name: `openai (${CFG.MODEL})`,
@@ -43,8 +43,10 @@ export function openaiBrain() {
             // gpt-5.x models reason by default, and chat completions refuses tools unless
             // reasoning is off. Off is also faster and cheaper — this is a quick decision.
             ...(CFG.MODEL.startsWith('gpt-5') ? { reasoning_effort: 'none' } : {}),
-          }));
+          }, { signal: t.signal }));
         } catch (e) {
+          if (t.signal?.aborted) { s.timedOut++; return; }   // the round stopped waiting
+
           if (e instanceof OpenAI.RateLimitError) { s.rateLimited++; await new Promise(r => setTimeout(r, 2000)); continue; }
           s.errors++;
           if (s.errors <= 3) console.error(`[openai] ${e.status ?? ''} ${e.message}`);
@@ -54,6 +56,7 @@ export function openaiBrain() {
         s.inTok += r.usage?.prompt_tokens ?? 0;
         s.outTok += r.usage?.completion_tokens ?? 0;
 
+        t.acted.answered = true;
         const msg = r.choices[0].message;
         if (msg.content) a.thought = msg.content.trim().slice(0, 240);
         const calls = msg.tool_calls ?? [];
