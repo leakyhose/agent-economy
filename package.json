@@ -1,7 +1,0 @@
-{
-  "name": "agent-economy",
-  "private": true,
-  "scripts": {
-    "start": "node -e \"const p=require('node:path');const u=require('node:url');import(u.pathToFileURL(p.join(process.env.INIT_CWD||process.cwd(),'backend','src','server.mjs')).href)\""
-  }
-}

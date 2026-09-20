@@ -36,11 +36,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     return { gather_food: k[0], gather_wood: k[1], craft_net: k[2] };
   };
 
-  // Fixed prices for real GDP, in cents: the opening price of each good, and for a house
-  // (which opens with no price) what it takes to make — its wood plus its shifts of gathering.
-  const REAL_PRICES = CFG.START_PRICES.map((p, g) => g === HOUSES
-    ? CFG.TASKS.build_house.wood * CFG.START_PRICES[WOOD] + CFG.TASKS.build_house.shifts * CFG.TASKS.gather_wood.yield * CFG.START_PRICES[WOOD]
-    : p > 1 ? p : 0);
+  // Fixed prices for real GDP, in cents: the opening price of each good. A house opens at what
+  // it takes to make (its wood plus its shifts of gathering), so START_PRICES is the whole
+  // story; boats, at the chain's 1-cent minimum, are made by nothing and count for nothing.
+  const REAL_PRICES = CFG.START_PRICES.map(p => p > 1 ? p : 0);
   const none = () => GOODS.map(() => 0);
   const list = q => q.map((n, g) => n ? `${n} ${n === 1 ? GOODS[g].replace(/s$/, '') : GOODS[g]}` : '').filter(Boolean).join(' and ');
   const agents = initial.slots.map((s, i) => ({
@@ -61,7 +60,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     wbNow: { eating: 0, warmth: 0, house: 0 },      // the meal period in progress
     wbRecent: [],                                   // the last few meal periods, by source
     shifts: { gather_food: 0, gather_wood: 0, craft_net: 0, build_house: 0, idle: 0 },   // finished shifts, by kind (idle = not chosen)
-    building: null,                                 // a house under construction: { done, wood } (it is already one of goods[HOUSES])
+    building: null,                                 // a house under construction: { done (progress, out of build_house.shifts), shifts worked, wood } (it is already one of goods[HOUSES])
     housesBuilt: 0,
     fills: null,                                    // how the agent's orders did in the last round it traded in
     warmPhase: i % CFG.WARM_ROUNDS,
@@ -160,12 +159,17 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // ---- skills: how good an agent is at each kind of work -----------------------
   W.skill = (a, task) => a.skills[task] ?? 1;
   // Crafting divides a wood bill rather than multiplying a yield, so the full skill range
-  // would swing a house between 80 and 1000 wood. Clamped, the spread is 4× either way.
+  // would swing a net between 8 and 100 wood. Clamped, the spread is 4× either way.
   W.craftSkill = a => Math.min(CFG.CRAFT_CLAMP[1], Math.max(CFG.CRAFT_CLAMP[0], W.skill(a, 'craft_net')));
   W.netWood = a => Math.max(1, Math.round(CFG.TASKS.craft_net.wood / W.craftSkill(a)));
-  W.buildShifts = CFG.TASKS.build_house.shifts;
-  // A good nobody has ever traded has no price: its START_PRICE is a placeholder the chain
-  // insisted on, not a number anyone paid. Houses start that way.
+  // Crafting is the maker's skill for houses too: a build_house shift adds this much progress,
+  // and a house needs build_house.shifts of it. The wood stays flat (see W.houseWood).
+  const BUILD = CFG.TASKS.build_house.shifts;
+  W.buildSkill = a => Math.min(CFG.BUILD_CLAMP[1], Math.max(CFG.BUILD_CLAMP[0], W.skill(a, 'craft_net')));
+  W.buildShiftsFor = a => Math.ceil(BUILD / W.buildSkill(a));                  // a fresh house, whole shifts
+  W.buildShiftsLeft = a => a.building ? Math.ceil((BUILD - a.building.done) / W.buildSkill(a)) : W.buildShiftsFor(a);
+  // A good nobody has ever traded has no price: what agents are shown is what it costs to
+  // make (nets, houses), never the opening price, which nobody paid.
   W.traded = g => W.priceHistory.some(r => r.volumes[g] > 0);
 
   // ---- what agents can do (called through tools.mjs) --------------------------
@@ -182,7 +186,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       const wood = W.houseWood(a);
       if (W.availGood(a, WOOD) < wood) return `You need ${wood} wood to start a house; you have ${W.availGood(a, WOOD)} free.`;
       addDelta(a, WOOD, -wood); addDelta(a, HOUSES, 1);
-      a.building = { done: 0, wood };
+      a.building = { done: 0, shifts: 0, wood };
       emit('build_start', { agent: a.id, name: a.name, wood });
     }
     a.activity = { task, place: T.place, ...(kept ? { kept } : {}) };
@@ -328,21 +332,24 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     } else if (task === 'build_house') {
       // the house may have been seized or sold (as unfinished it can't be) since the shift began
       if (a.building) {
-        a.building.done++;
-        if (a.building.done >= W.buildShifts) {
+        a.building.done += W.buildSkill(a); a.building.shifts++;
+        if (a.building.done >= BUILD - 1e-9) {
+          const shifts = a.building.shifts;
           a.building = null; a.housesBuilt++; W.housesBuilt++; W.made[HOUSES]++;
           remember(a, 'You finished building your house. You live in it from now on.');
-          emit('house_built', { agent: a.id, name: a.name });
-        } else remember(a, `You worked on your house: ${a.building.done} of ${W.buildShifts} building shifts done.`);
+          emit('house_built', { agent: a.id, name: a.name, shifts });
+        } else remember(a, `You worked on your house: ${W.buildShiftsLeft(a)} more building shift${W.buildShiftsLeft(a) === 1 ? '' : 's'} to go.`);
       }
     }
     a.shifts[task] = (a.shifts[task] ?? 0) + 1;
     W.shiftsNow[task === 'idle' ? 'idle' : 'worked']++;
     // Learning by doing: a shift worked makes the agent a little better at that job, up to
     // LEARN_CAP times the skill it was born with. It is the economy's only source of growth.
-    if (CFG.LEARN && a.skills[task] != null) {
+    // Building is crafting work, and build_house is not a skill of its own: it trains craft_net.
+    const learn = task === 'build_house' ? 'craft_net' : task;
+    if (CFG.LEARN && a.skills[learn] != null) {
       a.skills0 ??= { ...a.skills };
-      a.skills[task] = Math.min(a.skills0[task] * CFG.LEARN_CAP, a.skills[task] * (1 + CFG.LEARN));
+      a.skills[learn] = Math.min(a.skills0[learn] * CFG.LEARN_CAP, a.skills[learn] * (1 + CFG.LEARN));
     }
   }
 
@@ -731,7 +738,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                     agents: agents.map(a => ({ id: a.id, cash: a.cash, goods: a.goods, locked: a.locked, debt: a.debt, debtNow: W.debtNow(a),
                       hunger: a.hunger, cold: a.cold,
                       activity: a.activity?.task ?? null, kept: !!a.activity?.kept, lifestyle: a.lifestyle,
-                      building: a.building ? a.building.done : null, house: W.hasHouse(a), housesBuilt: a.housesBuilt,
+                      building: a.building ? a.building.shifts : null, house: W.hasHouse(a), housesBuilt: a.housesBuilt,
                       wellbeing: +a.wellbeing.toFixed(2), wbParts: a.wbParts, wealth: Math.round(W.wealth(a)), shifts: a.shifts })) });
   }
 

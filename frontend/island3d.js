@@ -1,7 +1,19 @@
-// <island-3d> — orbitable contoured volcanic island. Listens for window "moku:state"
-// ({locations:[{id,name,color,x,z}], agents:[{id,act,color}]}) and emits "moku:location".
+// <island-3d> — orbitable volcanic island, one blob per agent. Each round plays as a day:
+// when a round settles everyone walks to the market (dusk), then back out to the area where
+// their next shift happens. Blobs walk the coast road at a steady pace, on the ground.
+// Drag to orbit, scroll to zoom.
 (function () {
   const SEA = 0;
+  // Where each task happens. An agent that is deciding (no task yet this round) stays put.
+  const AREAS = [
+    { id: "docks",    name: "Docks — fishing",          color: "#1f9fb5", x: -70, z: 38,  tasks: ["gather_food"] },
+    { id: "forest",   name: "Forest — chopping wood",   color: "#3f9450", x: 40,  z: -48, tasks: ["gather_wood"] },
+    { id: "workshop", name: "Workshop — crafting",      color: "#d98c2b", x: 60,  z: 8,   tasks: ["craft_net"] },
+    { id: "site",     name: "Building site — houses",   color: "#cf6046", x: -16, z: -50, tasks: ["build_house"] },
+    { id: "market",   name: "Market",                   color: "#8a8f98", x: 18,  z: 56,  tasks: ["idle"] },
+  ];
+  const MARKET = AREAS.at(-1);
+  const areaOf = task => AREAS.find(a => a.tasks.includes(task));
 
   function hash2(x, y) {
     const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
@@ -44,25 +56,46 @@
     return y;
   }
 
-  window.__islandHeight = height;
+  // The coast road: a loop of waypoints just above the beach. Blobs walk area -> road -> along
+  // it -> area, so nobody climbs the mountain or swims.
+  const ROAD = Array.from({ length: 36 }, (_, i) => {
+    const t = i / 36 * Math.PI * 2;
+    let r = 120;
+    while (r > 10 && height(Math.cos(t) * r, Math.sin(t) * r) < 3.5) r--;
+    return [Math.cos(t) * (r - 3), Math.sin(t) * (r - 3)];
+  });
+  const nearestRoad = (x, z) => ROAD.reduce((best, p, i) =>
+    Math.hypot(p[0] - x, p[1] - z) < Math.hypot(ROAD[best][0] - x, ROAD[best][1] - z) ? i : best, 0);
+  // waypoints from (x0,z0) to (x1,z1); (ox,oz) keeps each blob in its own lane on the road
+  function route(x0, z0, x1, z1, ox, oz) {
+    const path = [];
+    if (Math.hypot(x1 - x0, z1 - z0) > 40) {
+      const a = nearestRoad(x0, z0), b = nearestRoad(x1, z1), n = ROAD.length;
+      const step = (b - a + n) % n <= n / 2 ? 1 : n - 1;         // the shorter way round
+      for (let i = a; ; i = (i + step) % n) { path.push([ROAD[i][0] + ox, ROAD[i][1] + oz]); if (i === b) break; }
+    }
+    path.push([x1, z1]);
+    return path;
+  }
+  const rand = (id, salt) => { const v = Math.sin((id + 1) * (12.9898 + salt * 17.31)) * 43758.5453; return v - Math.floor(v); };
+  // an agent's own standing spot in an area — the same every visit
+  function spot(id, area) {
+    let jx = (rand(id, 1) * 2 - 1) * 11, jz = (rand(id, 2) * 2 - 1) * 11;
+    for (let k = 0; k < 6 && height(area.x + jx, area.z + jz) < 1.2; k++) { jx *= 0.6; jz *= 0.6; }   // stay on dry land
+    return [area.x + jx, area.z + jz];
+  }
 
   const TEMPLATE_CSS = `
     :host, island-3d { display:block; position:absolute; inset:0; }
     .i3d-canvas { position:absolute; inset:0; cursor:grab; }
     .i3d-canvas:active { cursor:grabbing; }
     .i3d-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
-    .i3d-pin { position:absolute; transform-origin:50% 100%; pointer-events:auto; transition:opacity .25s ease; background:none; border:0; padding:0;
-      display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; font-family:Nunito, system-ui, sans-serif; }
-    .i3d-ring { position:relative; width:28px; height:28px; border-radius:50%; background:rgba(255,255,255,.93);
-      display:grid; place-items:center; box-shadow:0 6px 14px rgba(3,28,40,.45); }
-    .i3d-ring i { display:block; width:11px; height:11px; border-radius:3px; }
-    .i3d-count { position:absolute; right:-7px; top:-7px; min-width:18px; height:18px; padding:0 4px; border-radius:999px;
-      color:#fff; font-size:11px; font-weight:800; display:grid; place-items:center; box-shadow:0 2px 5px rgba(3,28,40,.4); }
-    .i3d-name { background:rgba(255,255,255,.94); color:#0d4a5e; font-size:10px; font-weight:800; padding:2px 8px;
-      border-radius:999px; white-space:nowrap; box-shadow:0 2px 0 rgba(6,48,63,.2); }
-    .i3d-hint { position:absolute; left:14px; top:8px; font-family:Nunito, system-ui, sans-serif; background:rgba(7,40,56,.6);
-      border:1px solid rgba(255,255,255,.14); border-radius:10px; padding:5px 9px; font-size:10px; font-weight:800;
-      letter-spacing:.14em; text-transform:uppercase; color:#dff2f7; transition:opacity .5s ease; }
+    .i3d-pin { position:absolute; display:flex; flex-direction:column; align-items:center; gap:4px; transform:translate(-50%,-100%);
+      font-family:system-ui, sans-serif; }
+    .i3d-count { min-width:26px; height:26px; padding:0 6px; border-radius:999px; color:#fff; font-size:13px; font-weight:800;
+      display:grid; place-items:center; border:3px solid #fff; box-shadow:0 4px 10px rgba(3,28,40,.45); }
+    .i3d-name { background:rgba(255,255,255,.94); color:#0d4a5e; font-size:11px; font-weight:800; padding:2px 8px;
+      border-radius:999px; white-space:nowrap; }
   `;
 
   class Island3D extends HTMLElement {
@@ -76,22 +109,24 @@
       this.canvasHost.className = "i3d-canvas";
       this.overlay = document.createElement("div");
       this.overlay.className = "i3d-overlay";
-      const hint = document.createElement("div");
-      hint.className = "i3d-hint";
-      hint.textContent = "drag to orbit · scroll to zoom · click a place";
-      this.overlay.appendChild(hint);
       this.appendChild(this.canvasHost);
       this.appendChild(this.overlay);
-      this.locations = [];
-      this.agents = [];
-      this.pins = new Map();
-      this.onState = (e) => this.ingest(e.detail);
-      window.addEventListener("moku:state", this.onState);
-      if (window.__mokuLastState) this.ingest(window.__mokuLastState);
+      this.areas = AREAS.map(a => ({ ...a, y: height(a.x, a.z) + 3, count: 0 }));
+      this.blobs = new Map();           // agent id -> { id, x, z, job, dest, path }
+      this.round = null;
+      this.marketUntil = 0;             // everyone is at the market until this time (ms, performance.now)
+      this.speed = 30;                  // walking speed, world units a second
+      this.areas.forEach(a => {
+        a.pin = document.createElement("div");
+        a.pin.className = "i3d-pin";
+        a.pin.innerHTML = `<span class="i3d-count" style="background:${a.color}">0</span><span class="i3d-name">${a.name}</span>`;
+        this.overlay.appendChild(a.pin);
+      });
       this.boot();
     }
     disconnectedCallback() {
-      window.removeEventListener("moku:state", this.onState);
+      clearInterval(this._poll);
+      this._events?.close();
       cancelAnimationFrame(this._raf);
       if (this.renderer) this.renderer.dispose();
     }
@@ -105,7 +140,7 @@
 
       const camera = new THREE.PerspectiveCamera(42, 1, 1, 1600);
       this.camera = camera;
-      this.orbit = { r: 150, theta: -0.46, phi: 0.92, tr: 150, ttheta: -0.46, tphi: 0.92 };
+      this.orbit = { r: 190, theta: -0.46, phi: 0.92, tr: 190, ttheta: -0.46, tphi: 0.92 };
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
       // A high-DPI full-screen procedural water shader is expensive. Capping the
@@ -120,7 +155,8 @@
       renderer.domElement.style.height = "100%";
       renderer.domElement.style.display = "block";
 
-      scene.add(new THREE.HemisphereLight(0xe8f8ff, 0x51704a, 1.25));
+      this.hemi = new THREE.HemisphereLight(0xe8f8ff, 0x51704a, 1.25);
+      scene.add(this.hemi);
       scene.add(new THREE.AmbientLight(0xffffff, 0.25));
       const sun = new THREE.DirectionalLight(0xfff3da, 1.7);
       sun.position.set(-90, 130, 70);
@@ -131,6 +167,7 @@
       sun.shadow.camera.far = 420;
       sun.shadow.bias = -0.0012;
       scene.add(sun);
+      this.sun = sun;
 
       // ---- terrain ----
       const SIZE = 340, SEG = 180;
@@ -319,7 +356,7 @@
       g.lineWidth = 8; g.strokeStyle = "rgba(255,255,255,.95)"; g.stroke();
       const sprite = new THREE.CanvasTexture(cvs);
       this.dotGeo = new THREE.BufferGeometry();
-      this.dotMat = new THREE.PointsMaterial({ size: 7.5, map: sprite, vertexColors: true, transparent: true, alphaTest: 0.35, sizeAttenuation: true, depthWrite: false });
+      this.dotMat = new THREE.PointsMaterial({ size: 9, map: sprite, vertexColors: true, transparent: true, alphaTest: 0.35, sizeAttenuation: true, depthWrite: false });
       this.dots = new THREE.Points(this.dotGeo, this.dotMat);
       this.dots.frustumCulled = false;
       scene.add(this.dots);
@@ -378,20 +415,71 @@
         scene.add(pier);
       }
 
-      window.__i3d = this;
       this._frame = 0;
       this.bindInput();
       this.ro = new ResizeObserver(() => this.resize());
       this.ro.observe(this);
       this.resize();
       this.loop();
+      // the road: a sandy ribbon laid on the ground along the waypoints
+      {
+        const pts = [];
+        ROAD.forEach(([x, z], i) => {
+          const [nx, nz] = ROAD[(i + 1) % ROAD.length], steps = Math.ceil(Math.hypot(nx - x, nz - z) / 3);
+          for (let k = 0; k < steps; k++) pts.push([x + (nx - x) * k / steps, z + (nz - z) * k / steps]);
+        });
+        const verts = [], index = [], n = pts.length;
+        pts.forEach(([x, z], i) => {
+          const [ax, az] = pts[(i + n - 1) % n], [bx, bz] = pts[(i + 1) % n];
+          const len = Math.hypot(bx - ax, bz - az), px = -(bz - az) / len * 1.8, pz = (bx - ax) / len * 1.8;
+          for (const side of [-1, 1]) { const vx = x + px * side, vz = z + pz * side; verts.push(vx, height(vx, vz) + 0.35, vz); }
+          const a = i * 2, b = (i + 1) % n * 2;
+          index.push(a, a + 1, b, b, a + 1, b + 1);
+        });
+        const roadGeo = new THREE.BufferGeometry();
+        roadGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+        roadGeo.setIndex(index);
+        roadGeo.computeVertexNormals();
+        const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ color: 0xe6d6a4, roughness: 1, side: THREE.DoubleSide }));
+        road.receiveShadow = true;
+        scene.add(road);
+      }
+
+      this.refresh();
+      this._poll = setInterval(() => this.refresh(), 2000);
+      this._events = new EventSource("/events");       // a settled round starts the walk to market at once
+      this._events.onmessage = e => { if (JSON.parse(e.data).type === "round") this.refresh(); };
+    }
+
+    async refresh() {
+      let s;
+      try { s = await (await fetch("/state", { cache: "no-store" })).json(); }
+      catch { return; }                                  // server down: keep the last picture
+      if (!s.running) { this.blobs.clear(); this.round = null; this.syncBlobs(); return; }
+      // A new round has settled: market time. Rounds too quick to fit the trip skip it.
+      if (this.round !== null && s.round !== this.round && s.roundMs >= 3000) {
+        const stay = Math.min(9000, Math.max(3000, s.roundMs * 0.45));
+        this.marketUntil = performance.now() + stay;
+        this.speed = Math.max(30, 200 / (stay / 1000 * 0.6));   // quick enough to get there and linger
+      }
+      if (s.roundMs < 3000) this.speed = 60;
+      this.round = s.round;
+      const n = this.blobs.size;
+      for (const a of s.agents) {
+        let b = this.blobs.get(a.id);
+        if (!b) {
+          const job = areaOf(a.activity) || MARKET, [x, z] = spot(a.id, job);
+          this.blobs.set(a.id, b = { id: a.id, x, z, job, dest: job, path: [] });
+        }
+        b.job = areaOf(a.activity) || b.job;             // still deciding: last round's job stands
+      }
+      if (this.blobs.size !== n) this.syncBlobs();
     }
 
     bindInput() {
       const el = this.renderer.domElement;
       let dragging = false, px = 0, py = 0;
-      const fade = () => { const hint = this.querySelector(".i3d-hint"); if (hint) hint.style.opacity = "0"; };
-      el.addEventListener("pointerdown", (e) => { fade(); dragging = true; px = e.clientX; py = e.clientY; el.setPointerCapture(e.pointerId); });
+      el.addEventListener("pointerdown", (e) => { dragging = true; px = e.clientX; py = e.clientY; el.setPointerCapture(e.pointerId); });
       el.addEventListener("pointermove", (e) => {
         if (!dragging) return;
         const o = this.orbit;
@@ -404,7 +492,6 @@
       el.addEventListener("pointercancel", stop);
       el.addEventListener("wheel", (e) => {
         e.preventDefault();
-        fade();
         const o = this.orbit;
         o.tr = Math.min(400, Math.max(48, o.tr * (1 + Math.sign(e.deltaY) * 0.09)));
       }, { passive: false });
@@ -418,64 +505,49 @@
       this.camera.updateProjectionMatrix();
     }
 
-    ingest(detail) {
-      if (!detail) return;
-      if (detail.locations) {
-        this.locations = detail.locations.map(l => ({ ...l, y: height(l.x, l.z) + 3 }));
-        this.syncPins();
-      }
-      this.agents = detail.agents || [];
-      this.syncAgents();
+    // one point per blob; positions are written every frame in loop()
+    syncBlobs() {
+      if (!this.dotGeo) return;
+      const THREE = this.THREE, n = this.blobs.size;
+      this.dotGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+      this.dotGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     }
 
-    syncPins() {
-      if (!this.overlay) return;
-      this.locations.forEach(l => {
-        if (this.pins.has(l.id)) return;
-        const btn = document.createElement("button");
-        btn.className = "i3d-pin";
-        btn.innerHTML = `<span class="i3d-ring"><i></i><span class="i3d-count"></span></span><span class="i3d-name"></span>`;
-        btn.querySelector("i").style.background = l.color;
-        btn.querySelector(".i3d-count").style.background = l.color;
-        btn.querySelector(".i3d-ring").style.border = "3px solid " + l.color;
-        btn.querySelector(".i3d-name").textContent = l.name;
-        btn.addEventListener("click", () => window.dispatchEvent(new CustomEvent("moku:location", { detail: l.id })));
-        this.overlay.appendChild(btn);
-        this.pins.set(l.id, btn);
-      });
-    }
-
-    syncAgents() {
-      if (!this.THREE || !this.dotGeo) return;
-      const THREE = this.THREE;
-      const n = this.agents.length;
-      if (!this._pos || this._pos.length !== n * 3) {
-        this._pos = new Float32Array(n * 3);
-        this._target = new Float32Array(n * 3);
-        this._col = new Float32Array(n * 3);
-        this._seeded = false;
-      }
-      const c = new THREE.Color();
-      this.agents.forEach((a, i) => {
-        const l = this.locations.find(x => x.act === a.act) || this.locations[0];
-        if (!l) return;
-        let jx = a.jx * 11, jz = a.jy * 11;
-        let x = l.x + jx, z = l.z + jz;
-        for (let k = 0; k < 6 && height(x, z) < 1.2; k++) {      // pull stragglers back onto dry land
-          jx *= 0.6; jz *= 0.6;
-          x = l.x + jx; z = l.z + jz;
+    // walk every blob toward where it should be: the market while it is open, else its job
+    walk(dt, now) {
+      const pos = this.dotGeo.attributes.position, col = this.dotGeo.attributes.color;
+      if (!pos || pos.count !== this.blobs.size) return;
+      const atMarket = now < this.marketUntil, c = this._c || (this._c = new this.THREE.Color());
+      this.areas.forEach(l => { l.count = 0; });
+      let i = 0;
+      for (const b of this.blobs.values()) {
+        const dest = atMarket ? MARKET : b.job;
+        if (dest !== b.dest) {
+          b.dest = dest;
+          b.path = route(b.x, b.z, ...spot(b.id, dest), (rand(b.id, 3) - 0.5) * 5, (rand(b.id, 4) - 0.5) * 5);
         }
-        this._target[i * 3] = x;
-        this._target[i * 3 + 1] = Math.max(0.8, height(x, z)) + 2.2;
-        this._target[i * 3 + 2] = z;
-        c.set(a.color || "#ffffff");
-        this._col[i * 3] = c.r; this._col[i * 3 + 1] = c.g; this._col[i * 3 + 2] = c.b;
-      });
-      if (!this._seeded) { this._pos.set(this._target); this._seeded = true; }
-      this.dotGeo.setAttribute("position", new THREE.BufferAttribute(this._pos, 3));
-      this.dotGeo.setAttribute("color", new THREE.BufferAttribute(this._col, 3));
-      this.dotGeo.attributes.position.needsUpdate = true;
-      this.dotGeo.attributes.color.needsUpdate = true;
+        let left = this.speed * dt;
+        while (b.path.length && left > 0) {
+          const [tx, tz] = b.path[0], d = Math.hypot(tx - b.x, tz - b.z);
+          if (d <= left) { b.x = tx; b.z = tz; left -= d; b.path.shift(); }
+          else { b.x += (tx - b.x) / d * left; b.z += (tz - b.z) / d * left; left = 0; }
+        }
+        const working = !b.path.length && dest !== MARKET;
+        const hop = working ? Math.abs(Math.sin(now * 0.006 + b.id)) * 1.2 : 0;
+        pos.setXYZ(i, b.x, Math.max(0.8, height(b.x, b.z)) + 2.2 + hop, b.z);
+        c.set(b.job.color);                              // coloured by job, so the market crowd shows who does what
+        col.setXYZ(i, c.r, c.g, c.b);
+        if (!b.path.length) this.areas.find(l => l.id === dest.id).count++;
+        i++;
+      }
+      pos.needsUpdate = col.needsUpdate = true;
+      this.areas.forEach(l => { if (l.pin.firstChild.textContent !== String(l.count)) l.pin.firstChild.textContent = l.count; });
+
+      // dusk while the market is open
+      this.dusk = (this.dusk || 0) + ((atMarket ? 1 : 0) - (this.dusk || 0)) * Math.min(1, dt * 1.5);
+      this.sun.color.setRGB(1, 0.95 - 0.35 * this.dusk, 0.85 - 0.55 * this.dusk);
+      this.sun.intensity = 1.7 - 0.5 * this.dusk;
+      this.hemi.intensity = 1.25 - 0.55 * this.dusk;
     }
 
     loop() {
@@ -494,70 +566,20 @@
       this.camera.lookAt(0, 7, 0);
       this.camera.updateMatrixWorld(true);
 
-      if (this._pos && this._target) {
-        for (let i = 0; i < this._pos.length; i += 3) {
-          this._pos[i] += (this._target[i] - this._pos[i]) * 0.035;
-          this._pos[i + 2] += (this._target[i + 2] - this._pos[i + 2]) * 0.035;
-          this._pos[i + 1] += (this._target[i + 1] - this._pos[i + 1]) * 0.035;
-        }
-        if (this.dotGeo.attributes.position) this.dotGeo.attributes.position.needsUpdate = true;
-      }
-      if (this.dotMat) this.dotMat.size = Math.max(6.2, 900 / Math.max(60, o.r) * 1.05);
+      const now = performance.now();
+      this.walk(Math.min(0.1, (now - (this._last || now)) / 1000), now);
+      this._last = now;
+      if (this.dotMat) this.dotMat.size = Math.max(8, 1300 / Math.max(60, o.r));
 
-      // Pin projection mixes terrain checks and DOM writes, so 20 Hz is plenty even
-      // while the WebGL camera continues to animate at the display refresh rate.
-      if (this._frame % 3 === 0) {
-        const w = this.clientWidth, h = this.clientHeight;
-
-        const v = this._pinVector || (this._pinVector = new this.THREE.Vector3());
-        const cam = this.camera.position;
-        const placedBoxes = [];
-        const projected = this.locations.map(l => {
-          v.set(l.x, l.y, l.z).project(this.camera);
-          const sx = (v.x * 0.5 + 0.5) * w, sy = (-v.y * 0.5 + 0.5) * h;
-          const dist = Math.hypot(cam.x - l.x, cam.y - l.y, cam.z - l.z);
-          let hidden = v.z > 1 || sx < -20 || sx > w + 20 || sy < -10 || sy > h + 30;
-          if (!hidden) {                                  // terrain occlusion along the view ray
-            for (let t = 0.12; t < 0.94; t += 0.06) {
-              const px = cam.x + (l.x - cam.x) * t;
-              const py = cam.y + (l.y - cam.y) * t;
-              const pz = cam.z + (l.z - cam.z) * t;
-              if (height(px, pz) > py + 1.2) { hidden = true; break; }
-            }
-          }
-          return { l, sx, sy, dist, hidden, scale: Math.min(1.6, Math.max(0.45, 135 / dist)) };
-        }).sort((a, b) => a.dist - b.dist);
-
-        projected.forEach(p => {
-          const btn = this.pins.get(p.l.id);
-          if (!btn) return;
-          let show = !p.hidden, labelled = true;
-          if (show) {
-            const hits = (bw, bh) => {
-              const box = { x0: p.sx - bw / 2, x1: p.sx + bw / 2, y0: p.sy - bh, y1: p.sy + 6 };
-              return { box, clash: placedBoxes.some(b => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0) };
-            };
-            const full = hits(96 * p.scale, 52 * p.scale);
-            if (full.clash) {
-              const ring = hits(34 * p.scale, 34 * p.scale);   // keep the marker, drop the label
-              if (ring.clash) show = false; else { labelled = false; placedBoxes.push(ring.box); }
-            } else placedBoxes.push(full.box);
-          }
-          const nameEl = btn.querySelector(".i3d-name");
-          nameEl.style.display = labelled ? "" : "none";
-          btn.style.opacity = show ? 1 : 0;
-          btn.style.pointerEvents = show ? "auto" : "none";
-          if (show) {
-            btn.style.left = p.sx + "px";
-            btn.style.top = p.sy + "px";
-            btn.style.transform = `translate(-50%,-88%) scale(${p.scale.toFixed(3)})`;
-            btn.style.zIndex = String(1000 - Math.round(p.dist));
-          }
-          const count = this.agents.filter(a => a.act === p.l.act).length;
-          const cEl = btn.querySelector(".i3d-count");
-          if (cEl.textContent !== String(count)) cEl.textContent = String(count);
-        });
-      }
+      // area labels follow their spot on the island
+      const w = this.clientWidth, h = this.clientHeight;
+      const v = this._pinVector || (this._pinVector = new this.THREE.Vector3());
+      this.areas.forEach(l => {
+        v.set(l.x, l.y, l.z).project(this.camera);
+        l.pin.style.display = v.z > 1 ? "none" : "";
+        l.pin.style.left = (v.x * 0.5 + 0.5) * w + "px";
+        l.pin.style.top = (-v.y * 0.5 + 0.5) * h + "px";
+      });
 
       if (this.waterUniforms) {
         this.waterUniforms.uTime.value = performance.now() * 0.001;
