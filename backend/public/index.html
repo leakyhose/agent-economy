@@ -437,7 +437,8 @@ function wealth() {
   const W = 640, L = 96, mid = L + 90, R = W - 70, row = 15, fs = 11;
   const sx = v => v / max * (R - mid);
   const bars = ag.map((a, i) => { const yy = i * row + 14;
-    return `<text x="0" y="${yy + 10}" font-size="${fs}">${i + 1}. ${a.name}</text>` +
+    return (a.model ? `<rect x="0" y="${yy + 3}" width="7" height="7" fill="${modelInk(a.model)}"><title>${esc(a.model)}</title></rect>` : '') +
+      `<text x="${a.model ? 11 : 0}" y="${yy + 10}" font-size="${fs}">${i + 1}. ${a.name}</text>` +
       (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 4}" fill="#c77700"/>` : '') +
       `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 4}" fill="${a.cash - a.debt >= start ? '#1a7f37' : '#8fbf9a'}"/>` +
       `<text x="${W}" y="${yy + 10}" font-size="${fs}" text-anchor="end">${a.wealth.toFixed(2)}</text>`; }).join('');
@@ -504,7 +505,7 @@ function agentTable() {
     `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
     `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
     `<td class="n ${a.dueIn !== null && a.dueIn <= 1 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + ' r'}</td>` +
-    `<td class="model" title="${esc(a.model || '')}">${a.model ? esc(a.model.split('/').pop()) : ''}</td>` +
+    `<td class="model">${modelChip(a.model)}</td>` +
     `<td class="t">${a.orders.join('<br>')}</td>` +
     `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
   ).join('');
@@ -633,14 +634,30 @@ function policyMarks(h, x, y1, y2) {
   }).join('');
 }
 
+// A colour per model, so a villager can be told apart at a glance wherever it appears.
+// The order is the alphabet, not the leaderboard: a model must keep its colour AND its place
+// while the run goes on, or the eye spends every refresh finding it again.
+const MODEL_INK = ['#4053d6', '#b8336a', '#0f8b8d', '#7d4cdb', '#8a6d00', '#a03623', '#2b6b4f', '#5c5f66'];
+function modelOrder() {
+  return Object.keys(last?.llm?.byModel ?? {}).sort();
+}
+function modelInk(slug) {
+  const i = modelOrder().indexOf(slug);
+  return i < 0 ? '#888' : MODEL_INK[i % MODEL_INK.length];
+}
+const modelChip = slug => slug
+  ? `<span style="color:${modelInk(slug)}" title="${esc(slug)}">■</span> ${esc(slug.split('/').pop())}`
+  : '';
+
 // What each model in a mixed village is doing: how many villagers think with it, how often it
 // answered, what it has cost so far. One model is the ordinary case, and says nothing extra.
 function modelFeed(llm) {
   const by = Object.entries(llm?.byModel ?? {});
   const el = $('models');
   if (by.length < 2) { el.innerHTML = ''; return; }
-  el.innerHTML = by.sort((a, b) => b[1].calls - a[1].calls).map(([slug, m]) =>
-    `<b>${esc(slug.split('/').pop())}</b> ${m.agents} agents · ${m.calls} calls · $${m.cost.toFixed(3)}` +
+  const order = modelOrder();
+  el.innerHTML = by.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([slug, m]) =>
+    `<b style="color:${modelInk(slug)}">■</b> <b>${esc(slug.split('/').pop())}</b> ${m.agents} agents · ${m.calls} calls · $${m.cost.toFixed(3)}` +
     (m.timedOut ? ` · <span class="hungry">${m.timedOut} timed out</span>` : '') +
     (m.errors ? ` · <span class="hungry">${m.errors} errors</span>` : '')).join(' &nbsp;|&nbsp; ');
 }

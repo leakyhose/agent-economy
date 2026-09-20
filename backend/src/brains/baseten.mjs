@@ -15,34 +15,48 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 // (8s by default) to choose a shift and post its orders, so time to first token matters more
 // here than depth: these are the flash-class models, never the pro or code ones.
 //
-// Four houses, none of them OpenAI's: the point of this brain is to put other people's
-// models beside gpt-5.6-luna, so an OpenAI model in the pool would only muddy the reading.
+// Four houses, four minds, one villager in four thinking with each. A model earns its place
+// by clearing three bars, every one of them measured rather than assumed — the measuring is
+// backend/scripts/check-brain.sh, and it is worth re-running when the pool changes.
 //
-// DeepSeek V4 Flash, and only it. Two things have to be true of a model that thirty
-// villagers think with every round, and exactly one model in Baseten's catalogue is both:
+//   willing - it answers a village's worth of requests at once. Baseten meters most models
+//             at 120 concurrent and a handful at 15. gpt-oss-120b is one of the 15 and
+//             still served 8 at once without a murmur, so the number is a ceiling, not a
+//             promise of trouble; GLM 5.3 Flash, also 15, turned two villagers in seven
+//             away under load, and is not here because of it.
+//   quick   - it decides inside the round's clock. These run 0.5-3.1s against a 10s wait.
+//             Kimi K2.6 is out on this bar: mostly 1.5s, but it talks itself through the
+//             problem in prose when the observation runs long, and one villager in nine
+//             went past 8s and posted nothing at all.
+//   able    - it calls tools, which is the only way a villager acts on anything.
 //
-//   cheap   - 0.45x gpt-5.6-luna a decision, the cheapest thing Baseten serves that isn't
-//             OpenAI's own gpt-oss-120b.
-//   willing - Baseten runs it 120 at a time. The cheap alternative, GLM 5.3 Flash, is one
-//             of the handful it runs 15 at a time, and under a village's load it turns
-//             requests away however patiently they are retried: two villagers in seven lost
-//             their decision outright, which the round reads as nobody speaking.
+// They are not equally cheap and the village pays the average. Per decision against
+// gpt-5.6-luna, the model the OpenAI brain runs: DeepSeek V4 Flash 0.45x, gpt-oss-120b
+// 0.46x, Inkling Small 1.81x, Nemotron 2.54x — about 1.3x luna for the mixture, which is
+// what the comparison costs. check-brain --list ranks the whole catalogue live.
 //
-// check-brain --list ranks the catalogue by price. The limit is the other half of the
-// question and it is in the x-ratelimit-limit-requests header (see liveLimits below).
-// For a village of more than one mind again, both DeepSeek Flashes clear the 120 bar:
-//   BASETEN_MODELS=deepseek-ai/DeepSeek-V4-Flash-0731,deepseek-ai/DeepSeek-V4.1-Flash
+// gpt-oss-120b is OpenAI's, which for a while kept it out of a pool meant to stand against
+// OpenAI. It earns its place on the other reading: open weights that anyone can serve,
+// running here on Baseten's hardware, against gpt-5.6-luna behind OpenAI's API.
+//
+// For the cheapest village instead, one env var and no code change:
+//   BASETEN_MODELS=deepseek-ai/DeepSeek-V4-Flash-0731
 export const DEFAULT_POOL = [
   'deepseek-ai/DeepSeek-V4-Flash-0731',
+  'openai/gpt-oss-120b',
+  'thinkingmachines/inkling-small',
+  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B',
 ];
 
 // Baseten publishes what each model costs on /v1/models, so the run asks rather than
 // carries a table: a table went wrong twice here, once by a factor of ten (that page's
 // middle column is Cache Input, not Output). These are only the fallback, for a run whose
-// catalogue call fails — the pool's three models, at the prices read on 2026-09-19.
+// catalogue call fails — the pool's four models, at the prices read on 2026-09-19.
 const FALLBACK_PRICE = {
-  'zai-org/GLM-5.3-Flash': [0.15, 0.50],
   'deepseek-ai/DeepSeek-V4-Flash-0731': [0.13, 0.26],
+  'thinkingmachines/inkling-small': [0.50, 1.20],
+  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B': [0.60, 2.40],
+  'openai/gpt-oss-120b': [0.10, 0.50],
 };
 
 // What every model Baseten serves costs, $ per 1M tokens [input, output]. One call at the
