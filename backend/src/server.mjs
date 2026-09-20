@@ -1,5 +1,6 @@
 // Runs the village and serves a dashboard.
-//   GET  /        dashboard            GET /state   JSON snapshot
+//   GET  /        island view          GET /state   JSON snapshot
+//   GET  /dashboard  the dashboard
 //   POST /start   start a new world    GET /events  live event stream (SSE)
 //   POST /stop    stop it
 //   POST /pause   pause after the current round      POST /resume  continue
@@ -24,10 +25,6 @@ async function makeBrain() {
   if (CFG.BRAIN === 'claude') {
     if (process.env.ANTHROPIC_API_KEY) return (await import('./brains/claude.mjs')).claudeBrain();
     console.warn('\n  BRAIN=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');
-  }
-  if (CFG.BRAIN === 'baseten') {
-    if (process.env.BASETEN_API_KEY) return (await import('./brains/baseten.mjs')).basetenBrain();
-    console.warn('\n  BRAIN=baseten but no BASETEN_API_KEY in the repo-root .env. Using the stub.\n');
   }
   return stubBrain();
 }
@@ -204,7 +201,7 @@ function state() {
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
     running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name,
-    round: W.round, roundMs: Math.round(W.roundMs), buildShifts: W.buildShifts,
+    round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
@@ -228,7 +225,9 @@ function state() {
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: Object.fromEntries(Object.entries(a.skills).map(([k, v]) => [k, +v.toFixed(2)])), cash: a.cash / 100,
       food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.houses(a), house: W.hasHouse(a),
-      building: a.building?.done ?? null, locked: a.locked, hunger: a.hunger, cold: a.cold,
+      // a build in progress: shifts worked, out of what it takes this agent (crafting skill sets that)
+      building: a.building?.shifts ?? null, buildShifts: (a.building?.shifts ?? 0) + W.buildShiftsLeft(a),
+      locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
@@ -326,7 +325,7 @@ function listen(port = CFG.PORT) {
   const onListening = () => {
     cleanup();
     const url = `http://localhost:${port}`;
-    console.log(`dashboard: ${url}`);
+    console.log(`island: ${url}   dashboard: ${url}/dashboard`);
     if (!CFG.RUN_SECONDS && process.env.OPEN_BROWSER !== '0') {
       const command = process.platform === 'darwin' ? ['open', [url]]
         : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]

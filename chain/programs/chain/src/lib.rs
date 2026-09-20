@@ -41,7 +41,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("5U9gu7ixPUWboBdP4kqaWqrHU6a3KP2wPFduhsXbctF5");
+declare_id!("9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7");
 
 pub const MAX_AGENTS: usize = 137;        // 8 + 360 + 137×72 = 10,232 bytes: under the 10 KiB CPI-create limit
 pub const N_GOODS: usize = 5;

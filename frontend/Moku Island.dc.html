@@ -238,22 +238,22 @@
 
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;agentCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:34,&quot;min&quot;:8,&quot;max&quot;:100,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;showThoughts&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;pollEndpoint&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;/state&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Simulation&quot;}}">
+// These match the real backend: five places (frontend/island3d.js AREAS), plus trading,
+// banking and resting all show up at the market — nobody has a task of their own there.
 const LOCS = [
-  { id: "docks", x: -70, z: 38, name: "Kilo Docks", act: "gather_food", color: "#1f9fb5", glyph: "wave",
+  { id: "docks", x: -70, z: 38, name: "Docks — fishing", act: "gather_food", color: "#1f9fb5", glyph: "wave",
     blurb: "The fishing wharf on the west shore. Every catch is a goods-account write on Solana.", ground: "linear-gradient(180deg,#f3e2b4 0%,#e8d29a 100%)", sky: "linear-gradient(180deg,#bdeaf7 0%,#e8f6e3 62%,#e8f6e3 100%)" },
-  { id: "grove", x: 40, z: -48, name: "Koa Grove", act: "gather_wood", color: "#3f9450", glyph: "tree",
+  { id: "forest", x: 40, z: -48, name: "Forest — chopping wood", act: "gather_wood", color: "#3f9450", glyph: "tree",
     blurb: "Hardwood ridge above the bay. Wood keeps villagers warm and nets cheap.", ground: "linear-gradient(180deg,#8fd06f 0%,#68b35c 100%)", sky: "linear-gradient(180deg,#cdeeff 0%,#eaf8e0 62%,#eaf8e0 100%)" },
-  { id: "workshop", x: -42, z: 42, name: "Kapa Workshop", act: "craft_net", color: "#d98c2b", glyph: "grid",
+  { id: "workshop", x: 60, z: 8, name: "Workshop — crafting", act: "craft_net", color: "#d98c2b", glyph: "grid",
     blurb: "Where wood becomes nets and nets become boats. Crafting burns inputs on-chain.", ground: "linear-gradient(180deg,#e9d8ae 0%,#d6bf8c 100%)", sky: "linear-gradient(180deg,#ffe6c0 0%,#fdf3dd 62%,#fdf3dd 100%)" },
-  { id: "market", x: -4, z: 30, name: "Makeke Market", act: "trade", color: "#e0b02e", glyph: "diamond",
-    blurb: "One sealed auction per good, per round. The program finds the fair price — nobody can fake it.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" },
-  { id: "rise", x: 60, z: 8, name: "Hale Rise", act: "build_house", color: "#cf6046", glyph: "house",
-    blurb: "The housing terrace. Half-built houses can be pledged to the bank as collateral.", ground: "linear-gradient(180deg,#e6d6ad 0%,#cdb98b 100%)", sky: "linear-gradient(180deg,#ffd9c2 0%,#fdeede 62%,#fdeede 100%)" },
-  { id: "bank", x: 18, z: 56, name: "Waihona Bank", act: "bank", color: "#7b6bd6", glyph: "coin",
-    blurb: "Coins are minted when the bank lends and destroyed when loans are repaid. Interest accrues by the minute.", ground: "linear-gradient(180deg,#dfd8f0 0%,#c7bde4 100%)", sky: "linear-gradient(180deg,#d9d2ff 0%,#efeaff 62%,#efeaff 100%)" },
-  { id: "village", x: -16, z: -50, name: "Moana Village", act: "rest", color: "#e07fa2", glyph: "heart",
-    blurb: "Homes by the lake. Resting and eating well is what wellbeing is actually made of.", ground: "linear-gradient(180deg,#a9dd85 0%,#7cc267 100%)", sky: "linear-gradient(180deg,#ffd7e6 0%,#f6f2df 62%,#f6f2df 100%)" }
+  { id: "site", x: -16, z: -50, name: "Building site — houses", act: "build_house", color: "#cf6046", glyph: "house",
+    blurb: "Where houses go up beam by beam. A half-built frame can be pledged to the bank as collateral.", ground: "linear-gradient(180deg,#e6d6ad 0%,#cdb98b 100%)", sky: "linear-gradient(180deg,#ffd9c2 0%,#fdeede 62%,#fdeede 100%)" },
+  { id: "market", x: 18, z: 56, name: "Market", act: "trade", color: "#8a8f98", glyph: "diamond",
+    blurb: "One sealed auction per good, per round — plus the bank counter and the porch where villagers rest. The program finds the fair price; nobody can fake it.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" }
 ];
+// Any activity without its own place (trade, bank, rest) buckets into the market.
+const bucketOf = act => LOCS.find(l => l.act === act) || LOCS.find(l => l.id === "market");
 
 const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", trade: "Trading", build_house: "Building", bank: "At the bank", rest: "Resting" };
 const THOUGHTS = {
@@ -333,15 +333,6 @@ class Component extends DCLogic {
     window.removeEventListener("moku:location", this.onPin);
   }
 
-  broadcast(agents) {
-    const payload = {
-      locations: LOCS.map(l => ({ id: l.id, name: l.name, color: l.color, act: l.act, x: l.x, z: l.z })),
-      agents: agents.map(a => ({ id: a.id, act: a.act, jx: a.jx, jy: a.jy, color: (LOCS.find(l => l.act === a.act) || LOCS[3]).color }))
-    };
-    window.__mokuLastState = payload;
-    window.dispatchEvent(new CustomEvent("moku:state", { detail: payload }));
-  }
-
   activityFor(a) {
     if (a.orders?.length) return "trade";
     if (a.debt > 0 && a.dueIn != null && a.dueIn <= 2) return "bank";
@@ -416,7 +407,6 @@ class Component extends DCLogic {
         sim, running: !!snapshot.running, paused: !!snapshot.paused, pausing: !!snapshot.pausing,
         live: true, error: "", tickN: this.state.tickN + 1
       });
-      this.broadcast(sim.agents);
     } catch (error) {
       this.setState({ live: false, error: error.message });
     } finally {
@@ -444,11 +434,11 @@ class Component extends DCLogic {
     const s = this.state.sim;
     const showThoughts = this.props.showThoughts ?? true;
     const fmt = (v, d = 2) => Number(v).toFixed(d);
-    const counts = {}; LOCS.forEach(l => counts[l.act] = 0);
-    s.agents.forEach(a => counts[a.act] = (counts[a.act] || 0) + 1);
+    const counts = {}; LOCS.forEach(l => counts[l.id] = 0);
+    s.agents.forEach(a => counts[bucketOf(a.act).id] = (counts[bucketOf(a.act).id] || 0) + 1);
 
     const legend = LOCS.map(l => ({
-      label: ACT_LABEL[l.act], count: counts[l.act] || 0,
+      label: ACT_LABEL[l.act], count: counts[l.id] || 0,
       swatch: { width: "10px", height: "10px", borderRadius: "50%", background: l.color, boxShadow: "0 0 0 2px rgba(255,255,255,.55)" }
     }));
 
@@ -467,7 +457,7 @@ class Component extends DCLogic {
     }));
 
     const sel = LOCS.find(l => l.id === this.state.selected) || null;
-    const here = sel ? s.agents.filter(a => a.act === sel.act) : [];
+    const here = sel ? s.agents.filter(a => bucketOf(a.act).id === sel.id) : [];
     const used = {};
     const selectedAgents = here.slice(0, 18).map(a => {
       const pool = THOUGHTS[a.act];
@@ -531,18 +521,19 @@ class Component extends DCLogic {
       };
     });
 
-    const busiest = LOCS.reduce((a, l) => (counts[l.act] || 0) > (counts[a.act] || 0) ? l : a, LOCS[0]);
+    const countFor = act => counts[bucketOf(act).id] || 0;
+    const busiest = LOCS.reduce((a, l) => (counts[l.id] || 0) > (counts[a.id] || 0) ? l : a, LOCS[0]);
     const dearest = Object.keys(s.prices).reduce((a, k) => s.prices[k] > s.prices[a] ? k : a, "food");
     const headlines = this.state.running ? [
-      "Food clears at " + fmt(s.prices.food, 2) + "c — " + (counts.gather_food || 0) + " settlers working the lake",
+      "Food clears at " + fmt(s.prices.food, 2) + "c — " + countFor("gather_food") + " settlers working the lake",
       "Wood settles at " + fmt(s.prices.wood, 2) + "c with " + s.vols.wood + " units traded",
       s.minted > 0 ? "Bank mints " + s.minted + "c of fresh credit; village debt now " + fmt(s.debt, 0) + "c"
         : "No new credit issued this round — debt holds at " + fmt(s.debt, 0) + "c",
       s.burned > 0 ? "Repayments burn " + s.burned + "c out of circulation" : "Nothing repaid this round; supply steady at " + fmt(s.supply, 0) + "c",
       "Round " + s.round + " settled on-chain in " + s.lastRoundTxs + " transactions",
-      busiest.name + " is the busiest place on the island — " + (counts[busiest.act] || 0) + " settlers there",
+      busiest.name + " is the busiest place on the island — " + (counts[busiest.id] || 0) + " settlers there",
       "Nets hold at " + fmt(s.prices.nets, 2) + "c as crafters stock up on wood",
-      "Houses asking " + fmt(s.prices.houses, 0) + "c — " + (counts.build_house || 0) + " frames going up on Hale Rise",
+      "Houses asking " + fmt(s.prices.houses, 0) + "c — " + countFor("build_house") + " frames going up at the building site",
       "GDP prints " + fmt(s.gdp, 0) + ", " + (s.gdp >= s.gdpPrev ? "up" : "down") + " " + fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "% on the round",
       dearest.charAt(0).toUpperCase() + dearest.slice(1) + " is the priciest good on the island right now",
       s.txTotal + " transactions written to Solana since the sun came up"
