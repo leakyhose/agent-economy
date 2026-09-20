@@ -34,16 +34,10 @@
   <header style="{{ headerStyle }}">
     <div style="display: flex; align-items: baseline; gap: 10px;">
       <div style="font-family: Grandstander, 'Baloo 2', cursive; font-size: 30px; font-weight: 900; letter-spacing: .2px; line-height: 1; color: #ffcf4a; white-space: nowrap; text-shadow: 0 3px 0 #6b4a2a, 0 4px 0 rgba(43,28,15,.45);">Settlers of Solana</div>
-      <div style="font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .72;">AI village economy</div>
     </div>
-    <div style="font-size: 13.5px; font-weight: 600; opacity: .8; padding-left: 16px; border-left: 1px solid rgba(255,255,255,.2);">The AI thinks off-chain. The money lives on-chain.</div>
     <div style="flex: 1"></div>
     <a href="/dashboard" style="color: #eaf7fb; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22); padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; white-space: nowrap;">Detailed dashboard</a>
     <div style="display: flex; align-items: center; gap: 10px;">
-      <div style="display: flex; align-items: center; gap: 7px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 700;">
-        <span style="width: 8px; height: 8px; border-radius: 50%; background: {{ liveDot }};"></span>{{ statusLabel }}
-      </div>
-      <div style="background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;">{{ brain }}</div>
       <div style="background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;">round {{ round }} · {{ clock }}</div>
     </div>
   </header>
@@ -606,8 +600,6 @@ class Component extends DCLogic {
     const busyLabel = this.state.running ? "Stopping…" : "Starting…";
     return {
       statusLabel: this.state.error ? "Connection error" : this.state.paused ? "Paused" : this.state.pausing ? "Pausing…" : this.state.running ? "Live" : "Ready",
-      liveDot: this.state.error ? "#ff6b6b" : this.state.running && !this.state.paused ? "#14f195" : "#ffb020",
-      brain: s.brain,
       round: s.round, tick: s.tick,
       clock: Math.floor(s.seconds / 60) + ":" + String(s.seconds % 60).padStart(2, "0"),
       agentCount: s.agents.length || s.agentTarget,

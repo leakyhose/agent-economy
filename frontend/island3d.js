@@ -34,7 +34,9 @@
   }
   function sstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
 
-  function height(x, z) {
+  // the raw landscape, with no road graded into it. ROAD is laid out on this field; height()
+  // below is the same field with the road's corridor levelled, and is what everything draws on.
+  function baseHeight(x, z) {
     const d = Math.hypot(x, z);
     const ang = Math.atan2(z, x);
     const coast = fbm(Math.cos(ang) * 1.9 + 5, Math.sin(ang) * 1.9 + 9, 4);
@@ -61,27 +63,53 @@
   // (see the "sandy ribbon" mesh below). Every lane offset below is clamped inside it, so a
   // blob's path and its standing spot both always stay on the road, never spilling into the grass.
   const ROAD_HALF_W = 3.2;
+  // 2.2m is the top of the beach: walking in from the sea the raw ground first clears it about
+  // 7 units inland of the waterline, still on the flat backshore. The loop stops right there
+  // and takes no further step inland, which is what used to carry it up the hillside.
+  const ROAD_LEVEL = 2.2;
   const ROAD = Array.from({ length: 36 }, (_, i) => {
     const t = i / 36 * Math.PI * 2;
     let r = 120;
-    while (r > 10 && height(Math.cos(t) * r, Math.sin(t) * r) < 3.5) r--;
-    return [Math.cos(t) * (r - 3), Math.sin(t) * (r - 3)];
+    while (r > 10 && baseHeight(Math.cos(t) * r, Math.sin(t) * r) < ROAD_LEVEL) r--;
+    return [Math.cos(t) * r, Math.sin(t) * r];
   });
+  // the level the ground is graded to under each waypoint, so the path is level across its
+  // width instead of tilted. Averaged with its neighbours so the road does not step from one
+  // waypoint to the next, and never below ROAD_LEVEL so a dip can never take it into the sea.
+  const ROAD_RAW_Y = ROAD.map(([x, z]) => baseHeight(x, z));
+  const ROAD_Y = ROAD_RAW_Y.map((y, i) => Math.max(ROAD_LEVEL,
+    (ROAD_RAW_Y[(i + 35) % 36] + 2 * y + ROAD_RAW_Y[(i + 1) % 36]) / 4));
   const nearestRoad = (x, z) => ROAD.reduce((best, p, i) =>
     Math.hypot(p[0] - x, p[1] - z) < Math.hypot(ROAD[best][0] - x, ROAD[best][1] - z) ? i : best, 0);
-  // shortest distance from (x,z) to the road as a polyline (not just to the nearest waypoint,
-  // which under-measures on the straight stretch between two of them), used to keep trees,
-  // grass and rocks from clipping through the ribbon.
-  function distToRoad(x, z) {
-    let best = Infinity;
+  // the nearest point on the road as a polyline (not just the nearest waypoint, which
+  // under-measures on the straight stretch between two of them): how far off the road (x,z)
+  // lies, and the level the road has been graded to there.
+  function roadNear(x, z) {
+    let best = Infinity, y = 0;
     for (let i = 0; i < ROAD.length; i++) {
-      const [ax, az] = ROAD[i], [bx, bz] = ROAD[(i + 1) % ROAD.length];
+      const j = (i + 1) % ROAD.length, [ax, az] = ROAD[i], [bx, bz] = ROAD[j];
       const dx = bx - ax, dz = bz - az, len2 = dx * dx + dz * dz || 1;
       const t = Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / len2));
       const d = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
-      if (d < best) best = d;
+      if (d < best) { best = d; y = ROAD_Y[i] + (ROAD_Y[j] - ROAD_Y[i]) * t; }
     }
-    return best;
+    return { d: best, y };
+  }
+  // used to keep trees, grass and rocks from clipping through the ribbon
+  const distToRoad = (x, z) => roadNear(x, z).d;
+  const ROAD_R = ROAD.map(([x, z]) => Math.hypot(x, z));
+  const ROAD_R_IN = Math.min(...ROAD_R) - ROAD_HALF_W * 2, ROAD_R_OUT = Math.max(...ROAD_R) + ROAD_HALF_W * 2;
+  // the raw field with the road's corridor graded flat across its width, easing back out to
+  // 1.5x the ribbon's half-width so the cut meets the hillside without a step. Never build
+  // ROAD from this one, it reads ROAD; use baseHeight. The pads below sit on top of it.
+  function roadHeight(x, z) {
+    const b = baseHeight(x, z);
+    // the corridor only ever lies in a ring around the island, so the mountain, the lagoon and
+    // the sea skip the polyline scan: this runs three times per terrain vertex
+    const r = Math.hypot(x, z);
+    if (r < ROAD_R_IN || r > ROAD_R_OUT) return b;
+    const { d, y } = roadNear(x, z);
+    return b + (y - b) * (1 - sstep(ROAD_HALF_W, ROAD_HALF_W * 1.5, d));
   }
   // the road's direction and sideways normal at waypoint i, so a lane offset can be applied
   // perpendicular to the road no matter which way it is curving at that point
@@ -91,6 +119,58 @@
     const tx = dx / len, tz = dz / len;
     return { x: p[0], z: p[1], tx, tz, nx: -tz, nz: tx };
   }
+  // Each destination stands on a graded pad beside the road. The raw slope runs several
+  // units across a building's footprint here, and the dry strip seaward of the road is only
+  // two or three units wide, so there is nowhere flat to stand: the village is terraced in
+  // instead. Sited against the road's normal from the road-graded field, then cut into the
+  // field everything is drawn on, the same two-pass order the road itself uses.
+  const PADS = [
+    { x: 40, z: -48, w: 4.4, d: 4 },      // forest: woodcutter's cabin
+    { x: 60, z: 8, w: 6, d: 5 },          // workshop
+    { x: -16, z: -50, w: 6, d: 4.8 },     // building site
+    { x: 18, z: 56, w: 5.4, d: 4.4 }      // market stall
+  ].map(p => {
+    const f = roadFrame(nearestRoad(p.x, p.z));
+    const span = Math.hypot(p.w, p.d);
+    // inland of the ribbon by half a footprint plus clearance, on whichever side the area
+    // itself lies, so the building fronts the road instead of standing in it
+    const side = Math.sign((p.x - f.x) * f.nx + (p.z - f.z) * f.nz) || 1;
+    const off = ROAD_HALF_W + span / 2 + 0.6;
+    const x = f.x + f.nx * off * side, z = f.z + f.nz * off * side;
+    // level with the road it fronts, so there is no step from the path to the door
+    const y = roadHeight(f.x, f.z);
+    // the deeper the cut into the hillside, the further the ease-out runs: a fixed skirt
+    // leaves a near vertical bank behind the taller sites and the village reads as a quarry
+    const cut = Math.abs(y - roadHeight(x, z));
+    const r = span / 2 + 0.8;
+    // cutting and filling need very different reaches. A cut runs out far so the bank behind
+    // the building is a slope and not a quarry wall; a fill is kept to a tight skirt, since
+    // out past the road the ground is dropping to the water and a wide one would silt up the
+    // shallows with new land.
+    return { x, z, y, r, rCut: r + Math.max(6, cut * 2.6), rFill: r + 1.6 };
+  });
+  // the ground everything is drawn on: the road-graded field with the village pads cut in,
+  // each easing out to meet the hillside without a rim
+  function height(x, z) {
+    let y = roadHeight(x, z);
+    for (const p of PADS) {
+      const d = Math.hypot(x - p.x, z - p.z);
+      const reach = p.y < y ? p.rCut : p.rFill;
+      if (d < reach) y += (p.y - y) * (1 - sstep(p.r, reach, d));
+    }
+    return y;
+  }
+  // the pad a destination stands on, or null where there is none: the docks builds its hut
+  // out on the pier, and picking the merely nearest pad would fling its label across the bay
+  const padFor = (cx, cz) => {
+    let best = null, bd = 20;
+    for (const p of PADS) {
+      const d = Math.hypot(p.x - cx, p.z - cz);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  };
+
   // waypoints from (x0,z0) to (x1,z1); lane (a signed distance across the ribbon) keeps each
   // blob in its own strip of the road, offset sideways at every waypoint rather than in one
   // fixed world direction, so it tracks the road through curves instead of cutting corners.
@@ -154,7 +234,15 @@
       this.overlay.appendChild(hint);
       this.appendChild(this.canvasHost);
       this.appendChild(this.overlay);
-      this.areas = AREAS.map(a => ({ ...a, y: height(a.x, a.z) + 3, count: 0 }));
+      // the pin rides over the building rather than over the area's nominal centre, which
+      // can sit a dozen units inland of the pad the hut ended up on. Only the label moves:
+      // spot() still routes blobs from AREAS, and the pad was cut at the road waypoint
+      // nearest that same centre, so the crowd already gathers at the door.
+      this.areas = AREAS.map(a => {
+        const pad = padFor(a.x, a.z);
+        return pad ? { ...a, x: pad.x, z: pad.z, y: pad.y + 7, count: 0 }
+          : { ...a, y: height(a.x, a.z) + 3, count: 0 };
+      });
       this.blobs = new Map();           // agent id -> { id, x, z, job, dest, path }
       this.round = null;
       this.marketUntil = 0;             // everyone is at the market until this time (ms, performance.now)
@@ -325,38 +413,87 @@
       land.receiveShadow = true;
       scene.add(land);
 
-      // ---- vegetation: instanced low-poly canopy on gentle mid slopes ----
-      const treeGeo = new THREE.SphereGeometry(1.5, 8, 6);
-      treeGeo.scale(1, 0.78, 1);
-      treeGeo.translate(0, 3.0, 0);
-      const trees = new THREE.InstancedMesh(treeGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 }), 120);
+      // ---- vegetation: instanced low-poly palms on gentle mid slopes ----
+      // Built from primitives rather than loaded as a model: 120 palms ride in two
+      // draw calls this way, each with its own tint, and there is no asset to fetch.
+      const mergeGeos = geos => {
+        const parts = geos.map(g => g.index ? g.toNonIndexed() : g);
+        const total = parts.reduce((n, g) => n + g.attributes.position.count, 0);
+        const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3);
+        let o = 0;
+        for (const g of parts) {
+          pos.set(g.attributes.position.array, o * 3);
+          nor.set(g.attributes.normal.array, o * 3);
+          o += g.attributes.position.count;
+        }
+        const out = new THREE.BufferGeometry();
+        out.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        out.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+        return out;
+      };
+      const TRUNK_H = 4.6;
+      // one frond: a long flattened cone, tipped outward and drooping at the end
+      const frondGeo = () => {
+        const g = new THREE.ConeGeometry(0.42, 3.5, 4, 5);
+        g.scale(0.16, 1, 1);              // thin axis becomes the vertical one below
+        g.rotateZ(-Math.PI / 2);          // lie along +x, base at the crown
+        g.translate(1.75, 0, 0);
+        const pos = g.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          const x = pos.getX(i), t = Math.max(0, x / 3.5);
+          pos.setY(i, pos.getY(i) - t * t * 2.1);      // the droop grows toward the tip
+          pos.setX(i, x * (1 - t * t * 0.18));
+        }
+        g.computeVertexNormals();
+        return g;
+      };
+      const fronds = [];
+      for (let f = 0; f < 9; f++) {
+        const g = frondGeo();
+        g.rotateZ((0.26 + (f % 3) * 0.12));           // some fronds ride higher than others
+        g.rotateY(f / 9 * Math.PI * 2 + 0.35);
+        fronds.push(g);
+      }
+      const treeGeo = mergeGeos(fronds);
+      treeGeo.translate(0, TRUNK_H, 0);
+      const PALMS = 300;
+      const trees = new THREE.InstancedMesh(treeGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0, side: THREE.DoubleSide }), PALMS);
       trees.castShadow = true;
       trees.receiveShadow = true;
-      const trunkGeo = new THREE.CylinderGeometry(0.17, 0.26, 2.2, 6);
-      trunkGeo.translate(0, 1.1, 0);
-      const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x6b4c33, roughness: 1, metalness: 0 }), 120);
+      // the trunk leans and thins as it climbs, the way a palm does
+      const trunkGeo = new THREE.CylinderGeometry(0.14, 0.30, TRUNK_H, 6, 7);
+      trunkGeo.translate(0, TRUNK_H / 2, 0);
+      {
+        const pos = trunkGeo.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          const t = pos.getY(i) / TRUNK_H;
+          pos.setX(i, pos.getX(i) + t * t * 0.85);
+        }
+        trunkGeo.computeVertexNormals();
+      }
+      const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x6b4c33, roughness: 1, metalness: 0 }), PALMS);
       trunks.castShadow = true;
       trunks.receiveShadow = true;
       const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), tp = new THREE.Vector3();
       const tcol = new THREE.Color();
       let placed = 0;
-      for (let i = 0; i < 26000 && placed < 120; i++) {
+      for (let i = 0; i < 60000 && placed < PALMS; i++) {
         const x = (hash2(i * 1.7, 3.1) - 0.5) * 210;
         const z = (hash2(i * 2.3, 9.7) - 0.5) * 210;
         const hgt = height(x, z);
-        if (hgt < 2.4 || hgt > 18) continue;
+        if (hgt < 2.2 || hgt > 21) continue;
         const sl = Math.abs(hgt - height(x + 1.5, z)) + Math.abs(hgt - height(x, z + 1.5));
-        if (sl > 3.4) continue;
-        if (hash2(i * 5.3, 1.9) > 0.018) continue;
-        if (distToRoad(x, z) < ROAD_HALF_W + 3) continue;   // clear of the road, canopy included
-        const s = 1.25 + hash2(i * 0.9, 4.4) * 1.0;
+        if (sl > 4.2) continue;
+        if (hash2(i * 5.3, 1.9) > 0.055) continue;
+        if (distToRoad(x, z) < ROAD_HALF_W + 4.5) continue; // clear of the road, fronds included
+        const s = 0.78 + hash2(i * 0.9, 4.4) * 0.5;
         tp.set(x, hgt - 0.3, z);
-        sc.set(s, s * (0.8 + hash2(i, 7) * 0.7), s);
+        sc.set(s, s * (0.85 + hash2(i, 7) * 0.45), s);
         q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash2(i, 2) * 6.28);
         m4.compose(tp, q, sc);
         trees.setMatrixAt(placed, m4);
         trunks.setMatrixAt(placed, m4);
-        tcol.setHSL(0.245 + hash2(i, 11) * 0.055, 0.44 + hash2(i, 13) * 0.16, 0.2 + hash2(i, 17) * 0.1);
+        tcol.setHSL(0.255 + hash2(i, 11) * 0.045, 0.40 + hash2(i, 13) * 0.18, 0.26 + hash2(i, 17) * 0.11);
         trees.setColorAt(placed, tcol);
         placed++;
       }
@@ -367,37 +504,6 @@
       if (trees.instanceColor) trees.instanceColor.needsUpdate = true;
       scene.add(trees);
       scene.add(trunks);
-
-      // ---- ground cover ------------------------------------------------------
-      // Instanced tufts: over a thousand distinct blades in a single draw call.
-      // Rock on the upper slopes is left to the terrain shader rather than to
-      // scattered boulders, which read as floating on steep faces.
-      const grassGeo = new THREE.ConeGeometry(0.42, 1.7, 4);
-      grassGeo.translate(0, 0.84, 0);
-      const grass = new THREE.InstancedMesh(grassGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), 1500);
-      const grassCol = new THREE.Color();
-      let grassPlaced = 0;
-      for (let i = 0; i < 64000 && grassPlaced < 1500; i++) {
-        const x = (hash2(i * 1.11, 38.7) - 0.5) * 205;
-        const z = (hash2(i * 1.93, 21.4) - 0.5) * 205;
-        const hgt = height(x, z);
-        const slope = Math.abs(hgt - height(x + 1.2, z)) + Math.abs(hgt - height(x, z + 1.2));
-        if (hgt < 2.1 || hgt > 19 || slope > 2.55 || hash2(i * 3.7, 14.9) > 0.052) continue;
-        if (distToRoad(x, z) < ROAD_HALF_W + 1.5) continue;   // clear of the road
-        const s = 0.42 + hash2(i * 5.1, 3.2) * 0.75;
-        tp.set(x, hgt - 0.06, z);
-        sc.set(s * (0.75 + hash2(i, 31) * 0.55), s * (0.65 + hash2(i, 33) * 0.8), s);
-        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash2(i, 35) * 6.28);
-        m4.compose(tp, q, sc);
-        grass.setMatrixAt(grassPlaced, m4);
-        grassCol.setHSL(0.22 + hash2(i, 37) * 0.12, 0.42 + hash2(i, 39) * 0.22, 0.26 + hash2(i, 41) * 0.16);
-        grass.setColorAt(grassPlaced, grassCol);
-        grassPlaced++;
-      }
-      grass.count = grassPlaced;
-      grass.instanceMatrix.needsUpdate = true;
-      if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
-      scene.add(grass);
 
       // ---- water: shader surface with waves, depth shading and shoreline foam ----
       const HMAP = 256;
@@ -596,26 +702,42 @@
           m.castShadow = true; m.receiveShadow = true;
           return m;
         };
-        // a nearby spot that is dry, reasonably flat and clear of the road, so the building
-        // never floats, tilts, or ends up straddling the ribbon
-        const flatSpot = (cx, cz, r = 9) => {
-          for (let i = 0; i < 60; i++) {
-            const a = i * 2.4, rad = r * (0.35 + 0.65 * (i / 60));
-            const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad;
-            const h = height(x, z);
-            const slope = Math.abs(h - height(x + 1.5, z)) + Math.abs(h - height(x, z + 1.5));
-            if (h > 2 && h < 22 && slope < 2.2 && distToRoad(x, z) > ROAD_HALF_W + 2.5) return [x, z, h];
+        // the ground under a rotated footprint, corner to corner. A single centre sample
+        // says nothing about what the far corners sit on, which is how a building ends up
+        // with one wall buried and the opposite one hanging in the air.
+        const groundUnder = (x, z, w, d, rot) => {
+          const c = Math.cos(rot), sn = Math.sin(rot);
+          let lo = Infinity, hi = -Infinity;
+          for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+            const lx = a * w / 2, lz = b * d / 2;
+            const y = height(x + lx * c + lz * sn, z - lx * sn + lz * c);
+            if (y < lo) lo = y;
+            if (y > hi) hi = y;
           }
-          return [cx, cz, height(cx, cz)];
+          return { lo, hi };
+        };
+        // the graded pad for this destination. Standing on the high corner of what the
+        // pad actually came out as, rather than on its nominal level, keeps the floor clear
+        // of the ground even where the ease-out clips a corner of the footprint.
+        const flatSpot = (cx, cz, w = 5, d = 4.6, rot = 0) => {
+          const p = padFor(cx, cz) || { x: cx, z: cz };
+          const g = groundUnder(p.x, p.z, w, d, rot);
+          return [p.x, p.z, g.hi, g.hi - g.lo];
         };
         const cabin = (cx, cz, { w = 5, d = 4.6, h = 3.2, roofH = 2.1, wall = 0xe4d3ad, roof = 0x9a5f45, rot = 0 } = {}) => {
-          const [x, z, gy] = flatSpot(cx, cz);
+          const [x, z, gy, relief] = flatSpot(cx, cz, w, d, rot);
           const group = new THREE.Group();
           const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color: wall, roughness: 1 }));
           box.position.y = h / 2; box.castShadow = true; box.receiveShadow = true;
           const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.62, roofH, 4), new THREE.MeshStandardMaterial({ color: roof, roughness: 1 }));
           cone.position.y = h + roofH / 2 - 0.1; cone.rotation.y = Math.PI / 4; cone.castShadow = true;
-          group.add(box, cone);
+          // a stone footing carries the drop on the downhill side: the floor stays level
+          // on the high corner and nothing is left hanging over the slope
+          const foot = relief + 0.9;
+          const plinth = new THREE.Mesh(new THREE.BoxGeometry(w * 1.08, foot, d * 1.08), new THREE.MeshStandardMaterial({ color: 0x9b9081, roughness: 1 }));
+          plinth.position.y = -foot / 2 + 0.06;
+          plinth.castShadow = true; plinth.receiveShadow = true;
+          group.add(box, cone, plinth);
           group.position.set(x, gy, z);
           group.rotation.y = rot;
           scene.add(group);
@@ -651,9 +773,15 @@
 
         // building site: just a frame going up, beams and a stack of spare boards, no walls yet
         {
-          const [x, z, y] = flatSpot(-16, -50);
+          const frameRot = 0.3;
           const wx = 3, dz = 2.4, wallH = 3.2, ridgeH = 4.7;
-          const corners = [[-wx, 0, -dz], [wx, 0, -dz], [wx, 0, dz], [-wx, 0, dz]];
+          const [x, z, y] = flatSpot(-16, -50, wx * 2, dz * 2, frameRot);
+          // each post reaches down to the ground it actually stands on, so a corner over
+          // lower ground grows a longer leg instead of floating
+          const fc = Math.cos(frameRot), fsn = Math.sin(frameRot);
+          const footY = (lx, lz) => Math.min(0, height(x + lx * fc + lz * fsn, z - lx * fsn + lz * fc) - y) - 0.15;
+          const corners = [[-wx, 0, -dz], [wx, 0, -dz], [wx, 0, dz], [-wx, 0, dz]]
+            .map(([a, , b]) => [a, footY(a, b), b]);
           const tops = corners.map(([cx, , cz]) => [cx, wallH, cz]);
           const ridgeA = [0, ridgeH, -dz], ridgeB = [0, ridgeH, dz];
           const beam = new THREE.MeshStandardMaterial({ color: 0xc79a5e, roughness: 1 });
@@ -667,7 +795,7 @@
           frame.add(strut(tops[2], ridgeB, 0.28, beam));
           frame.add(strut(tops[3], ridgeB, 0.28, beam));
           frame.position.set(x, y, z);
-          frame.rotation.y = 0.3;
+          frame.rotation.y = frameRot;
           scene.add(frame);
           const boardGeo = new THREE.BoxGeometry(3.2, 0.24, 0.7);
           const boardMat = new THREE.MeshStandardMaterial({ color: 0xd9b26a, roughness: 1 });
@@ -682,13 +810,17 @@
 
         // market: an open-sided stall, posts and a canopy, no walls, a table underneath
         {
-          const [x, z, y] = flatSpot(18, 56, 7);
-          const w = 5.4, d = 4.4, postH = 2.6;
+          const w = 5.4, d = 4.4, postH = 2.6, stallRot = -0.5;
+          const [x, z, y] = flatSpot(18, 56, w, d, stallRot);
           const postMat = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 1 });
           const stall = new THREE.Group();
+          // same trick as the frame: the canopy stays level while the legs take up the slope
+          const sc2 = Math.cos(stallRot), ssn = Math.sin(stallRot);
+          const postFoot = (lx, lz) => Math.min(0, height(x + lx * sc2 + lz * ssn, z - lx * ssn + lz * sc2) - y) - 0.1;
           [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]].forEach(([px, pz]) => {
-            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, postH, 7), postMat);
-            post.position.set(px, postH / 2, pz);
+            const base = postFoot(px, pz), len = postH - base;
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, len, 7), postMat);
+            post.position.set(px, base + len / 2, pz);
             post.castShadow = true;
             stall.add(post);
           });
@@ -702,7 +834,7 @@
           table.castShadow = true; table.receiveShadow = true;
           stall.add(table);
           stall.position.set(x, y, z);
-          stall.rotation.y = -0.5;
+          stall.rotation.y = stallRot;
           scene.add(stall);
         }
       }
@@ -720,19 +852,42 @@
       {
         const pts = [];
         ROAD.forEach(([x, z], i) => {
-          const [nx, nz] = ROAD[(i + 1) % ROAD.length], steps = Math.ceil(Math.hypot(nx - x, nz - z) / 3);
+          const [nx, nz] = ROAD[(i + 1) % ROAD.length], steps = Math.ceil(Math.hypot(nx - x, nz - z) / 2.4);
           for (let k = 0; k < steps; k++) pts.push([x + (nx - x) * k / steps, z + (nz - z) * k / steps]);
         });
-        const n = pts.length, SPAN = 5;      // cross-section samples per slice, edge to edge
-        const verts = [], index = [];
-        const rings = pts.map(([x, z], i) => {
+        // SPAN is wider than following the ground needs: the spare vertices are what carry the
+        // worn-pale centre and gritty shoulders, which two edge samples per slice cannot hold.
+        const n = pts.length, SPAN = 9;      // cross-section samples per slice, edge to edge
+        // the worn strip wanders instead of running dead centre, and stones gather in stretches
+        // rather than evenly. Both are read off the compass bearing so they close at the seam.
+        const alongNoise = (x, z, f, sx, sy) => {
+          const a = Math.atan2(z, x);
+          return vnoise(Math.cos(a) * f + sx, Math.sin(a) * f + sy);
+        };
+        const verts = [], index = [], rcol = [];
+        const worn = new THREE.Color(0xefe2bd), grit = new THREE.Color(0xa1957c), pale = new THREE.Color(0xc2bdb1);
+        const rc = new THREE.Color();
+        const frames = pts.map(([x, z], i) => {
           const [ax, az] = pts[(i + n - 1) % n], [bx, bz] = pts[(i + 1) % n];
-          const len = Math.hypot(bx - ax, bz - az) || 1, px = -(bz - az) / len, pz = (bx - ax) / len;
+          const len = Math.hypot(bx - ax, bz - az) || 1;
+          return {
+            x, z, px: -(bz - az) / len, pz: (bx - ax) / len,
+            wander: (alongNoise(x, z, 3.1, 5, 2) * 2 - 1) * 0.45,
+            clump: alongNoise(x, z, 8.4, 13, 7),
+          };
+        });
+        const rings = frames.map(f => {
           const ring = [];
           for (let s = 0; s < SPAN; s++) {
-            const t = (s / (SPAN - 1) * 2 - 1) * ROAD_HALF_W;
-            const vx = x + px * t, vz = z + pz * t;
+            const across = s / (SPAN - 1) * 2 - 1;
+            const vx = f.x + f.px * across * ROAD_HALF_W, vz = f.z + f.pz * across * ROAD_HALF_W;
             ring.push([vx, height(vx, vz) + 0.4, vz]);
+            const g = fbm(vx * 0.55 + 3, vz * 0.55 + 8, 3);
+            const wear = smooth(1 - Math.min(1, Math.abs(across - f.wander) / 0.95));
+            rc.copy(grit).lerp(worn, Math.min(1, wear * (0.55 + g * 0.5)));
+            rc.lerp(pale, Math.max(0, g - 0.52) * 1.25);                   // bare stone showing through
+            rc.multiplyScalar(Math.min(1.12, 0.9 + fbm(vx * 1.7 + 21, vz * 1.7 + 13, 2) * 0.24));
+            rcol.push(rc.r, rc.g, rc.b);
           }
           return ring;
         });
@@ -746,11 +901,101 @@
         }
         const roadGeo = new THREE.BufferGeometry();
         roadGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+        roadGeo.setAttribute("color", new THREE.Float32BufferAttribute(rcol, 3));
         roadGeo.setIndex(index);
         roadGeo.computeVertexNormals();
-        const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ color: 0xe6d6a4, roughness: 1, side: THREE.DoubleSide }));
+        // The vertex tones above set the broad wear pattern; this adds what they are far too
+        // coarse to hold, grit at sand scale and a pebble-sized mottle, the same upscaling
+        // trick the land uses. Nothing to fetch and no extra triangles.
+        const roadMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide });
+        roadMat.onBeforeCompile = (sh) => {
+          sh.vertexShader = sh.vertexShader
+            .replace("#include <common>", "#include <common>\nvarying vec3 vRPos;")
+            .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\n  vRPos = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+          sh.fragmentShader = sh.fragmentShader
+            .replace("#include <common>", `#include <common>
+              varying vec3 vRPos;
+              float rRough = 1.0;
+              float rh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+              float rvn(vec2 p){
+                vec2 i = floor(p), f = fract(p);
+                vec2 u = f * f * (3.0 - 2.0 * f);
+                return mix(mix(rh(i), rh(i + vec2(1,0)), u.x), mix(rh(i + vec2(0,1)), rh(i + vec2(1,1)), u.x), u.y);
+              }
+              float rfb(vec2 p, int oct){
+                float s = 0.0, a = 0.5;
+                for (int i = 0; i < 5; i++) { if (i >= oct) break; s += a * rvn(p); p *= 2.07; a *= 0.5; }
+                return s;
+              }
+              // cell noise sized to a pebble: the fill breaks into stones with dark gaps
+              // between them instead of dithering into uniform speckle
+              float rcell(vec2 p){
+                vec2 ip = floor(p), fp = fract(p);
+                float d = 1.0;
+                for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+                  vec2 g = vec2(float(x), float(y));
+                  vec2 o = vec2(rh(ip + g), rh(ip + g + 7.3));
+                  d = min(d, length(g + o - fp));
+                }
+                return d;
+              }`)
+            .replace("#include <color_fragment>", `#include <color_fragment>
+              {
+                vec2 wp = vRPos.xz;
+                float grit = rfb(wp * 11.0, 3);
+                float top = 1.0 - smoothstep(0.04, 0.30, rcell(wp * 2.6));     // a pebble's crown
+                float bed = 1.0 - rcell(wp * 0.8);                             // drifts of loose stone
+                float stony = clamp(0.25 + bed * 1.1, 0.0, 1.0);               // bare stretches between them
+                top *= stony;
+                diffuseColor.rgb += vec3(0.055, 0.05, 0.038) * (grit - 0.5) * 2.0;
+                diffuseColor.rgb *= 0.88 + top * 0.2;
+                diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.72, 0.71, 0.67), top * 0.36);
+                diffuseColor.rgb = clamp(diffuseColor.rgb, 0.0, 1.0);
+                // trodden stone takes a sheen, the loose grit around it does not
+                rRough = clamp(1.0 - top * 0.36 - (grit - 0.5) * 0.16, 0.45, 1.0);
+              }`)
+            .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = rRough;");
+        };
+        const road = new THREE.Mesh(roadGeo, roadMat);
         road.receiveShadow = true;
         scene.add(road);
+
+        // real stones set into the path, so it reads as a footpath and not a painted strip.
+        // Clustered along the same worn centre line the vertex colours follow, with a few
+        // strays out to the shoulders, and sunk in rather than dropped on top. One draw call,
+        // and small enough that a blob reads as walking over them, not round them.
+        const pebGeo = new THREE.IcosahedronGeometry(0.5, 0);
+        const MAX_PEB = 420;
+        const pebbles = new THREE.InstancedMesh(pebGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, flatShading: true }), MAX_PEB);
+        const pcol = new THREE.Color(), eu = new THREE.Euler();
+        let pebPlaced = 0;
+        for (let i = 0; i < 2600 && pebPlaced < MAX_PEB; i++) {
+          const f = frames[Math.floor(hash2(i * 0.731, 12.4) * n) % n];
+          if (hash2(i * 1.37, 5.9) > 0.012 + f.clump * f.clump * 0.44) continue;   // stony stretches, bare stretches
+          const r = hash2(i * 2.17, 31.3) * 2 - 1;
+          // cubed and measured off the wandering centre rather than the ribbon's, so the trail
+          // winds with the worn strip and only the odd stray reaches a shoulder
+          const across = f.wander + r * r * r * (0.93 - Math.abs(f.wander));
+          const x = f.x + f.px * across * ROAD_HALF_W, z = f.z + f.pz * across * ROAD_HALF_W;
+          const top = height(x, z) + 0.4;
+          if (top < SEA + 0.6) continue;                  // never a stone standing in the water
+          const s = 0.2 + hash2(i * 3.91, 8.2) * 0.34;
+          const ys = 0.5 + hash2(i * 4.53, 19.7) * 0.32;  // squashed: worn flat, not tumbled
+          tp.set(x, top - 0.2 * s * ys, z);
+          sc.set(s * (0.85 + hash2(i, 51) * 0.4), s * ys, s * (0.85 + hash2(i, 53) * 0.4));
+          eu.set(hash2(i, 55) * 6.28, hash2(i, 57) * 6.28, hash2(i, 59) * 6.28);
+          q.setFromEuler(eu);
+          m4.compose(tp, q, sc);
+          pebbles.setMatrixAt(pebPlaced, m4);
+          pcol.setHSL(0.09 + hash2(i, 63) * 0.05, 0.04 + hash2(i, 65) * 0.07, 0.44 + hash2(i, 61) * 0.26);
+          pebbles.setColorAt(pebPlaced, pcol);
+          pebPlaced++;
+        }
+        pebbles.count = pebPlaced;
+        pebbles.instanceMatrix.needsUpdate = true;
+        if (pebbles.instanceColor) pebbles.instanceColor.needsUpdate = true;
+        pebbles.receiveShadow = true;
+        scene.add(pebbles);
       }
 
       this.refresh();
