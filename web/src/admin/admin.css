@@ -35,14 +35,22 @@ body.view-admin #admin-root #headline {
 #admin-root .top button#btn[disabled] { opacity: .6; cursor: wait; }
 #admin-root .top .agents { font-size: 13px; color: #666; }
 #admin-root .top .agents input { width: 58px; font-size: 15px; padding: 5px 6px; margin-left: 4px; }
+#admin-root .top .pick { font-size: 13px; color: #666; }
+#admin-root .top .pick select { font: inherit; font-size: 14px; padding: 4px 6px; margin-left: 4px; }
 #admin-root #status { font-size: 14px; }
 #admin-root #headline { color: #444; margin: 4px 0 12px; line-height: 1.6; }
+/* one line per model in a mixed village: who thinks with it, how often it answered, what it cost */
+#admin-root #models { color: #444; margin: -6px 0 12px; line-height: 1.6; font-size: 12px; }
+#admin-root #models:empty { margin: 0; }
+#admin-root #models b { color: #111; }
 #admin-root .box { border: 1px solid #ccc; padding: 8px 10px; margin: 10px 0; }
 #admin-root table { border-collapse: collapse; width: 100%; }
 #admin-root td, #admin-root th { padding: 2px 8px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
 #admin-root td.n, #admin-root th.n { text-align: right; }
 #admin-root td.t { white-space: normal; color: #555; }
 #admin-root td.t.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
+#admin-root td.model, #admin-root th.model { color: #555; font-size: 11px; }
+#admin-root table.nomodels .model { display: none; }   /* one model: the column says nothing */
 #admin-root .hungry { color: #b00; }
 #admin-root .muted { color: #666; }
 #admin-root .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; }

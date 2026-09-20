@@ -21,6 +21,36 @@ const SHOWN = [0, 1, 2, 4];          // goods with a chart of their own; boats (
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 
+// ---- a colour per model -----------------------------------------------------------
+// A mixed village thinks with several models at once, so a villager carries its model's
+// colour wherever it appears: the feed under the status line, the agent table, the wealth
+// lineup. The order is the alphabet, not the leaderboard — a model must keep its colour
+// AND its place while the run goes on, or the eye spends every refresh finding it again.
+const MODEL_INK = ['#4053d6', '#b8336a', '#0f8b8d', '#7d4cdb', '#8a6d00', '#a03623', '#2b6b4f', '#5c5f66'];
+const modelOrder = () => Object.keys(last?.llm?.byModel ?? {}).sort();
+function modelInk(slug) {
+  const i = modelOrder().indexOf(slug);
+  return i < 0 ? C.grey : MODEL_INK[i % MODEL_INK.length];
+}
+// The slug's last segment names the model; the vendor prefix is the same for a whole pool.
+const modelChip = slug => slug
+  ? `<span style="color:${modelInk(slug)}" title="${esc(slug)}">■</span> ${esc(slug.split('/').pop())}`
+  : '';
+
+// What each model in a mixed village is doing: how many villagers think with it, how often
+// it answered, what it has cost so far. One model is the ordinary case and says nothing extra.
+function modelFeed(llm) {
+  const el = $('models');
+  if (!el) return;
+  const by = Object.entries(llm?.byModel ?? {});
+  if (by.length < 2) { el.innerHTML = ''; return; }
+  const order = modelOrder();
+  el.innerHTML = by.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([slug, m]) =>
+    `<b style="color:${modelInk(slug)}">■</b> <b>${esc(slug.split('/').pop())}</b> ${m.agents} agents · ${m.calls} calls · $${m.cost.toFixed(3)}` +
+    (m.timedOut ? ` · <span class="hungry">${m.timedOut} timed out</span>` : '') +
+    (m.errors ? ` · <span class="hungry">${m.errors} errors</span>` : '')).join(' &nbsp;|&nbsp; ');
+}
+
 let btn, statusEl, world, events, rows, root;
 let running = false;
 let last = null;                     // last /state, so hover can redraw without a fetch
@@ -61,6 +91,7 @@ const txUrl = sig => last.chain.explorer.replace(/\/address\/[^?]+/, '/tx/' + si
 const MARKUP = `
 <div class="top">
   <h1>agent-economy</h1>
+  <label class="pick" id="brainpick" hidden>brain <select id="brainsel"></select></label>
   <label class="agents">agents <input id="agents" type="number" min="2" max="137" step="1" value="100"></label>
   <button id="btn" onclick="dash.toggle()">Start</button>
   <button id="pausebtn" onclick="dash.togglePause()" disabled>Pause</button>
@@ -69,6 +100,7 @@ const MARKUP = `
   <span id="status"></span>
 </div>
 <div id="headline"></div>
+<div id="models"></div>
 
 <div id="admin-panel">
   <button class="close" onclick="dash.toggleDials()">Close</button>
@@ -116,7 +148,7 @@ const MARKUP = `
       <thead><tr>
         <th></th><th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
         <th class="n">wood</th><th class="n">nets</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
-        <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>standing orders</th><th>last thought</th>
+        <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th class="model">model</th><th>standing orders</th><th>last thought</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
@@ -402,7 +434,8 @@ function wealth() {
   const W = 640, L = 96, mid = L + 90, R = W - 70, row = 15, fs = 11;
   const sx = v => v / max * (R - mid);
   const bars = ag.map((a, i) => { const yy = i * row + 14;
-    return `<text x="0" y="${yy + 10}" font-size="${fs}">${i + 1}. ${a.name}</text>` +
+    return (a.model ? `<rect x="0" y="${yy + 3}" width="7" height="7" fill="${modelInk(a.model)}"><title>${esc(a.model)}</title></rect>` : '') +
+      `<text x="${a.model ? 11 : 0}" y="${yy + 10}" font-size="${fs}">${i + 1}. ${a.name}</text>` +
       (a.debt ? `<rect x="${mid - Math.min(sx(a.debt), mid - L)}" y="${yy + 2}" width="${Math.min(sx(a.debt), mid - L)}" height="${row - 4}" fill="${C.amber}"/>` : '') +
       `<rect x="${mid}" y="${yy + 2}" width="${sx(a.cash)}" height="${row - 4}" fill="${a.cash - a.debt >= start ? C.green : '#9dc4ac'}"/>` +
       `<text x="${W}" y="${yy + 10}" font-size="${fs}" text-anchor="end">${a.wealth.toFixed(2)}</text>`; }).join('');
@@ -469,6 +502,7 @@ function agentTable() {
     `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
     `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
     `<td class="n ${a.dueIn !== null && a.dueIn <= 1 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + ' r'}</td>` +
+    `<td class="model">${modelChip(a.model)}</td>` +
     // One line each, cut with an ellipsis: these two change every round, and letting them
     // wrap made every row a different height from one poll to the next, which shoved the
     // whole page below the table up and down. The full text is a hover away, and in the log.
@@ -476,6 +510,8 @@ function agentTable() {
     `<td class="t one" title="${esc(a.thought ?? '')}">${esc(a.thought ?? '')}</td></tr>` +
     (open ? `<tr class="agentlog"><td></td><td colspan="${AGENT_COLS - 1}"><div class="alog" id="alog-${a.id}" onscroll="dash.logScrolled(${a.id}, this)">${agentLogHtml(a.id)}</div></td></tr>` : '');
   }).join('');
+  // one brain, one model: a column saying the same thing on every row is worse than no column
+  rows.closest('table').classList.toggle('nomodels', new Set(ag.map(a => a.model).filter(Boolean)).size < 2);
   // the table is rebuilt every poll: put each open log back where the reader had scrolled it
   for (const id of openAgents) { const el = $('alog-' + id); if (el && logScroll.has(id)) el.scrollTop = logScroll.get(id); }
   refreshOpenLogs();
@@ -483,7 +519,7 @@ function agentTable() {
 
 // ---- one villager's whole run (GET /agent): every decision it made, with the tools it
 //      called and what they answered, and every line it was told in between. Newest first.
-const AGENT_COLS = 17;
+const AGENT_COLS = 18;
 const openAgents = new Set();          // agent ids whose log is open
 const agentLogs = new Map();           // id -> the last /agent reply
 const logScroll = new Map();           // id -> scrollTop of that log, kept across redraws
@@ -678,10 +714,27 @@ async function toggle() {
   btn.disabled = true;
   statusEl.textContent = running ? 'stopping' : 'starting, creating the ledger on Solana';
   const n = Math.round(+$('agents').value);
+  // the brain is chosen for the run that is starting; a run already going keeps its own.
+  // JSON.stringify drops the undefined keys, so a stop still posts {} and an untouched
+  // field still means "whatever .env says".
+  const body = running ? {} : { brain: $('brainsel').value || undefined, agents: n > 0 ? n : undefined };
   await fetch(running ? '/stop' : '/start', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: running || !(n > 0) ? '{}' : JSON.stringify({ agents: n }) });
+    body: JSON.stringify(body) });
   btn.disabled = false;
   refreshState();
+}
+
+// Pick the brain for the next run: .env's choice is the default, and the picker is only
+// shown between runs — a running village is bound to the brain (and the models) it started
+// with, so there is nothing to choose until it stops.
+function brainPicker(s) {
+  const box = $('brainpick'), pick = $('brainsel');
+  box.hidden = s.running || !s.brains?.length;
+  if (box.hidden) return;
+  if (pick.options.length !== s.brains.length) {
+    pick.innerHTML = s.brains.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+    pick.value = s.config.brain;
+  }
 }
 
 // The old page's refresh(), minus the fetch: the store hands us the snapshot.
@@ -705,15 +758,21 @@ function render(s, error) {
   agentsEl.disabled = running;
   if (cfg.maxAgents) agentsEl.max = cfg.maxAgents;
   if (cfg.agents && (running || !agentsTouched)) agentsEl.value = cfg.agents;
+  brainPicker(s);
   const tuning = cfg.decideTimeoutMs
     ? ` · <span class="muted">timeout ${(cfg.decideTimeoutMs / 1000).toFixed(1)}s</span>` : '';
   if (!running) {
-    statusEl.innerHTML = `${cfg.agents} agents · ${cfg.brain}${cfg.model ? ` ${cfg.model}` : ''}${tuning}`;
+    // the brain is named by the picker beside this line, so it is not repeated here — but
+    // a backend that offered no brains to pick from leaves the picker hidden, and then it is
+    statusEl.innerHTML = `${cfg.agents} agents${$('brainpick').hidden ? ` · ${cfg.brain}` : ''}` +
+      `${cfg.model ? ` · ${cfg.model}` : ''}${tuning}`;
     $('headline').innerHTML = '<span class="muted">not running</span>'; $('dash').style.display = 'none';
+    modelFeed(null);
     return;
   }
   $('dash').style.display = '';
   statusEl.innerHTML = `<b>round ${s.round}</b> · ${s.seconds}s · ${s.brain} · ${s.agents.length} agents`;
+  modelFeed(s.llm);
   $('headline').innerHTML =
     `round ${(s.roundMs / 1000).toFixed(1)}s` +
     (s.decide?.timeouts ? ` · <span class="hungry">${s.decide.timeouts} timed out</span>` : '') +
