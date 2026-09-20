@@ -3,7 +3,7 @@
 // Goods changes are queued as deltas and settled on Solana each round; after every round
 // the local view is replaced by what the chain says. The chain is the source of truth —
 // this file is a fast mirror.
-import { CFG, GOODS, FOOD, WOOD, NETS, HOUSES } from './config.mjs';
+import { CFG, GOODS, FOOD, WOOD, NETS, BOATS, HOUSES } from './config.mjs';
 import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, liquidatable, accruedDebt } from './chain.mjs';
 
 const S1 = ['Ka', 'Lo', 'Mi', 'Ro', 'Te', 'Su', 'Na', 'Vi', 'Jo', 'Pe', 'Di', 'Ha', 'Ba', 'Fe', 'Gu', 'Ze'];
@@ -20,20 +20,15 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   // Round a fractional amount up or down at random, so the expected value is exact.
   const roll = x => { const n = Math.floor(x); return n + (rnd() < x - n ? 1 : 0); };
-  // One villager's three skills: a lopsided draw, scaled so everyone's add up to TALENT.
-  // Talent is a budget, not a gift — a great fisher is a poor woodcutter — so the only way
-  // to live well is to work your best job and buy the rest. The floor keeps nobody at
-  // exactly nothing (and keeps craft skill out of a division by zero); rounding and the
-  // floor move the total a hair, so the residue goes on the top skill and the budget
-  // stays exact, which also caps the top at TALENT − 2 × floor.
-  const LO = CFG.SKILL_FLOOR, TALENT = 3;
-  const skills = () => {
-    const raw = [rnd(), rnd(), rnd()].map(u => u ** CFG.SKILL_TILT);
-    const scale = TALENT / raw.reduce((s, x) => s + x, 0);
-    const k = raw.map(x => Math.round(Math.max(LO, x * scale) * 10) / 10);
-    const top = k.indexOf(Math.max(...k));
-    k[top] = +(k[top] + TALENT - k.reduce((s, x) => s + x, 0)).toFixed(1);
-    return { gather_food: k[0], gather_wood: k[1], craft_net: k[2] };
+  // Talents: every villager is strong at one job, middling at a second and poor at the third
+  // (CFG.TALENT: a range for each). Which job is the strong one goes round the village in
+  // turn from a random start, so a small village still has some of every trade; which of the
+  // other two is the weak one is a coin toss. Totals differ a little, as people's do.
+  const JOBS = ['gather_food', 'gather_wood', 'craft_net'], jobShift = Math.floor(rnd() * 3);
+  const draw = ([lo, hi]) => +(lo + rnd() * (hi - lo)).toFixed(2);
+  const talents = i => {
+    const strong = (i + jobShift) % 3, rest = [0, 1, 2].filter(j => j !== strong), mid = rest[rnd() < 0.5 ? 0 : 1];
+    return Object.fromEntries(JOBS.map((job, j) => [job, draw(j === strong ? CFG.TALENT.strong : j === mid ? CFG.TALENT.mid : CFG.TALENT.weak)]));
   };
 
   // Fixed prices for real GDP, in cents: the opening price of each good. A house opens at what
@@ -60,15 +55,26 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     wbNow: { eating: 0, warmth: 0, house: 0 },      // the meal period in progress
     wbRecent: [],                                   // the last few meal periods, by source
     shifts: { gather_food: 0, gather_wood: 0, craft_net: 0, build_house: 0, idle: 0 },   // finished shifts, by kind (idle = not chosen)
-    building: null,                                 // a house under construction: { done (progress, out of build_house.shifts), shifts worked, wood } (it is already one of goods[HOUSES])
+    building: null,                                 // a house under construction: { done (progress, out of build_house.shifts), shifts worked, wood paid in so far } (it is already one of goods[HOUSES])
     housesBuilt: 0,
     fills: null,                                    // how the agent's orders did in the last round it traded in
     warmPhase: i % CFG.WARM_ROUNDS,
     thought: 'just arrived in the village',
     memory: [],
     traits: { patience: +rnd().toFixed(2), risk: +rnd().toFixed(2) },
-    skills: skills(),
+    skills: talents(i),
     upkeepPaid: 0,                                  // houses whose upkeep wood was paid last round
+    // The market stall: a standing sale plan per good, { keep, min } — every round whatever is
+    // held above `keep` is offered at `min` (cents) or better, until the agent changes it.
+    // Producers everywhere bring their goods to market without deciding to each morning.
+    // `ask` is what the stall asks now: it starts at the going price, is marked down when nothing
+    // sells and up when everything does (CFG.REPRICE), and never goes below `min`.
+    sale: GOODS.map((_, g) => CFG.STALL[g] ? { keep: CFG.STALL[g].keep, min: Math.round(CFG.START_PRICES[g] * CFG.STALL[g].min), ask: CFG.START_PRICES[g] } : null),
+    // The shopping list: a standing purchase plan per good, { target, max } — every round the
+    // agent bids for whatever it holds short of `target`, at up to `max` (cents). Households buy
+    // their necessities by habit, not by remembering to each morning.
+    // `bid` is what it offers now: raised when it gets nothing, eased when it gets everything, never above `max`.
+    shop: GOODS.map((_, g) => CFG.SHOP[g] ? { target: CFG.SHOP[g].target, max: Math.round(CFG.START_PRICES[g] * CFG.SHOP[g].max), bid: CFG.START_PRICES[g] } : null),
     decisions: 0,
   }));
 
@@ -77,7 +83,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     prices: [...initial.lastPrice],
     priceHistory: [], volumes: none(),
     pending: [], seq: 0,                             // seq: arrival order of orders, for price-time priority
-    events: [], roundBusy: false, lastRound: null, lastBook: null,
+    events: [], roundBusy: false, lastRound: null, lastBook: null, settlersSupply: null,
     lastLadder: null,                                // last round's book before clearing, per good (D6)
     bankSale: {},                                    // per good: the bank's descending sale of seized goods, { anchor, k }
     slotsPerRound: CFG.ROUND_MS_GUESS / CFG.SLOT_MS, roundMs: CFG.ROUND_MS_GUESS,   // measured every round
@@ -107,7 +113,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // ---- reservations: what an agent has promised to its orders -----------------
   // During a decision, the orders posted so far; after it, this round's orders.
   const ordersOf = a => a.draft ?? a.orders;
-  W.reservedCash = a => ordersOf(a).filter(o => o.side === 'buy').reduce((s, o) => s + o.qty * o.limit, 0);
+  // A bid for a house holds no cash back: nobody stops eating while they wait for a builder.
+  // Houses clear last, on whatever cash is left by then (round() trims every bid to the cash there is).
+  W.reservedCash = a => ordersOf(a).filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((s, o) => s + o.qty * o.limit, 0);
   W.reservedGood = (a, g) => ordersOf(a).filter(o => o.side === 'sell' && o.good === g).reduce((s, o) => s + o.qty, 0);
   W.availCash = a => a.cash - W.reservedCash(a);
   W.availGood = (a, g) => a.goods[g] - W.reservedGood(a, g);
@@ -120,18 +128,20 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.usableNets = a => Math.max(0, W.availGood(a, NETS)) + a.locked[NETS];
   // An unfinished house is on-chain (one of goods or locked) but is not a home yet.
   W.unfinished = a => a.building ? 1 : 0;
-  W.houses = a => W.owned(a, HOUSES) - W.unfinished(a);   // finished houses owned; several are worth having
+  W.houses = a => Math.max(0, W.owned(a, HOUSES) - W.unfinished(a));   // finished houses owned, pledged ones too; several are worth having
   W.hasHouse = a => W.houses(a) >= 1;
   // What n houses pay a meal period: WELLBEING.HOUSE in order, its last figure repeating.
+  // houseAdds: what the n-th house (1-based) adds on its own.
   const HWB = CFG.WELLBEING.HOUSE;
-  W.houseWB = n => { let s = 0; for (let i = 0; i < n; i++) s += HWB[Math.min(i, HWB.length - 1)]; return s; };
+  W.houseAdds = n => HWB[Math.min(n, HWB.length) - 1];
+  W.houseWB = n => { let s = 0; for (let i = 1; i <= n; i++) s += W.houseAdds(i); return s; };
   // What can be sold: free goods, less a house under construction. Pledged houses are
   // counted as the unfinished one first, so a free finished house stays sellable.
   const holdable = (a, g) => a.goods[g] - (g === HOUSES ? Math.max(0, W.unfinished(a) - a.locked[HOUSES]) : 0);
   W.sellable = (a, g) => holdable(a, g) - W.reservedGood(a, g);
-  // A house costs the same wood for everyone. Dividing it by crafting skill was perverse:
-  // the three skills sum to 3.0, so the agents with the wood are the ones with the worst
-  // crafting, and they were quoted 300 wood while agents holding none were quoted 75.
+  // A house costs the same wood for everyone: crafting skill buys speed (W.buildSkill), not
+  // cheaper wood. Dividing it by skill was perverse — the agents with the wood are the ones
+  // with the worst crafting, and they were quoted several times what the crafters were.
   W.houseWood = () => CFG.TASKS.build_house.wood;
 
   // ---- wellbeing: the goal ------------------------------------------------------
@@ -156,6 +166,35 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     return null;
   };
 
+  // What a unit would fetch now: if buyers went short last round, their best bid; else the last price.
+  W.fetch = g => { const L = W.lastLadder?.[g]; return L && L.wanted > L.sold && L.bids.top[0] ? Math.max(L.bids.top[0][0], W.prices[g]) : W.prices[g]; };
+
+  // ---- what a shift of each job is worth to an agent, in cents --------------------
+  // `raw` is output at what buyers paid (or bid and didn't get); `sure` discounts it by how much of
+  // what was offered lately actually sold — a price is only worth what sells at it. `can`: the
+  // agent has the wood for it right now.
+  W.through = g => { const r = W.recentSales(g, 3); return r.offered ? Math.min(1, r.sold / r.offered) : 1; };
+  // A good that rots is worth what sells TODAY, so a thin market discounts it hard. A good that
+  // keeps — a net, a house — is not worthless because it waits a few rounds for its buyer, so it
+  // is discounted gently. At the food floor, 17% of nets selling made a 21.32 crafting shift read
+  // as 6.22 and crafting fell below every other job: 63 nets were made in 82 rounds, none after
+  // the first quarter, and with no new nets the village's output per shift stopped rising.
+  W.sure = (x, g) => x > 0 ? x * (CFG.SPOIL[g] ? 0.15 + 0.85 * W.through(g) : 0.55 + 0.45 * W.through(g)) : x;
+  W.jobValues = a => {
+    const F = CFG.TASKS.gather_food, P = W.prices, wood = W.availGood(a, WOOD);
+    const fish = (W.usableNets(a) ? F.netYield : F.yield) * W.skill(a, 'gather_food') * W.catch() * P[FOOD];
+    const cut = CFG.TASKS.gather_wood.yield * W.skill(a, 'gather_wood') * P[WOOD];
+    const craft = W.fetch(NETS) - W.netWood(a) * P[WOOD];
+    const build = (W.fetch(HOUSES) - W.houseWood(a) * P[WOOD]) / W.buildShiftsFor(a);
+    return [
+      { task: 'gather_food', raw: fish, sure: W.sure(fish, FOOD), can: true },
+      { task: 'gather_wood', raw: cut, sure: W.sure(cut, WOOD), can: true },
+      { task: 'craft_net', raw: craft, sure: W.sure(craft, NETS), can: wood >= W.netWood(a), needs: W.netWood(a) },
+      { task: 'build_house', raw: build, sure: W.sure(build, HOUSES), can: wood >= W.trancheWood(a), needs: W.trancheWood(a) },
+    ];
+  };
+  // The trade an agent falls back on: the best-paying job it has the materials for.
+  W.bestDoable = a => W.jobValues(a).filter(j => j.can).sort((x, y) => y.sure - x.sure)[0].task;
   // ---- skills: how good an agent is at each kind of work -----------------------
   W.skill = (a, task) => a.skills[task] ?? 1;
   // Crafting divides a wood bill rather than multiplying a yield, so the full skill range
@@ -167,7 +206,16 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   const BUILD = CFG.TASKS.build_house.shifts;
   W.buildSkill = a => Math.min(CFG.BUILD_CLAMP[1], Math.max(CFG.BUILD_CLAMP[0], W.skill(a, 'craft_net')));
   W.buildShiftsFor = a => Math.ceil(BUILD / W.buildSkill(a));                  // a fresh house, whole shifts
-  W.buildShiftsLeft = a => a.building ? Math.ceil((BUILD - a.building.done) / W.buildSkill(a)) : W.buildShiftsFor(a);
+  W.buildShiftsLeft = a => a.building ? Math.ceil((BUILD - a.building.done - 1e-9) / W.buildSkill(a)) : W.buildShiftsFor(a);
+  // Building is paid for as it goes: the wood still owed is spread evenly over the shifts the
+  // builder still needs (a 2.0 crafter pays 30 + 30, a 1.0 crafter 20 × 3), so a builder needs
+  // one shift's materials to start, not all of them. Charging by progress instead asked a fast
+  // builder for 40 wood up front, and crafters — who hold no wood — never got started.
+  W.trancheWood = a => {
+    const owed = W.buildWoodLeft(a), left = BUILD - (a.building?.done ?? 0), step = W.buildSkill(a);
+    return Math.ceil(owed / Math.max(1, Math.ceil((left - 1e-9) / step)));
+  };
+  W.buildWoodLeft = a => W.houseWood(a) - (a.building?.wood ?? 0);   // wood the house in hand (or a fresh one) still takes
   // A good nobody has ever traded has no price: what agents are shown is what it costs to
   // make (nets, houses), never the opening price, which nobody paid.
   W.traded = g => W.priceHistory.some(r => r.volumes[g] > 0);
@@ -176,18 +224,29 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // kept: the agent didn't decide in time and repeats its last job.
   W.startActivity = (a, task, { kept = false } = {}) => {
     const T = CFG.TASKS[task];
+    if ((task === 'craft_net' || task === 'build_house') && !kept) {
+      const wood = task === 'craft_net' ? W.netWood(a) : W.trancheWood(a), have = W.availGood(a, WOOD);
+      if (have < wood) {
+        a.materials = wood;                               // the shopping list orders it, the stall stops selling it
+        const other = W.jobValues(a).filter(j => j.can).sort((x, y) => y.sure - x.sure)[0].task;
+        W.startActivity(a, other);
+        a.note = `You are ${wood - have} wood short for that (${wood} needed, ${have} free), so this shift you ${other === 'gather_wood' ? 'cut wood' : other === 'gather_food' ? 'fish' : 'work'} instead. ` +
+          `Your shopping list now orders the wood and your stall holds it back; try again next round.`;
+        return null;
+      }
+    }
     if (task === 'craft_net') {
       const wood = W.netWood(a);
       if (W.availGood(a, WOOD) < wood) return `You need ${wood} wood to craft a net; you have ${W.availGood(a, WOOD)} free.`;
-      addDelta(a, WOOD, -wood);
+      addDelta(a, WOOD, -wood); a.materials = 0;
     }
-    if (task === 'build_house' && !a.building) {
-      // a new build: the wood goes in now and the (unfinished) house exists from the next settle
-      const wood = W.houseWood(a);
-      if (W.availGood(a, WOOD) < wood) return `You need ${wood} wood to start a house; you have ${W.availGood(a, WOOD)} free.`;
-      addDelta(a, WOOD, -wood); addDelta(a, HOUSES, 1);
-      a.building = { done: 0, shifts: 0, wood };
-      emit('build_start', { agent: a.id, name: a.name, wood });
+    if (task === 'build_house') {
+      // every building shift uses its share of the wood; a new build's (unfinished) house exists from the next settle
+      const wood = W.trancheWood(a);
+      if (W.availGood(a, WOOD) < wood) return `This building shift uses ${wood} wood; you have ${W.availGood(a, WOOD)} free. Cut or buy ${wood - W.availGood(a, WOOD)} more (set_buy wood with a higher target gets it for you).`;
+      if (!a.building) { addDelta(a, HOUSES, 1); a.building = { done: 0, shifts: 0, wood: 0 }; emit('build_start', { agent: a.id, name: a.name, wood }); }
+      addDelta(a, WOOD, -wood); a.materials = 0;
+      a.building.wood += wood;
     }
     a.activity = { task, place: T.place, ...(kept ? { kept } : {}) };
     emit('activity', { agent: a.id, name: a.name, task, ...(kept ? { kept } : {}) });
@@ -195,15 +254,67 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   };
   // No decision in time (or no shift chosen): the agent keeps its last job if it still can.
   W.keepJob = a => {
-    const j = a.lastJob, task = j && !(j.task === 'build_house' && !a.building) ? j.task : 'idle';
-    if (task !== 'idle' && !W.startActivity(a, task, { kept: true })) return;
-    W.startActivity(a, 'idle', { kept: true });
+    // No shift chosen: nobody stands in the square all day — they work their trade, the
+    // best-paying job they have the materials for.
+    if (W.startActivity(a, W.bestDoable(a), { kept: true })) W.startActivity(a, 'idle', { kept: true });
   };
 
   // ---- a decision: the orders it posts are the agent's orders for this round -------
-  W.beginDecision = a => { a.draft = []; a.lastJob = a.activity; a.activity = null; };
+  W.beginDecision = a => {
+    a.draft = [];
+    a.lastJob = a.activity;
+    a.activity = null;
+  };
   // ok: the agent answered in time. Otherwise it has no orders this round.
-  W.endDecision = (a, ok) => { a.orders = ok ? a.draft : []; a.draft = null; };
+  // Then the stall: for every good with a sale plan and no sell order of the agent's own this
+  // round, what is held above the reserve is offered at the plan's minimum — answered or not.
+  W.endDecision = (a, ok) => {
+    a.orders = ok ? a.draft : []; a.draft = null;
+    a.sale.forEach((plan, g) => {
+      if (!plan || a.orders.some(o => o.good === g && o.side === 'sell')) return;
+      const bids = a.orders.filter(o => o.good === g && o.side === 'buy');
+      if (bids.some(o => o.limit >= plan.ask)) return;   // never trade with yourself
+      const need = g !== WOOD ? 0 : a.building ? W.buildWoodLeft(a) : a.materials ?? 0;
+      const qty = Math.floor(W.sellable(a, g) - plan.keep - need);
+      if (qty < 1) return;
+      const o = { agent: a.id, side: 'sell', good: g, qty, limit: plan.ask, seq: ++W.seq, stall: true };
+      a.orders.push(o);
+      emit('order', { agent: a.id, name: a.name, side: 'sell', good: GOODS[g], qty, price: plan.ask, seq: o.seq, stall: true });
+    });
+  };
+  // The shopping list, after the stall: bid for what is short of the target, as far as free cash goes.
+  // (Food's target is never less than two meals at the agent's lifestyle.)
+  const endStall = W.endDecision;
+  W.endDecision = (a, ok) => {
+    endStall(a, ok);
+    a.shop.forEach((plan, g) => {
+      if (!plan || a.orders.some(o => o.good === g)) return;          // the agent's own order for it, or its stall is selling it
+      const target = g === FOOD ? Math.max(plan.target, 2 * a.lifestyle * CFG.MEAL)
+        : g === WOOD ? plan.target + (a.building ? W.trancheWood(a) : a.materials ?? 0) : plan.target;   // a maker orders the next shift's materials
+      const free = a.cash - a.orders.filter(o => o.side === 'buy' && o.good !== HOUSES).reduce((t, o) => t + o.qty * o.limit, 0);
+      const qty = Math.min(target - W.owned(a, g), Math.floor(free / plan.bid));
+      if (qty < 1) return;
+      const o = { agent: a.id, side: 'buy', good: g, qty, limit: plan.bid, seq: ++W.seq, shop: true };
+      a.orders.push(o);
+      emit('order', { agent: a.id, name: a.name, side: 'buy', good: GOODS[g], qty, price: plan.bid, seq: o.seq, shop: true });
+    });
+  };
+  W.setBuy = (a, g, target, max) => {
+    target = Math.floor(Number(target)); max = Math.round(Number(max));
+    if (g === HOUSES) return 'The shopping list is for food, wood and nets; bid for a house with place_order.';
+    if (!(target >= 0) || !(max >= 1)) return 'target must be 0 or more and max_price positive.';
+    a.shop[g] = target ? { target, max, bid: Math.min(max, a.shop[g]?.bid ?? W.prices[g]) } : null;
+    emit('shop_plan', { agent: a.id, name: a.name, good: GOODS[g], target, max });
+    return null;
+  };
+  W.setSale = (a, g, keep, min) => {
+    keep = Math.floor(Number(keep)); min = Math.round(Number(min));
+    if (!(keep >= 0) || !(min >= 1)) return 'keep must be 0 or more and min_price positive.';
+    a.sale[g] = { keep, min, ask: Math.max(min, a.sale[g]?.ask ?? W.prices[g]) };
+    emit('sale_plan', { agent: a.id, name: a.name, good: GOODS[g], keep, min });
+    return null;
+  };
+  W.stopSale = (a, g) => { a.sale[g] = null; emit('sale_plan', { agent: a.id, name: a.name, good: GOODS[g], off: true }); return null; };
 
   W.placeOrder = (a, side, g, qty, limit, reason) => {
     qty = Math.floor(qty); limit = Math.round(limit);
@@ -212,7 +323,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     // no trading with yourself: a self-trade could print a price (the collateral price) in an empty book
     const cross = a.draft.find(o => o.good === g && o.side !== side && (side === 'buy' ? o.limit <= limit : o.limit >= limit));
     if (cross) return `That would cross your own ${cross.side} order for ${GOODS[g]} at ${(cross.limit / 100).toFixed(2)}: you can't trade with yourself.`;
-    if (side === 'buy' && qty * limit > W.availCash(a))
+    // a house bid beyond the agent's cash is posted at its cash: said in the reply (tools.mjs), not refused
+    if (side === 'buy' && g === HOUSES) { qty = 1; limit = Math.min(limit, a.cash); if (limit < 1) return 'You have no coins to bid with.'; }
+    if (side === 'buy' && g !== HOUSES && qty * limit > W.availCash(a))
       return `Not enough free cash: that order needs ${(qty * limit / 100).toFixed(2)}, you have ${(Math.max(0, W.availCash(a)) / 100).toFixed(2)} free — bid at most that in total.`;
     if (side === 'sell' && qty > W.sellable(a, g))
       return `You only have ${Math.max(0, W.sellable(a, g))} ${GOODS[g]} free to sell${g === HOUSES && a.building ? ' (a house under construction can\'t be sold)' : ''}.`;
@@ -311,32 +424,33 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.roundsUntilDue = a => a.debt && a.dueRound ? Math.max(0, a.dueRound - W.round) : null;
 
   // ---- a round's work, meals, fires and rot ----------------------------------------
+  // One round's work: the shift the agent chose.
   function finish(a) {
     const { task } = a.activity;
     const T = CFG.TASKS[task];
     if (task === 'gather_food') {
       // a pledged net fishes too; only a free one can tear (the chain holds the pledged one)
-      const hasNet = W.usableNets(a) > 0, freeNet = W.availGood(a, NETS) > 0;
+      const hasNet = W.usableNets(a) > 0, atRisk = Math.max(0, W.availGood(a, NETS));
       const got = roll((hasNet ? T.netYield : T.yield) * W.skill(a, task) * W.catch());
-      W.made[FOOD] += got;
-      addDelta(a, FOOD, got);
-      remember(a, `You caught ${got} food${hasNet ? ` using your ${freeNet ? '' : 'pledged '}net` : ''}.`);
-      if (freeNet && rnd() < CFG.NET_WEAR) { addDelta(a, NETS, -1); remember(a, 'Your net tore and is gone.'); }
+      W.made[FOOD] += got; addDelta(a, FOOD, got);
+      if (hasNet && atRisk > 0 && rnd() < CFG.NET_WEAR) { addDelta(a, NETS, -1); remember(a, 'One of your nets tore and is gone.'); }
+      remember(a, `You caught ${got} food${hasNet ? ' using your net' : ''}.`);
     } else if (task === 'gather_wood') {
       const got = roll(T.yield * W.skill(a, task));
       addDelta(a, WOOD, got); W.made[WOOD] += got;
       remember(a, `You cut ${got} wood.`);
     } else if (task === 'craft_net') {
-      addDelta(a, NETS, 1); W.made[NETS]++;
+      addDelta(a, NETS, 1); W.made[NETS]++;               // its wood went in when the shift began
       remember(a, 'You finished crafting a net.');
     } else if (task === 'build_house') {
       // the house may have been seized or sold (as unfinished it can't be) since the shift began
+      // the shift's wood was taken when it began
       if (a.building) {
         a.building.done += W.buildSkill(a); a.building.shifts++;
         if (a.building.done >= BUILD - 1e-9) {
           const shifts = a.building.shifts;
           a.building = null; a.housesBuilt++; W.housesBuilt++; W.made[HOUSES]++;
-          remember(a, 'You finished building your house. You live in it from now on.');
+          remember(a, `You finished building a house. You now own ${W.houses(a)}.`);
           emit('house_built', { agent: a.id, name: a.name, shifts });
         } else remember(a, `You worked on your house: ${W.buildShiftsLeft(a)} more building shift${W.buildShiftsLeft(a) === 1 ? '' : 's'} to go.`);
       }
@@ -344,8 +458,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     a.shifts[task] = (a.shifts[task] ?? 0) + 1;
     W.shiftsNow[task === 'idle' ? 'idle' : 'worked']++;
     // Learning by doing: a shift worked makes the agent a little better at that job, up to
-    // LEARN_CAP times the skill it was born with. It is the economy's only source of growth.
-    // Building is crafting work, and build_house is not a skill of its own: it trains craft_net.
+    // LEARN_CAP times the skill it was born with. Building is crafting work, and build_house is
+    // not a skill of its own: it trains craft_net.
     const learn = task === 'build_house' ? 'craft_net' : task;
     if (CFG.LEARN && a.skills[learn] != null) {
       a.skills0 ??= { ...a.skills };
@@ -376,8 +490,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const spare = Math.max(0, a.goods[WOOD] - CFG.FIRE_WOOD);
     a.upkeepPaid = Math.min(own, Math.floor(spare / CFG.HOUSE_UPKEEP));
     if (a.upkeepPaid) addDelta(a, WOOD, -a.upkeepPaid * CFG.HOUSE_UPKEEP);
-    if (a.upkeepPaid < own) remember(a, `You had no wood for the upkeep of ${own - a.upkeepPaid} of your ${own} house${own > 1 ? 's' : ''}: ` +
+    if (a.upkeepPaid < own && !a.neglect) remember(a, `You had no wood for the upkeep of ${own - a.upkeepPaid} of your ${own} house${own > 1 ? 's' : ''}: ` +
       `${own - a.upkeepPaid === 1 ? 'it gave' : 'they gave'} you nothing this round.`);
+    a.neglect = a.upkeepPaid < own;
     credit(a, 'house', W.houseWB(a.upkeepPaid));
     a.wbRecent.push({ tick: W.tick, ate: n, ...a.wbNow });
     if (a.wbRecent.length > 6) a.wbRecent.shift();
@@ -626,6 +741,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
     // the chain is the truth — replace the mirror
     const L = await chain.fetch();
+    // what the SETTLERS mint itself says exists. The program checks this against the
+    // books inside every instruction that can move it, so this is a read, not a guard.
+    W.settlersSupply = await chain.settlersSupply();
     W.slot = L.slot; W.slotAt = Date.now();
     const fills = none(), trades = [], dgs = [];
     if (base) for (let g = 0; g < GOODS.length; g++) fills[g] += Math.max(0, bankGoods[g] - L.bank.goods[g]);   // foreclosure sales
@@ -634,6 +752,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       dgs[a.id] = base ? GOODS.map((_, g) => after.goods[g] - base[a.id].goods[g]) : none();
       for (let g = 0; g < GOODS.length; g++) {
         const dg = dgs[a.id][g];
+        const at = (L.lastPrice[g] / 100).toFixed(2);
         if (dg > 0) { remember(a, `Market: you bought ${dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`); trades.push({ agent: a.id, good: GOODS[g], side: 'buy', qty: dg, price: L.lastPrice[g] }); }
         if (dg < 0) { remember(a, `Market: you sold ${-dg} ${GOODS[g]} at ${(L.lastPrice[g] / 100).toFixed(2)}.`); fills[g] += -dg; trades.push({ agent: a.id, good: GOODS[g], side: 'sell', qty: -dg, price: L.lastPrice[g] }); }
       }
@@ -671,11 +790,26 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // How each of the agent's orders did. Then they expire: nothing stands into the next round.
       const lines = a.orders.map(o => {
         const n = GOODS[o.good], sell = o.side === 'sell', l = ladder[o.good];
-        const head = `your ${o.qty} ${n} ${sell ? 'ask' : 'bid'} at ${(o.limit / 100).toFixed(2)}`;
+        const head = `your ${o.stall ? 'stall\'s ' : o.shop ? 'shopping list\'s ' : ''}${o.qty} ${n} ${sell ? 'ask' : 'bid'} at ${(o.limit / 100).toFixed(2)}`;
         if (!o.sentQty) return `${head}: not sent — you no longer had the ${sell ? n : 'cash'}.`;
         return `${head}: ${o.sentQty < o.qty ? `only ${o.sentQty} sent, ` : ''}${o.filled} ${sell ? 'sold' : 'bought'}` +
           (o.filled ? ` at ${(l.price / 100).toFixed(2)}.` : ` — ${l.offered} were offered, ${l.wanted} wanted.`);
       });
+      // Repricing by habit: a stall that sold nothing marks down, one that sold out marks up; a
+      // shopping list that got nothing bids more, one that got everything bids a little less.
+      const R = CFG.REPRICE, clamp = (x, lo, hi) => Math.round(Math.min(hi, Math.max(lo, x)));
+      for (const o of a.orders) {
+        if (!o.sentQty) continue;
+        const none = !o.filled, all = o.filled >= o.sentQty;
+        // ...but a stall prices off the going rate, not off its own last sticker: it may lead the
+        // last traded price by REPRICE.band and no more. Compounding from its own quote, every
+        // stall in a shortage marks up together round after round and the price runs away from
+        // what the good is worth (see CFG.REPRICE). The shopping list needs no such leash: its
+        // own `max` is the ceiling, and a floor under a bid would be a ratchet of the same kind.
+        const cap = Math.max(1, Math.round(W.prices[o.good] * R.band));
+        if (o.stall && a.sale[o.good]) { const pl = a.sale[o.good]; pl.ask = clamp(pl.ask * (none ? 1 - R.down : all ? 1 + R.up : 1), pl.min, Math.max(pl.min, cap)); }
+        if (o.shop && a.shop[o.good]) { const pl = a.shop[o.good]; pl.bid = clamp(pl.bid * (none ? 1 + R.down : all ? 1 - R.up / 2 : 1), 1, pl.max); }
+      }
       a.fills = lines.length ? { round: W.round + 1, lines } : null;
       a.orders = [];
       a.chain = { cash: after.cash, goods: [...after.goods] };
@@ -728,6 +862,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                             equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired, books: L.books,
                             // chain-side sums, so every round's invariants can be checked from the log
                             sumCash: sum(x => x.cash), sumDebt: sum(x => x.debt), sumPrincipal: sum(x => x.principal),
+                            settlers: W.settlersSupply,
                             // every agent: principal ≤ debt, and no debt ⇒ no principal and nothing locked
                             slotsOk: L.slots.every(x => x.principal <= x.debt && (x.debt || (!x.principal && x.locked.every(q => !q)))),
                             goodsTotal: GOODS.map((_, g) => sum(x => x.goods[g] + x.locked[g]) + L.bank.goods[g]), settled,
@@ -737,6 +872,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                     catch: W.catch(),
                     agents: agents.map(a => ({ id: a.id, cash: a.cash, goods: a.goods, locked: a.locked, debt: a.debt, debtNow: W.debtNow(a),
                       hunger: a.hunger, cold: a.cold,
+                      homes: W.houses(a),
                       activity: a.activity?.task ?? null, kept: !!a.activity?.kept, lifestyle: a.lifestyle,
                       building: a.building ? a.building.shifts : null, house: W.hasHouse(a), housesBuilt: a.housesBuilt,
                       wellbeing: +a.wellbeing.toFixed(2), wbParts: a.wbParts, wealth: Math.round(W.wealth(a)), shifts: a.shifts })) });
@@ -764,11 +900,15 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const offeredValue = bookStats.reduce((s, b, g) => s + (b.askQty + b.bankQty) * p[g], 0);
     const slack = unsold.reduce((s, q, g) => s + q * p[g], 0);
     const all = shifts.worked + shifts.idle;
+    // sales against what was made: how much of output goes through the market
+    const sales = fills.reduce((s, q, g) => s + q * p[g], 0);
     const wb = agents.reduce((s, a) => s + a.wellbeing, 0);
     const wbRound = (wb - wbBefore) / n; wbBefore = wb;
     return {
       made: [...made], gdp, realGdp, priceIndex: +priceIndex.toFixed(4), inflation: then ? +(priceIndex / then - 1).toFixed(4) : null,
       shifts: { ...shifts }, employment: all ? +(shifts.worked / all).toFixed(3) : null,
+      sales,
+      tradedShare: gdp ? +(sales / gdp).toFixed(3) : null,
       unsold, slack, slackShare: offeredValue ? +(slack / offeredValue).toFixed(3) : null,
       wellbeing: +(wb / n).toFixed(2), wbRound: +wbRound.toFixed(3),
       gini: +gini(agents.map(a => Math.max(0, W.wealth(a)))).toFixed(3),

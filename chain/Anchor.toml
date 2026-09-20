@@ -6,8 +6,11 @@ skip_local_validator = true
 resolution = true
 skip-lint = false
 
+[programs.devnet]
+chain = "4ruVnoc2xFy5YJ8MAUA85mLn6ALCD4CeWsssr4JmCCWY"
+
 [programs.localnet]
-chain = "9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7"
+chain = "4ruVnoc2xFy5YJ8MAUA85mLn6ALCD4CeWsssr4JmCCWY"
 
 [provider]
 cluster = "localnet"

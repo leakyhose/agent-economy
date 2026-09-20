@@ -261,6 +261,11 @@ if (rounds.at(-1)?.bank?.books) {
       'per agent: principal ≤ debt; no debt ⇒ no principal, nothing locked': r => r.bank.slotsOk,
     } : {}),
   };
+  // the SETTLERS mint against the books — only runs since the coin exists recorded it
+  if (rounds.at(-1).bank.settlers != null) {
+    checks['SETTLERS supply = Σ agent cash + bank cash'] =
+      r => r.bank.settlers == null || r.bank.settlers === r.bank.sumCash + r.bank.cash;
+  }
   const bad = Object.fromEntries(Object.keys(checks).map(k => [k, []]));
   for (const r of rounds) for (const [k, f] of Object.entries(checks)) if (!f(r)) bad[k].push(r.round);
   // goods move only by what was settled: Σ (goods + locked) + the bank's goods changes by the settled deltas
@@ -283,7 +288,9 @@ if (rounds.at(-1)?.bank?.books) {
     console.log(`final ledger: supply ${ok(L.supply === cash)}   money ${ok(cash + L.bank.cash === k.startMoney + k.bankSeed + k.minted - k.principalRepaid - k.writtenOff)}   ` +
       `debt ${ok(L.debtTotal === L.slots.reduce((s, x) => s + x.debt, 0))}` +
       (k.refunds !== undefined ? `   bank cash ${ok(L.bank.cash === k.bankSeed + k.interestIncome + k.penalties + k.recovered - k.refunds - k.writtenOff - k.dividendsPaid)}` +
-        `   minted ${ok(k.minted === L.slots.reduce((s, x) => s + x.principal, 0) + k.principalRepaid + k.writtenOff + k.badDebt)}` : ''));
+        `   minted ${ok(k.minted === L.slots.reduce((s, x) => s + x.principal, 0) + k.principalRepaid + k.writtenOff + k.badDebt)}` : '') +
+      (final.settlersSupply != null ? `   SETTLERS ${ok(final.settlersSupply === cash + L.bank.cash)}` : ''));
+    if (final.mint) console.log(`SETTLERS ${final.mint}: ${coins(final.settlersSupply)} in existence`);
   }
 }
 
@@ -294,7 +301,10 @@ if (meta.agents[0]?.skills) {
   const endCash = final?.chain.slots.map(s => s.cash) ?? last.map(a => a.cash);
   const rows = meta.agents.map(a => {
     const mine = decisions.filter(d => d.agent === a.id);
-    return { a, best: bestAt(a.id), share: mine.filter(d => d.activity === bestAt(a.id)).length / Math.max(1, mine.length), cash: endCash[a.id] ?? 0 };
+    // a builder's craft is nets and houses alike
+    const own = mine, best = bestAt(a.id);
+    const at = d => d.activity === best || (best === 'craft_net' && d.activity === 'build_house');
+    return { a, best, share: own.filter(at).length / Math.max(1, own.length), cash: endCash[a.id] ?? 0 };
   });
   const avgCash = xs => avg(xs.map(r => r.cash));
   const spec = rows.filter(r => r.share >= 0.5), gen = rows.filter(r => r.share < 0.5);
@@ -323,3 +333,31 @@ for (const d of decisions.filter((_, i) => i % Math.max(1, Math.floor(decisions.
   console.log(`${name(d.agent).padEnd(9)} ${String(d.activity).padEnd(12)} ${d.thought}`);
 
 if (final) console.log(`\n${final.transactions} Solana transactions   llm ${final.llm.calls ?? 0} calls, $${(final.llm.cost ?? 0).toFixed(3)}`);
+
+
+// ---- how much like a real economy is it? Each line is a stylised fact about real economies
+// and whether this run shows it. Targets are loose on purpose: ten villagers are not a country.
+if (rounds.at(-1)?.metrics) {
+  hr('realism scorecard');
+  const ms = rounds.map(r => r.metrics);
+  const sum = (xs, f) => xs.reduce((t, x) => t + (f(x) ?? 0), 0);
+  const gdp = sum(ms, m => m.gdp), sales = sum(ms, m => m.sales);
+  const pi = ms.map(m => m.priceIndex);
+  const rows = meta.agents.map(a => { const own = decisions.filter(d => d.agent === a.id), b = bestAt(a.id);
+    return own.filter(d => d.activity === b || (b === 'craft_net' && d.activity === 'build_house')).length / Math.max(1, own.length); });
+  const loans = rounds.flatMap(r => r.bank?.loans ?? []).filter(l => l.kind === 'borrow' && l.ok);
+  const real = r => r.metrics.made.reduce((t, q, g) => t + q * (meta.config.START_PRICES[g] ?? 0), 0);   // output at start prices
+  const q = Math.max(1, Math.floor(rounds.length / 4)), realFirst = avg(rounds.slice(0, q).map(real)), realLast = avg(rounds.slice(-q).map(real));
+  const hungry = avg(rounds.map(r => r.agents.filter(a => a.hunger > 0).length)) / meta.agents.length;
+  const line = (ok, what, got, want) => console.log(`${ok ? 'PASS' : 'MISS'}  ${what.padEnd(44)} ${String(got).padEnd(22)} want ${want}`);
+  const p = x => `${Math.round(x * 100)}%`;
+  line(sales / gdp >= 0.5, 'output sold through the market', p(sales / gdp), '>= 50%   (subsistence village: ~5%)');
+  line(avg(rows) >= 0.7, 'own shifts spent at best skill', p(avg(rows)), '>= 70%');
+  line(Math.max(...pi) <= 1.6 && Math.min(...pi) >= 0.6, 'price level stays put', `${Math.min(...pi).toFixed(2)}–${Math.max(...pi).toFixed(2)}`, '0.6–1.6 of the start');
+  line(ms.at(-1).gini >= 0.3 && ms.at(-1).gini <= 0.75, 'wealth inequality (gini)', ms.at(-1).gini.toFixed(2), '0.30–0.75');
+  line(realLast >= realFirst * 0.95, 'real output holds or grows', `${coins(realFirst)} → ${coins(realLast)} a round`, 'last quarter >= first');
+  line(ms.at(-1).housesBuilt >= meta.agents.length / 2, 'investment: houses built', ms.at(-1).housesBuilt, `>= ${meta.agents.length / 2}`);
+  line(loans.length >= 2, 'credit is used', `${loans.length} loans, ${coins(sum(loans, l => l.amount))}`, '>= 2 loans');
+  line(hungry <= 0.1, 'people are fed', `${p(hungry)} hungry on average`, '<= 10%');
+  console.log(`goods sold ${coins(sales)}   output ${coins(gdp)}`);
+}

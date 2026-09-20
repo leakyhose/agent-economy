@@ -16,6 +16,12 @@
 //! is the village bank lending them against collateral. Repaying the principal burns
 //! it again; the interest goes to the bank. Every coin agents hold is counted in `supply`.
 //!
+//! Those coins are a real SPL token, SETTLERS, minted by this program and nobody else:
+//! the mint is a PDA of the ledger and is its own mint authority, so no key that could
+//! sign for it exists. Every coin ever created sits in one vault, also a PDA, and the
+//! mint's supply is checked against the books after every instruction that can move it.
+//! What the bank's rules allow is exactly what the token's supply can do.
+//!
 //! The bank is a public bank: its terms are fixed at `initialize`, it charges interest
 //! for the time a loan is held, and it pays its surplus back to the villagers. It has a
 //! balance sheet. Its equity is its cash (`bank.cash`) plus the seized goods it holds
@@ -32,6 +38,7 @@
 //!   minted     = Σ open principal + principal_repaid + written_off + bad_debt
 //!   Σ bank_book = seized_value − sold_book      (and bank_book[g] = 0 exactly when bank.goods[g] = 0)
 //!   debt_total = Σ debt                         (debts as last accrued; see `accrue`)
+//!   SETTLERS supply = Σ agent cash + bank cash   (the SPL mint; see `settle_money`)
 //!   equity     = bank cash + Σ bank_book − bad_debt
 //!   bad_debt > 0  ⇒  bank cash = 0
 //!   per agent: principal ≤ debt, and debt = 0 ⇒ principal = 0 and nothing locked
@@ -40,8 +47,28 @@
 //! moves only by the deltas settled.
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+    system_instruction,
+};
 
-declare_id!("9cs35JHZo92yqd8teVHUUi44gLmKuVkc8kYP6pw7RhR7");
+declare_id!("4ruVnoc2xFy5YJ8MAUA85mLn6ALCD4CeWsssr4JmCCWY");
+
+/// The SPL Token program. Checked by address before every call into it.
+/// TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+pub const TOKEN_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
+    6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172, 28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
+]);
+/// SETTLERS has 2 decimals, so one base unit is one cent — the unit `cash` is already in.
+/// No conversion anywhere: `mint.supply` compares directly against `supply + bank.cash`.
+pub const SETTLERS_DECIMALS: u8 = 2;
+const MINT_LEN: usize = 82;                  // an SPL mint account
+const TOKEN_ACCOUNT_LEN: usize = 165;        // an SPL token account
+const MINT_SUPPLY_OFFSET: usize = 36;        // mint_authority COption<Pubkey> is 4 + 32 bytes
+/// PDA seeds. The mint is its own authority and the vault's owner.
+pub const MINT_SEED: &[u8] = b"settlers";
+pub const VAULT_SEED: &[u8] = b"vault";
 
 pub const MAX_AGENTS: usize = 137;        // 8 + 360 + 137×72 = 10,232 bytes: under the 10 KiB CPI-create limit
 pub const N_GOODS: usize = 5;
@@ -82,6 +109,12 @@ pub mod chain {
         require!(terms.kappa_bps > 0 && terms.penalty_bps <= 10_000, EconErr::BadTerms);
         require!(terms.rate_period_slots > 0 && terms.term_unit_slots > 0 && terms.max_term_units > 0, EconErr::BadTerms);
         require!(start_prices.iter().all(|&p| p > 0), EconErr::BadTerms);
+        let ledger_key = ctx.accounts.ledger.key();
+        create_coin(
+            &ctx.accounts.authority, &ctx.accounts.mint, &ctx.accounts.vault,
+            &ctx.accounts.token_program, &ctx.accounts.system_program,
+            &ledger_key, ctx.bumps.mint, ctx.bumps.vault,
+        )?;
         let mut l = ctx.accounts.ledger.load_init()?;
         l.authority = ctx.accounts.authority.key();
         l.num_agents = num_agents;
@@ -105,7 +138,17 @@ pub mod chain {
         l.rate_period_slots = terms.rate_period_slots;
         l.term_unit_slots = terms.term_unit_slots;
         l.equity_floor = terms.equity_floor;
-        Ok(())
+        // every coin the village starts with, minted into the vault. `minted` counts
+        // only what the bank has lent, so the opening money is not part of it.
+        let opening = l.start_money.checked_add(bank_seed).ok_or(EconErr::Overflow)?;
+        require_keys_eq!(ctx.accounts.token_program.key(), TOKEN_PROGRAM_ID, EconErr::BadMint);
+        if opening > 0 {
+            mint_coins(
+                &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
+                &ledger_key, ctx.bumps.mint, opening,
+            )?;
+        }
+        check_supply(&l, &ctx.accounts.mint)
     }
 
     /// Borrow newly minted coins against wood, nets, boats and houses.
@@ -125,14 +168,16 @@ pub mod chain {
     /// The bank's lending is capped by its capital: all loans together, this one
     /// included, may not exceed `equity × 10_000 / kappa_bps`.
     pub fn borrow(
-        ctx: Context<Write>,
+        ctx: Context<WriteMint>,
         agent: u16,
         amount: u64,
         term_slots: u64,
         collateral: [u32; N_GOODS],
     ) -> Result<()> {
         let now = Clock::get()?.slot;
+        let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.load_checked()?;
+        let m0 = money(&l);
         require!((agent as u32) < l.num_agents, EconErr::BadAgent);
         require!(amount > 0, EconErr::BadAmount);
         require!(l.ltv_bps > 0, EconErr::CreditOff);
@@ -170,7 +215,10 @@ pub mod chain {
         l.supply += amount;
         l.minted += amount;
         emit!(Borrowed { agent, amount, debt, accrued, due_slot });
-        Ok(())
+        settle_money(
+            &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
+            &ledger_key, ctx.bumps.mint, m0,
+        )
     }
 
     /// Pay down a loan. Interest accrued to now is paid first and goes to the bank's
@@ -179,9 +227,11 @@ pub mod chain {
     /// principal is written off against the bank's equity (the unpaid interest was
     /// never income), and the whole remainder is counted in `forgiven`. Paid off, the
     /// collateral unlocks. With less than a coin owing, a repay of 0 closes the loan too.
-    pub fn repay(ctx: Context<Write>, agent: u16, amount: u64) -> Result<()> {
+    pub fn repay(ctx: Context<WriteMint>, agent: u16, amount: u64) -> Result<()> {
         let now = Clock::get()?.slot;
+        let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.load_checked()?;
+        let m0 = money(&l);
         require!((agent as u32) < l.num_agents, EconErr::BadAgent);
         require!(l.slots[agent as usize].debt > 0, EconErr::NoLoan);
         accrue(&mut l, agent as usize, now)?;
@@ -206,7 +256,10 @@ pub mod chain {
         l.forgiven += forgiven;
         write_off(&mut l, forgiven_principal);
         emit!(Repaid { agent, paid, interest, principal, forgiven });
-        Ok(())
+        settle_money(
+            &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
+            &ledger_key, ctx.bumps.mint, m0,
+        )
     }
 
     /// Collect a loan that has come due, or foreclose it. PERMISSIONLESS: any signer may
@@ -241,9 +294,11 @@ pub mod chain {
     ///     bank's cash at once (a loss bigger than its cash is `bad_debt`), and the
     ///     seized goods go on the bank's books at their fire-sale value (`bank_book`,
     ///     `seized_value`). Selling them at that value later is neither profit nor loss.
-    pub fn liquidate(ctx: Context<Anyone>, agent: u16) -> Result<()> {
+    pub fn liquidate(ctx: Context<AnyoneMint>, agent: u16) -> Result<()> {
         let now = Clock::get()?.slot;
+        let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.ledger.load_mut()?;
+        let m0 = money(&l);
         require!((agent as u32) < l.num_agents, EconErr::BadAgent);
         require!(l.slots[agent as usize].debt > 0, EconErr::NoLoan);
         accrue(&mut l, agent as usize, now)?;
@@ -266,7 +321,10 @@ pub mod chain {
             l.debt_total -= paid;
             l.supply -= paid;
             emit!(AutoRepaid { agent, paid, interest, principal, by: ctx.accounts.caller.key() });
-            return Ok(());
+            return settle_money(
+                &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
+                &ledger_key, ctx.bumps.mint, m0,
+            );
         }
 
         let debt = s.debt;
@@ -343,7 +401,10 @@ pub mod chain {
             agent, margin_call, debt, penalty, collected, burned, seized, seized_value: value, refund,
             returned, written_off, bad_debt, by: ctx.accounts.caller.key(),
         });
-        Ok(())
+        settle_money(
+            &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
+            &ledger_key, ctx.bumps.mint, m0,
+        )
     }
 
     /// Pay part of the bank's surplus out to every agent equally. PERMISSIONLESS.
@@ -398,14 +459,33 @@ pub mod chain {
     /// goods off its books at their average book value (`sold_book`); the proceeds
     /// (`recovered`) go to its cash, paying down any `bad_debt` first.
     pub fn clear_auction(
-        ctx: Context<Write>,
+        ctx: Context<ClearAuction>,
         good: u8,
         bids: Vec<Order>,
         asks: Vec<Order>,
     ) -> Result<()> {
         let g = good as usize;
         require!(g < N_GOODS, EconErr::BadGood);
+        // The bank selling its seized goods is the one way an auction can destroy coins
+        // (the proceeds pay down `bad_debt`). Demanded up front, before any early exit,
+        // so a burn can never be skipped by leaving the accounts off.
+        let coin = match (
+            ctx.accounts.mint.as_ref(),
+            ctx.accounts.vault.as_ref(),
+            ctx.accounts.token_program.as_ref(),
+        ) {
+            (Some(m), Some(v), Some(t)) => {
+                Some((m.to_account_info(), v.to_account_info(), t.to_account_info()))
+            }
+            _ => None,
+        };
+        require!(
+            coin.is_some() || !asks.iter().any(|o| o.agent == BANK),
+            EconErr::MintAccountsRequired
+        );
+        let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.load_checked()?;
+        let m0 = money(&l);
         let n = l.num_agents;
 
         for w in bids.windows(2) {
@@ -489,6 +569,10 @@ pub mod chain {
 
         l.last_price[g] = price;
         emit!(Cleared { good, price, volume, round: l.round });
+        if let Some((mint, vault, token_program)) = coin.as_ref() {
+            settle_money(&l, mint, vault, token_program,
+                         &ledger_key, mint_bump_for(&ledger_key), m0)?;
+        }
         Ok(())
     }
 }
@@ -548,6 +632,163 @@ fn release(s: &mut AgentSlot) {
     s.principal = 0;
     s.due_slot = 0;
     s.accrued_slot = 0;
+}
+
+// ---------------------------------------------------------------- the coin
+
+/// Build one SPL Token instruction: a tag byte, its arguments, and its accounts.
+fn token_ix(tag: u8, args: &[u8], accounts: Vec<AccountMeta>) -> Instruction {
+    let mut data = Vec::with_capacity(1 + args.len());
+    data.push(tag);
+    data.extend_from_slice(args);
+    Instruction { program_id: TOKEN_PROGRAM_ID, accounts, data }
+}
+
+/// What the books say about money, before and after an instruction: coins ever created,
+/// and coins ever destroyed. The difference across an instruction is what the mint must
+/// do — so the token follows the economics instead of restating it.
+fn money(l: &Ledger) -> (u64, u64) {
+    (l.minted, l.principal_repaid + l.written_off)
+}
+
+/// The SPL mint's own record of how many SETTLERS exist.
+fn mint_supply(mint: &AccountInfo) -> Result<u64> {
+    let data = mint.try_borrow_data()?;
+    require!(data.len() >= MINT_LEN, EconErr::BadMint);
+    let bytes: [u8; 8] = data[MINT_SUPPLY_OFFSET..MINT_SUPPLY_OFFSET + 8]
+        .try_into()
+        .map_err(|_| error!(EconErr::BadMint))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// Mint or burn so the token's supply matches the books, then prove it did.
+///
+/// `before` is `money(&l)` taken at the top of the instruction. An instruction never
+/// both creates and destroys coins, but handling both costs nothing and leaves no case
+/// to reason about.
+fn settle_money<'i>(
+    l: &Ledger,
+    mint: &AccountInfo<'i>,
+    vault: &AccountInfo<'i>,
+    token_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey,
+    bump: u8,
+    before: (u64, u64),
+) -> Result<()> {
+    require_keys_eq!(*token_program.key, TOKEN_PROGRAM_ID, EconErr::BadMint);
+    let (minted_now, destroyed_now) = money(l);
+    let created = minted_now - before.0;
+    let destroyed = destroyed_now - before.1;
+    if created > 0 {
+        mint_coins(mint, vault, token_program, ledger_key, bump, created)?;
+    }
+    if destroyed > 0 {
+        burn_coins(mint, vault, token_program, ledger_key, bump, destroyed)?;
+    }
+    check_supply(l, mint)
+}
+
+/// MintTo: mint (w), destination (w), authority (s) — the mint signs for itself.
+fn mint_coins<'i>(
+    mint: &AccountInfo<'i>, vault: &AccountInfo<'i>, token_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey, bump: u8, amount: u64,
+) -> Result<()> {
+    invoke_signed(
+        &token_ix(7, &amount.to_le_bytes(), vec![
+            AccountMeta::new(*mint.key, false),
+            AccountMeta::new(*vault.key, false),
+            AccountMeta::new_readonly(*mint.key, true),
+        ]),
+        &[mint.clone(), vault.clone(), token_program.clone()],
+        &[&[MINT_SEED, ledger_key.as_ref(), &[bump]]],
+    )?;
+    Ok(())
+}
+
+/// Burn: account (w), mint (w), authority (s) — the mint owns the vault.
+fn burn_coins<'i>(
+    mint: &AccountInfo<'i>, vault: &AccountInfo<'i>, token_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey, bump: u8, amount: u64,
+) -> Result<()> {
+    invoke_signed(
+        &token_ix(8, &amount.to_le_bytes(), vec![
+            AccountMeta::new(*vault.key, false),
+            AccountMeta::new(*mint.key, false),
+            AccountMeta::new_readonly(*mint.key, true),
+        ]),
+        &[vault.clone(), mint.clone(), token_program.clone()],
+        &[&[MINT_SEED, ledger_key.as_ref(), &[bump]]],
+    )?;
+    Ok(())
+}
+
+/// Every coin the village holds is a SETTLER, and every SETTLER is a coin the village
+/// holds. Checked after every instruction that can change either side.
+fn check_supply(l: &Ledger, mint: &AccountInfo) -> Result<()> {
+    let want = l.supply.checked_add(l.bank.cash).ok_or(EconErr::Overflow)?;
+    require_eq!(mint_supply(mint)?, want, EconErr::SupplyMismatch);
+    Ok(())
+}
+
+/// Create the SETTLERS mint and the vault that holds every coin. Both are PDAs of this
+/// ledger, so neither has a private key; the mint is its own mint and freeze authority.
+fn create_coin<'i>(
+    authority: &AccountInfo<'i>,
+    mint: &AccountInfo<'i>,
+    vault: &AccountInfo<'i>,
+    token_program: &AccountInfo<'i>,
+    system_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey,
+    mint_bump: u8,
+    vault_bump: u8,
+) -> Result<()> {
+    require_keys_eq!(*token_program.key, TOKEN_PROGRAM_ID, EconErr::BadMint);
+    let rent = Rent::get()?;
+    let mint_seeds: &[&[u8]] = &[MINT_SEED, ledger_key.as_ref(), &[mint_bump]];
+    let vault_seeds: &[&[u8]] = &[VAULT_SEED, ledger_key.as_ref(), &[vault_bump]];
+
+    invoke_signed(
+        &system_instruction::create_account(
+            authority.key, mint.key,
+            rent.minimum_balance(MINT_LEN), MINT_LEN as u64, &TOKEN_PROGRAM_ID),
+        &[authority.clone(), mint.clone(), system_program.clone()],
+        &[mint_seeds],
+    )?;
+    // InitializeMint2: decimals, mint authority, freeze authority (1-byte option tag)
+    let mut args = Vec::with_capacity(1 + 32 + 33);
+    args.push(SETTLERS_DECIMALS);
+    args.extend_from_slice(mint.key.as_ref());
+    args.push(1);
+    args.extend_from_slice(mint.key.as_ref());
+    invoke_signed(
+        &token_ix(20, &args, vec![AccountMeta::new(*mint.key, false)]),
+        &[mint.clone(), token_program.clone()],
+        &[mint_seeds],
+    )?;
+
+    invoke_signed(
+        &system_instruction::create_account(
+            authority.key, vault.key,
+            rent.minimum_balance(TOKEN_ACCOUNT_LEN), TOKEN_ACCOUNT_LEN as u64, &TOKEN_PROGRAM_ID),
+        &[authority.clone(), vault.clone(), system_program.clone()],
+        &[vault_seeds],
+    )?;
+    // InitializeAccount3: the owner, given inline — the mint PDA owns the vault
+    invoke_signed(
+        &token_ix(18, mint.key.as_ref(), vec![
+            AccountMeta::new(*vault.key, false),
+            AccountMeta::new_readonly(*mint.key, false),
+        ]),
+        &[vault.clone(), mint.clone(), token_program.clone()],
+        &[vault_seeds],
+    )?;
+    Ok(())
+}
+
+/// The bump for this ledger's mint, found the long way. Used only on the rare auction
+/// that carries the mint, where Anchor has no bump for an optional account.
+fn mint_bump_for(ledger_key: &Pubkey) -> u8 {
+    Pubkey::find_program_address(&[MINT_SEED, ledger_key.as_ref()], &crate::ID).1
 }
 
 // ---------------------------------------------------------------- accounts
@@ -673,7 +914,67 @@ pub struct Initialize<'info> {
     pub authority: Signer<'info>,
     #[account(init, payer = authority, space = 8 + std::mem::size_of::<Ledger>())]
     pub ledger: AccountLoader<'info, Ledger>,
+    /// CHECK: the SETTLERS mint, a PDA of this ledger, created and initialized here.
+    #[account(mut, seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: the vault that holds every SETTLER, a PDA of this ledger, created here.
+    #[account(mut, seeds = [VAULT_SEED, ledger.key().as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID.
+    pub token_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+}
+
+/// A write that can create or destroy coins: it carries the mint and its vault.
+/// `Write` is left alone for `settle`, which moves goods and never money.
+#[derive(Accounts)]
+pub struct WriteMint<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    pub authority: Signer<'info>,
+    /// CHECK: the SETTLERS mint, validated by its seeds.
+    #[account(mut, seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: the vault, validated by its seeds.
+    #[account(mut, seeds = [VAULT_SEED, ledger.key().as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID.
+    pub token_program: UncheckedAccount<'info>,
+}
+
+/// An auction only touches the money supply when the bank fire-sells seized goods and
+/// the proceeds pay down `bad_debt`. The mint accounts are optional so an ordinary
+/// auction — the transaction already closest to the size limit — doesn't carry them.
+/// `clear_auction` requires them whenever the asks contain a `BANK` order.
+#[derive(Accounts)]
+pub struct ClearAuction<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    pub authority: Signer<'info>,
+    /// CHECK: the SETTLERS mint, validated by its seeds when present.
+    #[account(mut, seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: Option<UncheckedAccount<'info>>,
+    /// CHECK: the vault, validated by its seeds when present.
+    #[account(mut, seeds = [VAULT_SEED, ledger.key().as_ref()], bump)]
+    pub vault: Option<UncheckedAccount<'info>>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID when present.
+    pub token_program: Option<UncheckedAccount<'info>>,
+}
+
+/// Permissionless, and it burns coins: foreclosure. Any signer, plus the mint.
+#[derive(Accounts)]
+pub struct AnyoneMint<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    pub caller: Signer<'info>,
+    /// CHECK: the SETTLERS mint, validated by its seeds.
+    #[account(mut, seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: the vault, validated by its seeds.
+    #[account(mut, seeds = [VAULT_SEED, ledger.key().as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID.
+    pub token_program: UncheckedAccount<'info>,
 }
 
 /// Every write to the ledger must be signed by the ledger's authority.
@@ -694,6 +995,22 @@ pub struct Anyone<'info> {
 }
 
 impl<'info> Write<'info> {
+    fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
+        let l = self.ledger.load_mut()?;
+        require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
+        Ok(l)
+    }
+}
+
+impl<'info> WriteMint<'info> {
+    fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
+        let l = self.ledger.load_mut()?;
+        require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
+        Ok(l)
+    }
+}
+
+impl<'info> ClearAuction<'info> {
     fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
         let l = self.ledger.load_mut()?;
         require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
@@ -741,4 +1058,10 @@ pub enum EconErr {
     Overdue,
     #[msg("arithmetic overflow")]
     Overflow,
+    #[msg("the SETTLERS supply no longer matches the village's books")]
+    SupplyMismatch,
+    #[msg("this auction sells the bank's collateral: it must carry the mint and its vault")]
+    MintAccountsRequired,
+    #[msg("not this ledger's SETTLERS mint")]
+    BadMint,
 }

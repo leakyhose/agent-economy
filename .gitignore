@@ -14,3 +14,4 @@ chain/app/package-lock.json
 .env
 backend/node_modules/
 runs/
+.claude/worktrees/
