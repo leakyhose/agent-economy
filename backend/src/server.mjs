@@ -18,14 +18,25 @@ import { snapshot as tunableSnapshot, apply as applyTunables, preset as presetCh
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const coins = c => (c / 100).toFixed(2);
 
-async function makeBrain() {
-  if (CFG.BRAIN === 'openai') {
+// Which brains a run can be driven by. .env picks the default; the dashboard's dropdown
+// passes a choice to /start, so openai and baseten can be compared without a restart.
+export const BRAINS = ['stub', 'openai', 'claude', 'baseten'];
+
+// A brain is built once per run: its agents are bound to their models and its token tallies
+// belong to that run, so the choice is made at /start and holds until the run stops. A brain
+// asked for without its key falls back to the stub rather than killing the run.
+async function makeBrain(choice = CFG.BRAIN) {
+  if (choice === 'openai') {
     if (process.env.OPENAI_API_KEY) return (await import('./brains/openai.mjs')).openaiBrain();
-    console.warn('\n  BRAIN=openai but no OPENAI_API_KEY in the repo-root .env. Using the stub.\n');
+    console.warn('\n  brain=openai but no OPENAI_API_KEY in the repo-root .env. Using the stub.\n');
   }
-  if (CFG.BRAIN === 'claude') {
+  if (choice === 'claude') {
     if (process.env.ANTHROPIC_API_KEY) return (await import('./brains/claude.mjs')).claudeBrain();
-    console.warn('\n  BRAIN=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');
+    console.warn('\n  brain=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');
+  }
+  if (choice === 'baseten') {
+    if (process.env.BASETEN_API_KEY) return (await import('./brains/baseten.mjs')).basetenBrain();
+    console.warn('\n  brain=baseten but no BASETEN_API_KEY in the repo-root .env. Using the stub.\n');
   }
   return stubBrain();
 }
@@ -58,10 +69,10 @@ function broadcast(e) {
   if (e.type === 'error') console.error(`  ! ${e.message}`);
 }
 
-async function start() {
+async function start(choice) {
   if (sim) return 'already running';
   const myGen = ++gen;
-  const brain = await makeBrain();
+  const brain = await makeBrain(BRAINS.includes(choice) ? choice : CFG.BRAIN);
   const chain = await connectChain();
   // The bank's terms, fixed on-chain for the life of the ledger. A minute is 60000 / SLOT_MS
   // slots: interest is RATE_PER_MIN per minute held. Terms are chosen in rounds, whose length
@@ -208,13 +219,13 @@ async function stop() {
 
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
-  if (!sim) return { running: false, config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
+  if (!sim) return { running: false, brains: BRAINS, config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name,
+    running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name, brains: BRAINS,
     round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
@@ -248,6 +259,7 @@ function state() {
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
+      model: a.model ?? null,                     // the model this villager thinks with (baseten draws one per agent)
     })),
     // every dial pulled this run, with the round it landed on: the charts mark those rounds,
     // so a kink in a price line can be read straight off against the lever that caused it
@@ -339,7 +351,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/state') return json(res, state());
     if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
     if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
-    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start() });
+    // { brain: "baseten" } picks the brain for this run; no body means the one from .env
+    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start((await readBody(req)).brain) });
     if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
     if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
     if (pathname === '/resume' && req.method === 'POST') return json(res, { result: resume() });

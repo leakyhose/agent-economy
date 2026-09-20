@@ -10,6 +10,12 @@
   .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
   .top button { font-size: 15px; padding: 6px 20px; font-weight: bold; }
   #status { font-size: 14px; }
+  #brainpick select { font: inherit; padding: 3px 4px; }
+  #brainpick[hidden] { display: none; }
+  td.model, th.model { color: #555; font-size: 11px; }
+  table.nomodels .model { display: none; }      /* one brain, one model: the column says nothing */
+  #models { color: #444; margin: 0 0 10px; line-height: 1.6; font-size: 12px; }
+  #models b { color: #111; }
   #headline { color: #444; margin: 4px 0 12px; line-height: 1.6; }
   .box { border: 1px solid #ccc; padding: 8px 10px; margin: 10px 0; }
   table { border-collapse: collapse; width: 100%; }
@@ -87,10 +93,12 @@
   <h1>agent-economy</h1>
   <a href="/">← Island view</a>
   <button id="btn" onclick="toggle()">…</button>
+  <label id="brainpick" class="muted">brain <select id="brainsel"></select></label>
   <button id="dialsbtn" onclick="toggleDials()">dials ⚙</button>
   <span id="status"></span>
 </div>
 <div id="headline"></div>
+<div id="models"></div>
 
 <div id="panel">
   <button class="close" onclick="toggleDials()">close</button>
@@ -137,7 +145,7 @@
       <thead><tr>
         <th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
         <th class="n">wood</th><th class="n">nets</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
-        <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th>standing orders</th><th>last thought</th>
+        <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th class="model">model</th><th>standing orders</th><th>last thought</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
@@ -483,6 +491,8 @@ function agentTable() {
   if (!last?.agents) return;
   const ag = [...last.agents].sort((a, b) => b.wealth - a.wealth), shown = showAll ? ag : ag.slice(0, 10);
   $('allbtn').textContent = showAll ? 'top 10 only' : `show all ${ag.length}`;
+  // the column earns its place only when the village is of more than one mind
+  rows.closest('table').classList.toggle('nomodels', new Set(ag.map(a => a.model).filter(Boolean)).size < 2);
   rows.innerHTML = shown.map(a =>
     `<tr><td>${a.name}</td><td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
     `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
@@ -492,6 +502,7 @@ function agentTable() {
     `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
     `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
     `<td class="n ${a.dueIn !== null && a.dueIn <= 1 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + ' r'}</td>` +
+    `<td class="model" title="${esc(a.model || '')}">${a.model ? esc(a.model.split('/').pop()) : ''}</td>` +
     `<td class="t">${a.orders.join('<br>')}</td>` +
     `<td class="t" title="${(a.memory || []).join('\n').replace(/"/g, '&quot;')}">${a.thought}</td></tr>`
   ).join('');
@@ -620,10 +631,37 @@ function policyMarks(h, x, y1, y2) {
   }).join('');
 }
 
+// What each model in a mixed village is doing: how many villagers think with it, how often it
+// answered, what it has cost so far. One model is the ordinary case, and says nothing extra.
+function modelFeed(llm) {
+  const by = Object.entries(llm?.byModel ?? {});
+  const el = $('models');
+  if (by.length < 2) { el.innerHTML = ''; return; }
+  el.innerHTML = by.sort((a, b) => b[1].calls - a[1].calls).map(([slug, m]) =>
+    `<b>${esc(slug.split('/').pop())}</b> ${m.agents} agents · ${m.calls} calls · $${m.cost.toFixed(3)}` +
+    (m.timedOut ? ` · <span class="hungry">${m.timedOut} timed out</span>` : '') +
+    (m.errors ? ` · <span class="hungry">${m.errors} errors</span>` : '')).join(' &nbsp;|&nbsp; ');
+}
+
+// Pick the brain for the next run: .env's choice is the default, and the picker is only
+// shown between runs — a running village is bound to the brain (and models) it started with.
+function brainPicker(s) {
+  const pick = $('brainsel'), box = $('brainpick');
+  box.hidden = s.running;
+  if (s.running || !s.brains) return;
+  if (pick.options.length !== s.brains.length) {
+    pick.innerHTML = s.brains.map(b => `<option value="${b}">${b}</option>`).join('');
+    pick.value = s.config.brain;
+  }
+}
+
 async function toggle() {
   btn.disabled = true;
   statusEl.textContent = running ? 'stopping…' : 'starting (creating ledger on Solana)…';
-  await fetch(running ? '/stop' : '/start', { method: 'POST' });
+  // the brain is chosen for the run that is starting; a run already going keeps its own
+  await fetch(running ? '/stop' : '/start', running ? { method: 'POST' }
+    : { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ brain: $('brainsel').value }) });
   btn.disabled = false;
   refresh();
 }
@@ -632,6 +670,7 @@ async function refresh() {
   const s = await (await fetch('/state')).json();
   running = s.running;
   btn.textContent = running ? 'Stop' : 'Start simulation';
+  brainPicker(s);
   if (!running) {
     statusEl.textContent = `${s.config.agents} agents, brain: ${s.config.brain}`;
     $('headline').innerHTML = 'not running'; $('dash').style.display = 'none';
@@ -648,6 +687,7 @@ async function refresh() {
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '') +
     ` · <span class="${s.totals.hungry ? 'hungry' : 'muted'}">hungry ${s.totals.hungry}</span> · <span class="${s.totals.cold ? 'hungry' : 'muted'}">cold ${s.totals.cold}</span>` +
     (s.foreclosures.length ? ` · <span class="hungry">latest foreclosure: r${s.foreclosures[0].round} ${s.foreclosures[0].name}</span>` : '');
+  modelFeed(s.llm);
   econ(); wealth(); bankFeed(); txFeed(); details();
   if (dials) policyFeed();
 }
