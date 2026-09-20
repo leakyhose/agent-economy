@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settlers of Solana</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Grandstander:wght@700;800;900&family=Nunito:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #0a3c52; }
+  * { box-sizing: border-box; }
+  a { color: #1d7f9c; text-decoration: none; }
+  a:hover { color: #0f5b73; }
+  @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-5px) } }
+  @keyframes sway { 0%,100% { transform: rotate(-4deg) } 50% { transform: rotate(4deg) } }
+  @keyframes pulse { 0%,100% { transform: scale(1); opacity: .55 } 50% { transform: scale(1.35); opacity: 0 } }
+  @keyframes shimmer { 0%,100% { opacity: .25 } 50% { opacity: .6 } }
+  @keyframes risein { from { opacity: 0; transform: translateY(18px) } to { opacity: 1; transform: translateY(0) } }
+  @keyframes crawl { from { transform: translateX(0) } to { transform: translateX(-50%) } }
+  @keyframes pulsedot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(.6); opacity: .45 } }
+  @keyframes feedin { from { opacity: 0; transform: translateX(-10px) } to { opacity: 1; transform: none } }
+  ::-webkit-scrollbar { width: 8px; height: 8px }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 8px }
+</style>
+</helmet>
+
+<div style="font-family: Nunito, system-ui, sans-serif; position: relative; height: 100vh; min-height: 420px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); overflow: hidden; background: radial-gradient(120% 90% at 50% 0%, #1b6f93 0%, #0d4863 55%, #072f44 100%); color: #06303f; overflow: hidden;">
+
+  <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 18px 8px; color: #eaf7fb;">
+    <div style="display: flex; align-items: baseline; gap: 10px;">
+      <div style="font-family: Grandstander, 'Baloo 2', cursive; font-size: 30px; font-weight: 900; letter-spacing: .2px; line-height: 1; color: #ffcf4a; white-space: nowrap; text-shadow: 0 3px 0 #6b4a2a, 0 4px 0 rgba(43,28,15,.45);">Settlers of Solana</div>
+      <div style="font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .72;">AI village economy</div>
+    </div>
+    <div style="font-size: 13.5px; font-weight: 600; opacity: .8; padding-left: 16px; border-left: 1px solid rgba(255,255,255,.2);">The AI thinks off-chain. The money lives on-chain.</div>
+    <div style="flex: 1"></div>
+    <a href="/dashboard" style="color: #eaf7fb; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22); padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; white-space: nowrap;">Detailed dashboard</a>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 7px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 700;">
+        <span style="width: 8px; height: 8px; border-radius: 50%; background: {{ liveDot }};"></span>{{ statusLabel }}
+      </div>
+      <div style="background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;">{{ brain }}</div>
+      <div style="background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); padding: 6px 12px; border-radius: 999px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;">round {{ round }} · {{ clock }}</div>
+    </div>
+  </header>
+
+  <main style="position: relative; overflow: hidden;">
+    <div style="position: absolute; inset: 0; z-index: 0;">
+      <x-import component-from-global-scope="island-3d" from="./island3d.js" hint-size="100%,100%" style="position: absolute; inset: 0;"></x-import>
+      <div style="position: absolute; right: 18px; top: 4px; display: flex; flex-direction: column; gap: 3px; background: rgba(7,40,56,.6); border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 7px 9px; color: #dff2f7; z-index: 5;">
+        <div style="font-size: 9.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; opacity: .65;">Doing now</div>
+        <sc-for list="{{ legend }}" as="l" hint-placeholder-count="7">
+          <div style="display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;">
+            <span style="{{ l.swatch }}"></span>
+            <span style="flex: 1">{{ l.label }}</span>
+            <span style="font-family: 'IBM Plex Mono', monospace; opacity: .8;">{{ l.count }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+  </main>
+
+  <footer style="display: flex; flex-direction: column; gap: 6px; padding: 6px 18px 10px; min-width: 0;">
+
+    <div style="display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%;">
+      <div style="display: flex; align-items: center; gap: 7px; background: #f6e3b0; color: #6b4a16; border-radius: 8px; padding: 4px 9px; font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; white-space: nowrap;">
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #c9782c; animation: pulsedot 1.6s ease-in-out infinite;"></span>Market wire
+      </div>
+      <div style="flex: 1; min-width: 0; overflow: hidden; background: rgba(6,32,45,.5); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 3px 0; mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);">
+        <div style="display: flex; width: max-content; animation: crawl 46s linear infinite; font-family: 'Baloo 2', cursive; font-size: 17px; font-weight: 600; color: #eaf7fb; white-space: nowrap;">
+          <span style="padding-right: 46px;">{{ wireText }}</span>
+          <span style="padding-right: 46px;" aria-hidden="true">{{ wireText }}</span>
+        </div>
+      </div>
+      <button onClick="{{ toggleDock }}" style="{{ dockBtnStyle }}">{{ dockLabel }}<span style="{{ chevronStyle }}"></span></button>
+    </div>
+
+    <div style="{{ dockWrapStyle }}">
+
+    <div style="background: rgba(255,255,255,.94); border-radius: 16px; padding: 9px 12px; display: flex; flex-direction: column; gap: 7px; box-shadow: 0 10px 24px rgba(4,26,38,.3); min-width: 0;">
+      <div style="font-size: 10.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; color: #6d8c95;">Simulation</div>
+      <div style="display: flex; gap: 8px;">
+        <button onClick="{{ toggleRun }}" style="{{ runBtnStyle }}">{{ runLabel }}</button>
+        <button onClick="{{ togglePause }}" style="{{ pauseBtnStyle }}">{{ pauseLabel }}</button>
+      </div>
+      <div style="display: flex; gap: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #2a5866;">
+        <span>agents {{ agentCount }}</span><span>tick {{ tick }}</span>
+      </div>
+      <div style="height: 1px; background: #e3ecee;"></div>
+      <div style="display: flex; align-items: baseline; gap: 8px;">
+        <div style="font-size: 11px; font-weight: 800; color: #6d8c95;">GDP</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 18px; color: #0d4a5e;">{{ gdp }}</div>
+        <div style="{{ gdpDeltaStyle }}">{{ gdpDelta }}</div>
+      </div>
+    </div>
+
+    <div style="background: rgba(255,255,255,.94); border-radius: 16px; padding: 9px 12px; box-shadow: 0 10px 24px rgba(4,26,38,.3); display: flex; flex-direction: column; gap: 7px; min-width: 0;">
+      <div style="display: flex; gap: 10px; align-items: baseline;">
+        <div style="font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #6d8c95;">Market</div>
+        <div style="font-size: 10.5px; font-weight: 700; color: #9db0b6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">one clearing price per good, per round</div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px;">
+        <sc-for list="{{ prices }}" as="p" hint-placeholder-count="5">
+          <div style="background: #f4f8f8; border-radius: 9px; padding: 4px 6px; min-width: 0;">
+            <div style="font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #7e969d; overflow: hidden; text-overflow: ellipsis;">{{ p.name }}</div>
+            <div style="display: flex; align-items: baseline; gap: 3px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; color: #0d4a5e;">{{ p.price }}</div>
+              <div style="{{ p.deltaStyle }}">{{ p.delta }}</div>
+            </div>
+            <div style="font-size: 9px; font-weight: 700; color: #9db0b6;">vol {{ p.vol }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div>
+        <div style="display: flex; align-items: baseline; gap: 8px; font-size: 10px; font-weight: 800; color: #6d8c95; margin-bottom: 3px; white-space: nowrap;">
+          <span style="font-family: 'IBM Plex Mono', monospace;">{{ supply }}c</span>
+          <span style="color: #2f9e6b;">+{{ minted }}</span>
+          <span style="color: #c0603f;">−{{ burned }}</span>
+          <span style="overflow: hidden; text-overflow: ellipsis;">debt {{ debt }}c</span>
+        </div>
+        <div style="height: 9px; border-radius: 999px; background: #e7eef0; overflow: hidden; display: flex;">
+          <div style="{{ mintBarStyle }}"></div>
+          <div style="{{ burnBarStyle }}"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="background: linear-gradient(140deg, #1b1230 0%, #23143f 55%, #12253f 100%); border-radius: 16px; padding: 9px 12px; box-shadow: 0 10px 24px rgba(4,26,38,.35); color: #e9e2ff; display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 0 12px; min-width: 0; overflow: hidden;">
+      <div style="min-width: 0; display: flex; flex-direction: column; gap: 5px;">
+        <div style="display: flex; align-items: center; gap: 7px;">
+          <span style="width: 9px; height: 9px; border-radius: 2px; background: linear-gradient(135deg, #14f195, #9945ff);"></span>
+          <span style="font-size: 10.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; color: #b6a8e6;">On-chain</span>
+        </div>
+        <div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; line-height: 1.05; color: #14f195;">{{ txTotal }}</div>
+          <div style="font-size: 10.5px; font-weight: 700; color: #a99ddb;">transactions · {{ txRate }}/min</div>
+        </div>
+        <div style="font-size: 10px; line-height: 1.45; font-family: 'IBM Plex Mono', monospace; color: #9d92cc; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          <div>program {{ program }}</div>
+          <div>ledger&nbsp; {{ ledger }}</div>
+        </div>
+        <a href="{{ explorer }}" target="_blank" style="font-size: 11px; font-weight: 800; color: #14f195;">Open in Solana Explorer →</a>
+      </div>
+      <div style="min-width: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden;">
+        <div style="display: flex; justify-content: space-between; gap: 8px; font-size: 9.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #b6a8e6;">
+          <span style="white-space: nowrap;">Live tx feed</span><span style="white-space: nowrap;">r{{ round }} · {{ lastRoundTxs }} tx</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 4px;">
+          <sc-for list="{{ feed }}" as="f" hint-placeholder-count="5">
+            <a href="{{ f.url }}" target="_blank" style="display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; background: rgba(255,255,255,.055); border-radius: 8px; padding: 3px 8px; animation: feedin .3s ease both;" style-hover="display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; background: rgba(255,255,255,.13); border-radius: 8px; padding: 3px 8px;">
+              <span style="{{ f.kindStyle }}">{{ f.short }}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #cfc7ee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ f.sig }}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8d82bd;">{{ f.note }}</span>
+            </a>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+    </div>
+  </footer>
+
+    <sc-if value="{{ selected }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 0; background: rgba(6,40,54,.6); backdrop-filter: blur(3px); display: grid; place-items: center; padding: 14px 18px; z-index: 40;">
+        <div style="width: 100%; max-width: 1280px; height: 100%; border-radius: 26px; overflow: hidden; background: {{ sceneSky }}; box-shadow: 0 26px 60px rgba(4,26,38,.5); border: 3px solid rgba(255,255,255,.5); position: relative; animation: risein .32s ease both; display: flex; flex-direction: column;">
+
+          <div style="position: absolute; inset: 0; overflow: hidden;">
+            <div style="position: absolute; left: 8%; top: 12%; width: 86px; height: 86px; border-radius: 50%; background: #ffe9a0; box-shadow: 0 0 0 18px rgba(255,233,160,.25);"></div>
+            <div style="position: absolute; right: 12%; top: 16%; width: 120px; height: 44px; border-radius: 999px; background: rgba(255,255,255,.7);"></div>
+            <div style="position: absolute; right: 24%; top: 26%; width: 78px; height: 30px; border-radius: 999px; background: rgba(255,255,255,.55);"></div>
+            <div style="position: absolute; left: -6%; bottom: 26%; width: 46%; height: 240px; border-radius: 50%; background: rgba(120,190,120,.55);"></div>
+            <div style="position: absolute; right: -8%; bottom: 28%; width: 52%; height: 260px; border-radius: 50%; background: rgba(96,175,110,.5);"></div>
+            <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 34%; background: {{ sceneGround }};"></div>
+            <div style="position: absolute; left: 0; right: 0; bottom: 34%; height: 16px; background: rgba(255,255,255,.28);"></div>
+          </div>
+
+          <div style="position: relative; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 16px; padding: 12px 18px 6px;">
+            <div>
+              <div style="font-family: 'Baloo 2', cursive; font-size: 30px; font-weight: 800; color: #0f4a3c; line-height: 1.05;">{{ selected.name }}</div>
+              <div style="font-size: 13.5px; font-weight: 700; color: #2c6b57; max-width: 620px;">{{ selected.blurb }}</div>
+            </div>
+            <div style="flex: 1"></div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <sc-for list="{{ selected.stats }}" as="s" hint-placeholder-count="3">
+                <div style="background: rgba(255,255,255,.82); border-radius: 14px; padding: 7px 13px; text-align: center; min-width: 96px; box-shadow: 0 2px 0 rgba(15,74,60,.14);">
+                  <div style="font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #5b8a79;">{{ s.label }}</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 500; color: #0f4a3c;">{{ s.value }}</div>
+                </div>
+              </sc-for>
+              <button onClick="{{ closeLoc }}" style="all: unset; cursor: pointer; background: #f2f7f1; color: #0f4a3c; font-weight: 800; font-size: 13px; padding: 10px 16px; border-radius: 999px; box-shadow: 0 3px 0 rgba(15,74,60,.22);">Back to island</button>
+            </div>
+          </div>
+
+          <div style="position: relative; flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; padding: 4px 18px 5%; display: flex; flex-direction: column; justify-content: flex-end;">
+            <div style="display: flex; flex-wrap: nowrap; gap: 4px; align-items: flex-end; justify-content: safe center; min-width: min-content;">
+              <sc-for list="{{ selectedAgents }}" as="a" hint-placeholder-count="6">
+                <div style="width: 152px; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                  <div style="{{ a.thoughtStyle }}">{{ a.thought }}</div>
+                  <div style="position: relative; width: 96px; height: 108px; flex: none; animation: bob 3.4s ease-in-out infinite; {{ a.bobDelay }}">
+                    <div style="position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); width: 76px; height: 16px; border-radius: 50%; background: rgba(20,60,40,.22);"></div>
+                    <div style="{{ a.armStyle }}"></div>
+                    <div style="{{ a.armStyle2 }}"></div>
+                    <div style="{{ a.bodyStyle }}"></div>
+                    <div style="{{ a.headStyle }}">
+                      <div style="{{ a.hairStyle }}"></div>
+                      <div style="{{ a.browL }}"></div>
+                      <div style="{{ a.browR }}"></div>
+                      <div style="{{ a.eyeL }}"></div>
+                      <div style="{{ a.eyeR }}"></div>
+                      <div style="{{ a.blushL }}"></div>
+                      <div style="{{ a.blushR }}"></div>
+                      <div style="position: absolute; left: 50%; top: 45px; transform: translateX(-50%); width: 7px; height: 6px; border-radius: 50%; background: rgba(0,0,0,.12);"></div>
+                      <div style="{{ a.mouth }}"></div>
+                    </div>
+                    <div style="{{ a.toolStyle }}"></div>
+                  </div>
+                  <div style="background: rgba(255,255,255,.9); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 800; color: #14503f; box-shadow: 0 2px 0 rgba(15,74,60,.16);">{{ a.name }}</div>
+                  <div style="display: flex; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1b5745;">
+                    <span style="background: rgba(255,255,255,.7); border-radius: 6px; padding: 1px 6px;">{{ a.cash }}c</span>
+                    <span style="background: rgba(255,255,255,.7); border-radius: 6px; padding: 1px 6px;">wb {{ a.wellbeing }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <sc-if value="{{ sceneEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top: 40px; text-align: center; font-size: 15px; font-weight: 700; color: #2c6b57; opacity: .8;">Nobody here this round — agents will wander in.</div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;agentCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:34,&quot;min&quot;:8,&quot;max&quot;:100,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;showThoughts&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;pollEndpoint&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;/state&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Simulation&quot;}}">
+// These match the real backend: five places (frontend/island3d.js AREAS), plus trading,
+// banking and resting all show up at the market — nobody has a task of their own there.
+const LOCS = [
+  { id: "docks", x: -70, z: 38, name: "Docks — fishing", act: "gather_food", color: "#1f9fb5", glyph: "wave",
+    blurb: "The fishing wharf on the west shore. Every catch is a goods-account write on Solana.", ground: "linear-gradient(180deg,#f3e2b4 0%,#e8d29a 100%)", sky: "linear-gradient(180deg,#bdeaf7 0%,#e8f6e3 62%,#e8f6e3 100%)" },
+  { id: "forest", x: 40, z: -48, name: "Forest — chopping wood", act: "gather_wood", color: "#3f9450", glyph: "tree",
+    blurb: "Hardwood ridge above the bay. Wood keeps villagers warm and nets cheap.", ground: "linear-gradient(180deg,#8fd06f 0%,#68b35c 100%)", sky: "linear-gradient(180deg,#cdeeff 0%,#eaf8e0 62%,#eaf8e0 100%)" },
+  { id: "workshop", x: 60, z: 8, name: "Workshop — crafting", act: "craft_net", color: "#d98c2b", glyph: "grid",
+    blurb: "Where wood becomes nets and nets become boats. Crafting burns inputs on-chain.", ground: "linear-gradient(180deg,#e9d8ae 0%,#d6bf8c 100%)", sky: "linear-gradient(180deg,#ffe6c0 0%,#fdf3dd 62%,#fdf3dd 100%)" },
+  { id: "site", x: -16, z: -50, name: "Building site — houses", act: "build_house", color: "#cf6046", glyph: "house",
+    blurb: "Where houses go up beam by beam. A half-built frame can be pledged to the bank as collateral.", ground: "linear-gradient(180deg,#e6d6ad 0%,#cdb98b 100%)", sky: "linear-gradient(180deg,#ffd9c2 0%,#fdeede 62%,#fdeede 100%)" },
+  { id: "market", x: 18, z: 56, name: "Market", act: "trade", color: "#8a8f98", glyph: "diamond",
+    blurb: "One sealed auction per good, per round — plus the bank counter and the porch where villagers rest. The program finds the fair price; nobody can fake it.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" }
+];
+// Any activity without its own place (trade, bank, rest) buckets into the market.
+const bucketOf = act => LOCS.find(l => l.act === act) || LOCS.find(l => l.id === "market");
+
+const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", trade: "Trading", build_house: "Building", bank: "At the bank", rest: "Resting" };
+const THOUGHTS = {
+  gather_food: ["Hunger is climbing — a few fish now beats coins later.", "Lake stock looks thin, I'll take one more haul then stop.", "Food price is up; I can sell the surplus this round.", "My net is good, fishing pays better than wood today.",
+    "Boats are out; I'll take the east shoal before the tide turns.",
+    "Everyone is fishing today — the lake will not hold.",
+    "Selling half this catch, salting the rest.",
+    "Cold water, slow fish, but coins are coins."],
+  gather_wood: ["I'll cut wood first to stay warm and build a net cheaply.", "Wood is scarce, so chopping is the best coin per tick.", "Stocking fuel before the cold catches me.", "Two loads of wood covers the frame of my house.",
+    "The grove thins near the ridge; cutting lower today.",
+    "Hauling this load straight to the workshop.",
+    "Wood at this price barely covers the walk.",
+    "One more cord and I stop for the round."],
+  craft_net: ["A net pays for itself in three rounds of fishing.", "Wood is cheap right now — good time to craft.", "Crafting a spare net to sell at market.", "Better tools beat more hours.",
+    "Twine is short — I'll make one good net, not two poor ones.",
+    "Nets sell better than wood, so I craft.",
+    "This mesh is tight enough for the deep shoal.",
+    "Building toward a boat, one net at a time."],
+  trade: ["Selling wood high, buying food low.", "Bidding just under the last clearing price.", "I need food more than coins this round.", "Posting my surplus nets — demand looks strong.",
+    "Undercutting the ask by a hair to clear my stock.",
+    "Holding my wood back until prices recover.",
+    "The auction is thin; I bid low and wait.",
+    "Coins now, food later — I can time this."],
+  build_house: ["The house is my biggest wellbeing jump, keep going.", "Half-built already — I can pledge it for a loan.", "Two more rounds of work and I have a roof.", "Building now while wood is cheap.",
+    "Roof beams next, if wood stays this cheap.",
+    "Every round without shelter costs me warmth.",
+    "The frame is up; the bank will lend against it.",
+    "Slow work, but a house outlives a pile of coins."],
+  bank: ["Borrowing against the frame to buy food today.", "Repaying early so the interest stops biting.", "Loan is due in a minute — clearing it now.", "Credit lets me build before I'm rich.",
+    "Rolling the loan before the penalty hits.",
+    "Pledging my half-built house for one more round.",
+    "Dividends came in — paying down the principal.",
+    "Interest is climbing faster than my catch."],
+  rest: ["Resting so tomorrow's work isn't wasted.", "Warm, fed, and off the clock.", "Wellbeing beats a bigger pile of coins.", "Recovering before the next haul.",
+    "Fed, warm, and doing nothing on purpose.",
+    "Sitting out the round to recover.",
+    "Working hungry is how you lose a week.",
+    "Watching the market from the porch."]
+};
+const SHORT = { settle_auction: "auction", post_order: "order", mint_loan: "mint", burn_repay: "burn", transfer_goods: "goods", accrue_interest: "interest" };
+const SKIN = ["#f6d3b8", "#efc09b", "#e0a87c", "#c98a5e", "#a9683f", "#8a5232"];
+const HAIR = ["#3a2b22", "#5d3b23", "#8a5a2b", "#c98b3a", "#2b2b33", "#7a4a55", "#d9b26a"];
+const SHIRT = ["#ef8f6a", "#54b0c4", "#7fbf62", "#e6c34d", "#c07fc0", "#6d8de0", "#e8767f", "#4bbfa0"];
+const KINDS = [
+  { k: "settle_auction", c: "#14f195" }, { k: "post_order", c: "#7fd4ff" },
+  { k: "mint_loan", c: "#ffd166" }, { k: "burn_repay", c: "#ff9f7a" },
+  { k: "transfer_goods", c: "#b9a6ff" }, { k: "accrue_interest", c: "#9fe0c4" }
+];
+const EMPTY_SIM = {
+  agents: [], prices: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
+  pricePrev: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
+  vols: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
+  books: {}, feed: [], round: 0, tick: 0, seconds: 0, gdp: 0, gdpPrev: 0,
+  supply: 0, debt: 0, minted: 0, burned: 0, txTotal: 0, lastRoundTxs: 0,
+  roundMs: 0, agentTarget: 0, brain: "Loading…", program: "—", ledger: "—", explorer: "#"
+};
+
+class Component extends DCLogic {
+  state = { sim: EMPTY_SIM, running: false, paused: false, pausing: false, selected: null, live: false, tickN: 0, dockOpen: true, busy: false, error: "" };
+
+  componentDidMount() {
+    this.onPin = (e) => this.setState({ selected: e.detail });
+    window.addEventListener("moku:location", this.onPin);
+    this.refresh();
+    this.timer = setInterval(() => this.refresh(), 3000);
+    this.events = new EventSource("/events");
+    this.events.onmessage = event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "round" || message.type === "error") this.refresh();
+      } catch { /* the periodic poll is the fallback */ }
+    };
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    this.events?.close();
+    window.removeEventListener("moku:location", this.onPin);
+  }
+
+  activityFor(a) {
+    if (a.orders?.length) return "trade";
+    if (a.debt > 0 && a.dueIn != null && a.dueIn <= 2) return "bank";
+    if (LOCS.some(l => l.act === a.activity)) return a.activity;
+    return "rest";
+  }
+
+  agentView(a) {
+    const fract = n => n - Math.floor(n);
+    const seeded = salt => fract(Math.sin((a.id + 1) * (12.9898 + salt * 17.31)) * 43758.5453);
+    const act = this.activityFor(a);
+    const mood = a.hunger >= 3 ? 0.12 : a.cold >= 2 ? 0.28 : a.hunger > 0 ? 0.42 : a.house ? 0.9 : 0.7;
+    return {
+      ...a, act, mood,
+      thought: a.thought || a.memory?.at(-1) || (a.activity === "deciding" ? "Deciding what to do next…" : ACT_LABEL[act]),
+      skin: SKIN[Math.floor(seeded(1) * SKIN.length)],
+      hair: HAIR[Math.floor(seeded(2) * HAIR.length)],
+      shirt: SHIRT[Math.floor(seeded(3) * SHIRT.length)],
+      hairStyleN: Math.floor(seeded(4) * 3), faceN: Math.floor(seeded(5) * 5),
+      jx: seeded(6) * 2 - 1, jy: seeded(7) * 2 - 1, delay: seeded(8) * 3
+    };
+  }
+
+  toSim(snapshot) {
+    const goods = ["food", "wood", "nets", "boats", "houses"];
+    const prices = snapshot.prices || Object.fromEntries(goods.map(g => [g, 0]));
+    const vols = snapshot.volumes || Object.fromEntries(goods.map(g => [g, 0]));
+    const priorRound = snapshot.history?.at(-2);
+    const pricePrev = Object.fromEntries(goods.map((g, i) => [g, priorRound?.prices?.[i] ?? prices[g]]));
+    const agents = (snapshot.agents || []).map(a => this.agentView(a));
+    const books = snapshot.bank?.books || {};
+    const oldBooks = this.state.sim?.books || books;
+    const minted = Math.max(0, (books.minted || 0) - (oldBooks.minted || 0));
+    const burned = Math.max(0, (books.principalRepaid || 0) - (oldBooks.principalRepaid || 0));
+    const bankBySig = new Map((snapshot.bankFeed || []).filter(x => x.sig).map(x => [x.sig, x]));
+    const signatures = [...(snapshot.chain?.lastRound?.sigs || [])].reverse();
+    for (const entry of snapshot.bankFeed || []) if (entry.sig && !signatures.includes(entry.sig)) signatures.push(entry.sig);
+    const txUrl = signature => (snapshot.chain?.explorer || "").replace(/\/address\/[^?]+/, "/tx/" + signature);
+    const feed = signatures.slice(0, 5).map(signature => {
+      const entry = bankBySig.get(signature);
+      const kind = entry?.kind === "borrow" ? "mint_loan"
+        : ["repay", "collected"].includes(entry?.kind) ? "burn_repay"
+          : entry?.kind === "foreclosed" ? "transfer_goods" : "settle_auction";
+      const color = KINDS.find(x => x.k === kind)?.c || "#14f195";
+      const note = entry ? entry.kind + (entry.amount ? " " + Number(entry.amount).toFixed(1) + "c" : "") : "round " + (snapshot.round || 0);
+      return { kind, color, sig: signature, note, url: txUrl(signature) };
+    });
+    return {
+      agents, prices, pricePrev, vols, books, feed,
+      round: snapshot.round || 0, tick: snapshot.round || 0, seconds: snapshot.seconds || 0,
+      gdp: snapshot.metrics?.gdp || 0, gdpPrev: priorRound?.gdp ?? snapshot.metrics?.gdp ?? 0,
+      supply: snapshot.bank?.supply || 0, debt: snapshot.bank?.debt || 0, minted, burned,
+      txTotal: snapshot.chain?.transactions || 0,
+      lastRoundTxs: snapshot.chain?.lastRound?.txs || 0,
+      roundMs: snapshot.roundMs || 0,
+      agentTarget: snapshot.config?.agents || agents.length,
+      brain: snapshot.brain || [snapshot.config?.brain, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
+      program: snapshot.chain?.program || "—", ledger: snapshot.chain?.ledger || "—",
+      explorer: snapshot.chain?.explorer || "#"
+    };
+  }
+
+  async refresh() {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    try {
+      const response = await fetch(this.props.pollEndpoint || "/state", { cache: "no-store" });
+      if (!response.ok) throw new Error("state request failed (" + response.status + ")");
+      const snapshot = await response.json();
+      const sim = this.toSim(snapshot);
+      this.setState({
+        sim, running: !!snapshot.running, paused: !!snapshot.paused, pausing: !!snapshot.pausing,
+        live: true, error: "", tickN: this.state.tickN + 1
+      });
+    } catch (error) {
+      this.setState({ live: false, error: error.message });
+    } finally {
+      this.refreshing = false;
+    }
+  }
+
+  async request(endpoint) {
+    if (this.state.busy) return;
+    this.setState({ busy: true, error: "" });
+    let requestError = "";
+    try {
+      const response = await fetch(endpoint, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || endpoint + " failed");
+    } catch (error) {
+      requestError = error.message;
+    } finally {
+      await this.refresh();
+      this.setState({ busy: false, ...(requestError ? { error: requestError } : {}) });
+    }
+  }
+
+  renderVals() {
+    const s = this.state.sim;
+    const showThoughts = this.props.showThoughts ?? true;
+    const fmt = (v, d = 2) => Number(v).toFixed(d);
+    const counts = {}; LOCS.forEach(l => counts[l.id] = 0);
+    s.agents.forEach(a => counts[bucketOf(a.act).id] = (counts[bucketOf(a.act).id] || 0) + 1);
+
+    const legend = LOCS.map(l => ({
+      label: ACT_LABEL[l.act], count: counts[l.id] || 0,
+      swatch: { width: "10px", height: "10px", borderRadius: "50%", background: l.color, boxShadow: "0 0 0 2px rgba(255,255,255,.55)" }
+    }));
+
+    const prices = Object.keys(s.prices).map(k => {
+      const change = s.prices[k] - (s.pricePrev[k] ?? s.prices[k]);
+      const up = change > 0;
+      return {
+        name: k, price: this.state.running ? fmt(s.prices[k], 2) : "—", vol: s.vols[k], delta: change ? (up ? "▲" : "▼") : "•",
+        deltaStyle: { fontSize: "11px", fontWeight: 800, color: change ? (up ? "#2f9e6b" : "#c0603f") : "#9db0b6" }
+      };
+    });
+
+    const feed = s.feed.map(f => ({
+      kind: f.kind, short: SHORT[f.kind] || f.kind, sig: f.sig, note: f.note, url: f.url,
+      kindStyle: { fontFamily: "'IBM Plex Mono', monospace", fontSize: "9.5px", fontWeight: 500, color: f.color, background: "rgba(255,255,255,.08)", borderRadius: "5px", padding: "1px 4px", textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+    }));
+
+    const sel = LOCS.find(l => l.id === this.state.selected) || null;
+    const here = sel ? s.agents.filter(a => bucketOf(a.act).id === sel.id) : [];
+    const used = {};
+    const selectedAgents = here.slice(0, 18).map(a => {
+      const pool = THOUGHTS[a.act];
+      let th = a.thought, guard = 0;
+      while (used[th] && guard < pool.length) { th = pool[(pool.indexOf(th) + 1) % pool.length]; guard++; }
+      used[th] = 1;
+      const hairTop = a.hairStyleN === 0 ? "-6px" : a.hairStyleN === 1 ? "-9px" : "-7px";
+      const wb = a.mood;
+      const tier = wb < 0.22 ? 0 : wb < 0.42 ? 1 : wb < 0.62 ? 2 : wb < 0.82 ? 3 : 4;
+      const ink = "#3a2b22";
+      const eyeBase = { position: "absolute", top: "35px", background: ink };
+      const eyeShape = tier === 0 ? { width: "10px", height: "10px", borderRadius: "50%" }                    // wide, strained
+        : tier === 1 ? { width: "11px", height: "4px", borderRadius: "3px 3px 6px 6px" }                       // heavy lids
+        : tier === 2 ? { width: "9px", height: "9px", borderRadius: "50%" }                                    // plain
+        : tier === 3 ? { width: "9px", height: "12px", borderRadius: "50%" }                                   // alert
+        : { width: "10px", height: "5px", borderRadius: "10px 10px 0 0", background: "transparent", borderTop: "2px solid " + ink };  // happy arcs
+      const eyeL = { ...eyeBase, ...eyeShape, left: "16px" };
+      const eyeR = { ...eyeBase, ...eyeShape, right: "16px" };
+      const browBase = { position: "absolute", top: "27px", width: "12px", height: "2.5px", borderRadius: "2px", background: ink };
+      const browTilt = tier === 0 ? 18 : tier === 1 ? 9 : 0;
+      const browL = browTilt ? { ...browBase, left: "14px", transform: "rotate(" + browTilt + "deg)" } : { display: "none" };
+      const browR = browTilt ? { ...browBase, right: "14px", transform: "rotate(" + (-browTilt) + "deg)" } : { display: "none" };
+      const mouthBase = { position: "absolute", left: "50%", top: "56px", transform: "translateX(-50%)" };
+      const mouth = tier === 0
+        ? { ...mouthBase, width: "11px", height: "10px", borderRadius: "50%", border: "2px solid #4a382c" }                       // open, worried
+        : tier === 1
+          ? { ...mouthBase, width: "14px", height: "7px", border: "2px solid #4a382c", borderBottom: 0, borderRadius: "14px 14px 0 0" }  // frown
+          : tier === 2
+            ? { ...mouthBase, width: "13px", height: "2px", borderRadius: "2px", background: "#4a382c" }                          // flat
+            : tier === 3
+              ? { ...mouthBase, width: "13px", height: "5px", border: "2px solid #4a382c", borderTop: 0, borderRadius: "0 0 12px 12px" } // faint smile
+              : { ...mouthBase, width: "17px", height: "9px", border: "2px solid #4a382c", borderTop: 0, borderRadius: "0 0 16px 16px" }; // smile
+      const blush = tier === 4
+        ? { position: "absolute", top: "48px", width: "11px", height: "6px", borderRadius: "50%", background: "rgba(218,128,120,.3)" }
+        : tier === 0
+          ? { position: "absolute", top: "50px", width: "10px", height: "5px", borderRadius: "50%", background: "rgba(120,150,160,.28)" }  // pallid
+          : { display: "none" };
+      return {
+        name: a.name, cash: fmt(a.cash, 1), wellbeing: fmt(a.wellbeing, 2),
+        thought: showThoughts ? th : "",
+        thoughtStyle: {
+          display: showThoughts ? "-webkit-box" : "none", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden",
+          background: "rgba(255,255,255,.95)", borderRadius: "12px", padding: "5px 8px",
+          fontSize: "11px", lineHeight: 1.3, fontWeight: 700, color: "#25604e", textAlign: "center",
+          boxShadow: "0 3px 0 rgba(15,74,60,.14)"
+        },
+        eyeL, eyeR, mouth, browL, browR,
+        blushL: blush.display ? blush : { ...blush, left: "9px" },
+        blushR: blush.display ? blush : { ...blush, right: "9px" },
+        bobDelay: "animation-delay:" + a.delay.toFixed(2) + "s",
+        bodyStyle: { position: "absolute", left: "50%", bottom: "10px", transform: "translateX(-50%)", width: "52px", height: "46px", borderRadius: "18px 18px 14px 14px", background: a.shirt, boxShadow: "inset 0 -6px 0 rgba(0,0,0,.08)" },
+        armStyle: { position: "absolute", left: "12px", bottom: "26px", width: "16px", height: "16px", borderRadius: "50%", background: a.skin, animation: "sway 2.8s ease-in-out infinite", transformOrigin: "top center" },
+        armStyle2: { position: "absolute", right: "12px", bottom: "26px", width: "16px", height: "16px", borderRadius: "50%", background: a.skin, animation: "sway 3.3s ease-in-out infinite", transformOrigin: "top center" },
+        headStyle: { position: "absolute", left: "50%", top: "8px", transform: "translateX(-50%)", width: "68px", height: "72px", borderRadius: "46% 46% 42% 42%", background: a.skin, boxShadow: "0 3px 0 rgba(0,0,0,.07)" },
+        hairStyle: { position: "absolute", left: "-3px", right: "-3px", top: hairTop, height: a.hairStyleN === 1 ? "40px" : "32px", background: a.hair, borderRadius: a.hairStyleN === 2 ? "50% 50% 46% 46%" : "48% 48% 30% 30%" },
+        toolStyle: {
+          position: "absolute", right: "2px", bottom: "34px", width: sel && sel.glyph === "wave" ? "6px" : "8px", height: "34px",
+          borderRadius: "4px", background: sel ? sel.color : "#888", opacity: sel && (sel.act === "rest" || sel.act === "trade" || sel.act === "bank") ? 0 : .9,
+          transform: "rotate(18deg)"
+        }
+      };
+    });
+
+    const countFor = act => counts[bucketOf(act).id] || 0;
+    const busiest = LOCS.reduce((a, l) => (counts[l.id] || 0) > (counts[a.id] || 0) ? l : a, LOCS[0]);
+    const dearest = Object.keys(s.prices).reduce((a, k) => s.prices[k] > s.prices[a] ? k : a, "food");
+    const headlines = this.state.running ? [
+      "Food clears at " + fmt(s.prices.food, 2) + "c — " + countFor("gather_food") + " settlers working the lake",
+      "Wood settles at " + fmt(s.prices.wood, 2) + "c with " + s.vols.wood + " units traded",
+      s.minted > 0 ? "Bank mints " + s.minted + "c of fresh credit; village debt now " + fmt(s.debt, 0) + "c"
+        : "No new credit issued this round — debt holds at " + fmt(s.debt, 0) + "c",
+      s.burned > 0 ? "Repayments burn " + s.burned + "c out of circulation" : "Nothing repaid this round; supply steady at " + fmt(s.supply, 0) + "c",
+      "Round " + s.round + " settled on-chain in " + s.lastRoundTxs + " transactions",
+      busiest.name + " is the busiest place on the island — " + (counts[busiest.id] || 0) + " settlers there",
+      "Nets hold at " + fmt(s.prices.nets, 2) + "c as crafters stock up on wood",
+      "Houses asking " + fmt(s.prices.houses, 0) + "c — " + countFor("build_house") + " frames going up at the building site",
+      "GDP prints " + fmt(s.gdp, 0) + ", " + (s.gdp >= s.gdpPrev ? "up" : "down") + " " + fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "% on the round",
+      dearest.charAt(0).toUpperCase() + dearest.slice(1) + " is the priciest good on the island right now",
+      s.txTotal + " transactions written to Solana since the sun came up"
+    ] : ["The village is ready — press Start to initialize the on-chain economy", this.state.error || "Waiting for the first settlers"];
+    const supplyTotal = Math.max(1, s.minted + s.burned);
+    const short = value => value && value.length > 12 ? value.slice(0, 4) + "…" + value.slice(-4) : value;
+    const busyLabel = this.state.running ? "Stopping…" : "Starting…";
+    return {
+      statusLabel: this.state.error ? "Connection error" : this.state.paused ? "Paused" : this.state.pausing ? "Pausing…" : this.state.running ? "Live" : "Ready",
+      liveDot: this.state.error ? "#ff6b6b" : this.state.running && !this.state.paused ? "#14f195" : "#ffb020",
+      brain: s.brain,
+      round: s.round, tick: s.tick,
+      clock: Math.floor(s.seconds / 60) + ":" + String(s.seconds % 60).padStart(2, "0"),
+      agentCount: s.agents.length || s.agentTarget,
+      gdp: fmt(s.gdp, 0), gdpDelta: (s.gdp >= s.gdpPrev ? "▲ " : "▼ ") + fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "%",
+      gdpDeltaStyle: { fontSize: "12px", fontWeight: 800, color: s.gdp >= s.gdpPrev ? "#2f9e6b" : "#c0603f" },
+      supply: fmt(s.supply, 0), debt: fmt(s.debt, 0), minted: s.minted, burned: s.burned,
+      mintBarStyle: { width: (s.minted / supplyTotal * 100) + "%", background: "linear-gradient(90deg,#3fd39a,#14b87a)", transition: "width .6s ease" },
+      burnBarStyle: { width: (s.burned / supplyTotal * 100) + "%", background: "linear-gradient(90deg,#e8916c,#c85f3d)", transition: "width .6s ease" },
+      txTotal: s.txTotal, lastRoundTxs: s.lastRoundTxs, txRate: s.roundMs ? Math.round(s.lastRoundTxs * 60000 / s.roundMs) : 0,
+      program: short(s.program), ledger: short(s.ledger),
+      explorer: s.explorer,
+      prices, feed, legend,
+      selected: sel ? { name: sel.name, blurb: sel.blurb, stats: [
+        { label: "Here now", value: here.length },
+        { label: "Price", value: sel.act === "gather_food" ? fmt(s.prices.food, 2) : sel.act === "gather_wood" ? fmt(s.prices.wood, 2) : sel.act === "craft_net" ? fmt(s.prices.nets, 2) : sel.act === "build_house" ? fmt(s.prices.houses, 0) : fmt(s.prices.boats, 1) },
+        { label: "Solana tx this round", value: s.lastRoundTxs }
+      ] } : null,
+      sceneSky: sel ? sel.sky : "#e8f6e3", sceneGround: sel ? sel.ground : "#8fd06f",
+      sceneEmpty: !!sel && here.length === 0,
+      selectedAgents,
+      wireText: headlines.join("     \u25C6     ") + "     \u25C6     ",
+      toggleDock: () => this.setState({ dockOpen: !this.state.dockOpen }),
+      dockLabel: this.state.dockOpen ? "Hide dashboard" : "Show dashboard",
+      dockBtnStyle: { all: "unset", cursor: "pointer", display: "flex", alignItems: "center", gap: "7px", background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.2)", color: "#eaf7fb", fontSize: "11.5px", fontWeight: 800, padding: "5px 12px", borderRadius: "999px", whiteSpace: "nowrap" },
+      chevronStyle: { width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: this.state.dockOpen ? "6px solid #eaf7fb" : "0", borderBottom: this.state.dockOpen ? "0" : "6px solid #eaf7fb" },
+      dockWrapStyle: {
+        display: "grid", gridTemplateColumns: "170px minmax(0, 1.05fr) minmax(0, 1.5fr)", gap: "8px", alignItems: "stretch",
+        maxHeight: this.state.dockOpen ? "172px" : "0px", opacity: this.state.dockOpen ? 1 : 0,
+        overflow: "hidden", transition: "max-height .34s cubic-bezier(.4,0,.2,1), opacity .24s ease"
+      },
+      closeLoc: () => this.setState({ selected: null }),
+      toggleRun: () => this.state.running
+        ? window.confirm("Stop this simulation and save the current run?") && this.request("/stop")
+        : this.request("/start"),
+      togglePause: () => this.state.running && this.request(this.state.paused || this.state.pausing ? "/resume" : "/pause"),
+      runLabel: this.state.busy ? busyLabel : this.state.running ? "Running / stop" : "Start",
+      pauseLabel: this.state.pausing ? "Cancel pause" : this.state.paused ? "Resume" : "Pause",
+      runBtnStyle: { all: "unset", cursor: this.state.busy ? "wait" : "pointer", opacity: this.state.busy ? .65 : 1, flex: 1, textAlign: "center", padding: "9px 0", borderRadius: "12px", fontWeight: 800, fontSize: "13px", color: "#fff", background: this.state.running ? "#d9634a" : "#159e74", boxShadow: "0 3px 0 rgba(6,48,63,.25)" },
+      pauseBtnStyle: { all: "unset", cursor: this.state.running && !this.state.busy ? "pointer" : "not-allowed", opacity: this.state.running && !this.state.busy ? 1 : .45, flex: 1, textAlign: "center", padding: "9px 0", borderRadius: "12px", fontWeight: 800, fontSize: "13px", color: "#0d4a5e", background: "#e7eef0", boxShadow: "0 3px 0 rgba(6,48,63,.16)" }
+    };
+  }
+}
+
+</script>
+</body>
+</html>

@@ -1,10 +1,13 @@
 // Runs the village and serves a dashboard.
-//   GET  /        dashboard            GET /state   JSON snapshot
+//   GET  /        island view          GET /state   JSON snapshot
+//   GET  /dashboard  the dashboard
 //   POST /start   start a new world    GET /events  live event stream (SSE)
 //   POST /stop    stop it
+//   POST /pause   pause after the current round      POST /resume  continue
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { CFG, GOODS, ROOT, HOUSES } from './config.mjs';
 import { connectChain, explorer, PROGRAM_ID, lockedValue } from './chain.mjs';
 import { createWorld } from './world.mjs';
@@ -98,6 +101,7 @@ async function start() {
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
   sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, sigs: new Map(),
+          paused: false, pausing: false, resumeClock: null,
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
   console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
@@ -133,24 +137,60 @@ async function start() {
   }
   // The clock: every round, all agents decide at once; the round waits for the slowest (up to
   // the timeout), then plays out — shifts, meals, fires, rot, the market — and settles on-chain.
+  async function waitIfPaused() {
+    if (!alive()) return;
+    if (sim.pausing) {
+      sim.pausing = false;
+      sim.paused = true;
+      console.log(`paused after round ${W.round}`);
+    }
+    if (sim.paused) {
+      await new Promise(resolve => { sim.resumeClock = resolve; });
+      if (sim) sim.resumeClock = null;
+    }
+  }
   async function clock() {
     while (alive()) {
+      await waitIfPaused();
+      if (!alive()) return;
       const t0 = Date.now();
       const res = await Promise.all(W.agents.map(decideOne));
       if (!alive()) return;
       const ms = res.map(r => r.ms).sort((x, y) => x - y);
       await W.playRound({ waitMs: Date.now() - t0, slowest: ms.at(-1), median: ms[ms.length >> 1],
                           timeouts: res.filter(r => r.timedOut).length, noAnswer: res.filter(r => !r.ok && !r.timedOut).length });
+      await waitIfPaused();
     }
   }
   sim.clock = clock().catch(e => console.error(`clock stopped: ${e.stack}`));
   return 'started';
 }
 
+function pause() {
+  if (!sim) return 'not running';
+  if (sim.paused) return 'already paused';
+  sim.pausing = true;
+  return 'pausing after this round';
+}
+
+function resume() {
+  if (!sim) return 'not running';
+  if (sim.pausing) {
+    sim.pausing = false;
+    return 'pause cancelled';
+  }
+  if (!sim.paused) return 'not paused';
+  sim.paused = false;
+  sim.resumeClock?.();
+  console.log(`resumed at round ${sim.W.round}`);
+  return 'resumed';
+}
+
 async function stop() {
   if (!sim) return 'not running';
   const s = sim;
   s.stopping = true;
+  s.resumeClock?.();               // a paused clock must wake up so it can observe stopping
   await s.clock;                  // the round in progress finishes; a decision phase in progress is dropped
   sim = null;
   const L = await s.chain.fetch();
@@ -174,7 +214,8 @@ function state() {
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, brain: brain.name, round: W.round, roundMs: Math.round(W.roundMs),
+    running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name,
+    round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
@@ -239,7 +280,13 @@ function state() {
 }
 
 // ---- HTTP ----------------------------------------------------------------------
-const PAGE = path.join(ROOT, 'backend/public/index.html');
+const FRONTEND = path.join(ROOT, 'frontend');
+const ISLAND_PAGE = path.join(FRONTEND, 'Moku Island.dc.html');
+const DASHBOARD_PAGE = path.join(ROOT, 'backend/public/index.html');
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+};
 const json = (res, body, code = 200) => {
   res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
   res.end(JSON.stringify(body));
@@ -268,25 +315,76 @@ function setTunables(body) {
   return { moved, ...tunableSnapshot() };
 }
 
-http.createServer(async (req, res) => {
+function serveFile(res, file) {
   try {
-    if (req.url === '/state') return json(res, state());
-    if (req.url === '/tunables' && req.method === 'GET') return json(res, tunableSnapshot());
-    if (req.url === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
-    if (req.url === '/start' && req.method === 'POST') return json(res, { result: await start() });
-    if (req.url === '/stop'  && req.method === 'POST') return json(res, { result: await stop() });
-    if (req.url === '/events') {
+    if (!fs.statSync(file).isFile()) return json(res, { error: 'not found' }, 404);
+  } catch {
+    return json(res, { error: 'not found' }, 404);
+  }
+  res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-store' });
+  res.end(fs.readFileSync(file));
+}
+
+function serveFrontend(res, pathname) {
+  if (pathname === '/') return serveFile(res, ISLAND_PAGE);
+  if (pathname === '/dashboard' || pathname === '/dashboard/') return serveFile(res, DASHBOARD_PAGE);
+  const file = path.resolve(FRONTEND, decodeURIComponent(pathname.slice(1)));
+  if (!file.startsWith(FRONTEND + path.sep)) return json(res, { error: 'not found' }, 404);
+  return serveFile(res, file);
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname === '/state') return json(res, state());
+    if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
+    if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
+    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start() });
+    if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
+    if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
+    if (pathname === '/resume' && req.method === 'POST') return json(res, { result: resume() });
+    if (pathname === '/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
       sseClients.add(res); req.on('close', () => sseClients.delete(res)); return;
     }
-    // no-store: the page is re-read from disk every request, so the browser must never
-    // serve a cached copy — a stale dashboard silently breaks charts after a redeploy.
-    res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
-    res.end(fs.readFileSync(PAGE));            // re-read each time: edit the page, refresh
+    if (req.method === 'GET') return serveFrontend(res, pathname);
+    return json(res, { error: 'not found' }, 404);
   } catch (e) {
+    console.error(`${req.method} ${req.url} failed: ${e.stack ?? e.message}`);
     json(res, { error: e.message }, 500);
   }
-}).listen(CFG.PORT, () => console.log(`dashboard: http://localhost:${CFG.PORT}`));
+});
+
+function listen(port = CFG.PORT) {
+  const cleanup = () => {
+    server.off('error', onError);
+    server.off('listening', onListening);
+  };
+  const onError = error => {
+    cleanup();
+    if (error.code !== 'EADDRINUSE' || port >= CFG.PORT + 10) throw error;
+    const next = port + 1;
+    console.warn(`port ${port} is busy; trying ${next}`);
+    listen(next);
+  };
+  const onListening = () => {
+    cleanup();
+    const url = `http://localhost:${port}`;
+    console.log(`island: ${url}   dashboard: ${url}/dashboard`);
+    if (!CFG.RUN_SECONDS && process.env.OPEN_BROWSER !== '0') {
+      const command = process.platform === 'darwin' ? ['open', [url]]
+        : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+          : ['xdg-open', [url]];
+      const child = spawn(command[0], command[1], { detached: true, stdio: 'ignore' });
+      child.on('error', () => {});               // headless shells simply keep the printed URL
+      child.unref();
+    }
+  };
+  server.once('error', onError);
+  server.once('listening', onListening);
+  server.listen(port);
+}
+listen();
 
 // ---- headless mode: RUN_SECONDS=45 starts immediately, prints a summary, exits ---
 if (CFG.RUN_SECONDS) {
