@@ -105,9 +105,8 @@ Makes a default spread instead of staying private, and fixes stock-flow consiste
   eat equity → lending tightens → credit crunch.
 - **Foreclosure takes only what's needed:** seize `ceil(shortfall / (0.8 × price))` units,
   return the rest to the debtor. Write-offs come out of equity.
-- **Margin calls:** `liquidate` also allowed when `debt > locked value at last price × 70%`
-  (still permissionless). A fire sale at 80% drops the last price, which can push other loans
-  under the line — a cascade.
+- **Margin calls:** `collect` also allowed when `debt > locked value at last price × 70%`.
+  A fire sale at 80% drops the last price, which can push other loans under the line — a cascade.
 - **Books on-chain:** `interest_income`, `penalties`, `recovered`, `written_off`, and an invariant
   `Σ agent cash + bank cash = start money + bank seed + minted − principal repaid − written off`.
 - Optional: interest by time held instead of flat 10%, so a short bridge loan is cheap.
@@ -139,9 +138,8 @@ after a wave of defaults, `borrow` refusals for "lending cap" rise.
 
 ## 6. On-chain visibility (≈3–8h) — for the Solana prize
 
-- **Devnet + "foreclose it yourself" script (≈3h).** Deploy to devnet so anyone can inspect the
-  ledger in Solana Explorer; ship a tiny script a judge runs with their own key to liquidate an
-  overdue loan. Dashboard lists loans that can be foreclosed right now.
+- **Devnet (≈3h).** Deploy to devnet so anyone can inspect the ledger in Solana Explorer.
+  Dashboard lists loans that can be foreclosed right now.
 - ~~**Per-agent identity**~~ — **done, and further than planned.** Each agent has a purse:
   an SPL token account at `["purse", ledger, agent]` that owns itself, holding real
   SETTLERS. An auction settles as direct transfers between the villagers who traded, so an

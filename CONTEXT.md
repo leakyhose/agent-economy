@@ -118,7 +118,7 @@ Rules, all enforced on-chain (dials in `CFG.BANK`):
   a new loan is sent with 0.8 × term × measured slots per round, and the keeper collects
   at the promised round, not before. A top-up keeps the due round. Repaying pays interest
   first; under 1 coin left owing is forgiven.
-- **At the deadline, by anyone:** `liquidate` is permissionless once a loan is overdue or
+- **At the deadline, by the bank:** `collect` is allowed once a loan is overdue or
   on a margin call (debt > `MARGIN` of the collateral). Overdue with the cash to cover it,
   the debt is simply collected from the debtor's cash — no penalty, collateral released.
   Otherwise it's a foreclosure: a 10% penalty, cash collected first, then only as many
@@ -160,7 +160,7 @@ clear_auction  uniform-price batch auction for one good (the bank may sell)
 borrow       lock goods, MINT coins (real SPL mint_to), borrower's term; capped by
              collateral AND bank capital
 repay        accrued interest to equity, principal BURNED (real SPL burn); unlock when paid off
-liquidate    PERMISSIONLESS: overdue → collect from cash, or foreclose; margin call →
+collect      the bank: overdue → collect from cash, or foreclose; margin call →
              foreclose. Partial seizure at fire-sale value, excess refunded
 pay_dividend PERMISSIONLESS: equity above requirement, to all agents
 init_purses  one SPL token account per agent, a PDA that owns itself (chunked)
@@ -172,17 +172,18 @@ the terms, a `bank` slot (cash = equity, goods = seized collateral) and a fixed 
 `AgentSlot { cash, goods, locked, debt, principal, due_slot, accrued_slot }`. Byte offsets are
 commented in `lib.rs` and decoded by hand in `chain.mjs` `fetch()`.
 
-**Every write except `liquidate` and `pay_dividend` requires the ledger's `authority`
-to sign** (`Write::load_checked`). Those two take any signer; the program itself checks
-the loan is overdue by the chain's `Clock` or under margin at last prices.
+**Every write except `pay_dividend` requires the ledger's `authority` to sign**
+(`Write::load_checked`). `pay_dividend` alone takes any signer. `collect` is the bank's
+own instruction: the program still checks the loan is overdue by the chain's `Clock` or
+under margin at last prices, so the authority cannot collect a loan that isn't due.
 
 ### Per market round
 
 1. The backend batches the round's catches, meals, crafting and spoilage as **signed
    deltas** in one or more `settle` transactions. No balance may go negative.
-2. Loans and repayments are sent; the keeper calls `liquidate` on every overdue loan
-   and margin call (collected or foreclosed, as the chain decides); `pay_dividend` is
-   called if there's a surplus.
+2. Loans and repayments are sent; the bank calls `collect` on every overdue loan
+   (collected or foreclosed, as the chain decides); the keeper calls `pay_dividend` if
+   there's a surplus.
 3. Each good's order book goes to `clear_auction`. **Orders are pre-sorted off-chain;
    the program verifies sortedness in one O(n) pass** rather than sorting on-chain. An
    unsorted book is rejected (verified with a real transaction).
@@ -272,7 +273,6 @@ a local validator; devnet's ~10 req/s is too slow for 3-second rounds.
 
 ### Gaps
 
-- No standalone script for a judge to call `liquidate` themselves.
 - No Metaplex token metadata, so explorers show the mint's address rather than the name
   "SETTLERS". The metadata program isn't on a bare `solana-test-validator`; on devnet it is.
 

@@ -47,7 +47,7 @@ function broadcast(e) {
   for (const res of sseClients) res.write(line);
   sim?.log.write(JSON.stringify(e) + '\n');
   if (e.type === 'round') {
-    // the keeper's liquidate signature for each collection / foreclosure, for the dashboard's bank feed
+    // the bank's collect signature for each collection / foreclosure, for the dashboard's bank feed
     for (const f of [...e.foreclosures, ...e.collected]) if (f.sig) sim.sigs.set(`${e.round}|${f.kind}|${f.name}`, f.sig);
     const W = sim.W, acts = {};
     for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; acts[k] = (acts[k] ?? 0) + 1; }

@@ -107,7 +107,7 @@ ok('the borrower is now short of cash', L.slots[0].cash < L.slots[0].debt,
 L = await C.fetch();
 while ((await C.slot()) <= L.slots[2].dueSlot) await sleep(400);
 const beforeCollect = await C.settlersSupply();
-await C.liquidate(2);
+await C.collect(2);
 L = await invariant('collection');
 ok('the collected loan closed and released its collateral',
    L.slots[2].debt === 0 && L.slots[2].locked[WOOD] === 0);
@@ -118,7 +118,7 @@ ok('collecting burned the principal', await C.settlersSupply() < beforeCollect);
 await C.clear(WOOD, [{ agent: 1, qty: 1, limit: 10 }], [{ agent: 2, qty: 1, limit: 1 }]);
 L = await C.fetch();
 ok('wood collapsed', L.lastPrice[WOOD] < 50, `last price ${L.lastPrice[WOOD]}`);
-await C.liquidate(0);
+await C.collect(0);
 L = await invariant('foreclosure');
 ok('the bank seized the collateral', L.bank.goods[WOOD] > 0, `wood ${L.bank.goods[WOOD]}`);
 ok('the loss outran the bank: bad debt', L.badDebt > 0, `bad debt ${L.badDebt}`);

@@ -55,8 +55,8 @@ export async function connectChain() {
   const authority = Keypair.fromSecretKey(Uint8Array.from(
     JSON.parse(fs.readFileSync(`${process.env.HOME}/.config/solana/id.json`, 'utf8'))));
   const ledger = Keypair.generate();
-  // A stranger with no authority over the ledger. It forecloses loans and pays dividends,
-  // to prove on every call that `liquidate` and `pay_dividend` really are open to anyone.
+  // A stranger with no authority over the ledger. It pays dividends, to prove on every
+  // call that `pay_dividend` really is open to anyone.
   const keeper = Keypair.generate();
   // The coin. Both are PDAs of this ledger, so neither has a private key: the mint is
   // its own mint and freeze authority, and it owns the vault that holds every SETTLER.
@@ -92,7 +92,7 @@ export async function connectChain() {
     }
   }
 
-  // 0.05 SOL is thousands of liquidate/pay_dividend calls at 5,000 lamports a signature.
+  // 0.05 SOL is thousands of pay_dividend calls at 5,000 lamports a signature.
   async function fundKeeper(lamports = 5e7) {
     if (await conn.getBalance(keeper.publicKey) >= lamports) return;
     try {
@@ -136,7 +136,7 @@ export async function connectChain() {
     d.writeUInt16LE(terms.kappaBps, 82); d.writeUInt16LE(terms.marginBps, 84); d.writeUInt16LE(terms.maxTermUnits, 86);
     d.writeBigUInt64LE(BigInt(terms.ratePeriodSlots), 88); d.writeBigUInt64LE(BigInt(terms.termUnitSlots), 96);
     d.writeBigUInt64LE(BigInt(terms.equityFloor ?? 0), 104);
-    // The keeper pays its own fees to prove liquidate really is permissionless. A local
+    // The keeper pays its own fees to prove pay_dividend really is permissionless. A local
     // validator will airdrop; a public faucet usually won't, so fall back to a transfer.
     await fundKeeper();
     return send(new TransactionInstruction({
@@ -280,21 +280,25 @@ export async function connectChain() {
     d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10);
     return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
   }
-  // Signed and paid for by the keeper alone — the authority is not on these transactions.
-  const anyone = (name, arg, coin = false) => {
-    const d = Buffer.alloc(8 + (arg === undefined ? 0 : 2));
+  // Signed and paid for by the keeper alone — the authority is not on this transaction.
+  const anyone = name => {
+    const d = Buffer.alloc(8);
     DISC[name].copy(d, 0);
-    if (arg !== undefined) d.writeUInt16LE(arg, 8);
     return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: [
       { pubkey: ledger.publicKey, isSigner: false, isWritable: true },
       { pubkey: keeper.publicKey, isSigner: true, isWritable: false },
-      ...(coin ? coinKeys() : []),
     ] }), [], [keeper]);
   };
-  // Collect or foreclose: allowed once overdue or under margin (see liquidatable()). An overdue
-  // loan whose debtor has the cash is simply repaid from it — no penalty, collateral released
-  // (see collects()); otherwise it's a foreclosure with the penalty.
-  const liquidate = agent => anyone('liquidate', agent, true);
+  // The bank collects a loan that has come due, or forecloses it: allowed once overdue or
+  // under margin (see collectable()). An overdue loan whose debtor has the cash is simply
+  // repaid from it — no penalty, collateral released (see collects()); otherwise it's a
+  // foreclosure with the penalty. Signed by the authority, like every other write.
+  async function collect(agent) {
+    const d = Buffer.alloc(8 + 2);
+    DISC.collect.copy(d, 0);
+    d.writeUInt16LE(agent, 8);
+    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
+  }
   // Pay half the bank's equity above its capital requirement to every agent equally. A no-op without a surplus.
   const payDividend = () => anyone('pay_dividend');
 
@@ -358,7 +362,7 @@ export async function connectChain() {
   }
 
   return {
-    conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
+    conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, collect, payDividend,
     fundKeeper, initPurses, settleCash, purseBalance, transfersIn,
     purseOf: agent => purseOf(agent).pubkey,
     MAX_PURSES_PER_TX,
@@ -376,25 +380,25 @@ export const allowedTerms = terms => Array.from({ length: terms.maxTermUnits }, 
 
 // A slot's debt at `nowSlot`: the stored debt plus simple interest on the principal since
 // accruedSlot, rateBps per ratePeriodSlots, rounded down — exactly what the program adds
-// when it next touches the loan (borrow, repay, liquidate) at that slot.
+// when it next touches the loan (borrow, repay, collect) at that slot.
 export function accruedDebt(s, terms, nowSlot) {
   if (!s.debt || !s.principal) return s.debt;
   const held = BigInt(Math.max(0, nowSlot - s.accruedSlot));
   return s.debt + Number(BigInt(s.principal) * BigInt(terms.rateBps) * held / (10_000n * BigInt(terms.ratePeriodSlots)));
 }
 
-// Why `liquidate` would succeed on this slot right now — 'overdue', 'margin' or null.
+// Why `collect` would succeed on this slot right now — 'overdue', 'margin' or null.
 // 'overdue' covers both outcomes: collects() says whether it's a direct debit or a foreclosure.
 // Same rule as the program: overdue once the chain slot passes dueSlot; a margin call
 // once accrued debt × 10000 > locked value at the last prices × marginBps.
-export function liquidatable(s, L, nowSlot) {
+export function collectable(s, L, nowSlot) {
   if (!s.debt) return null;
   if (nowSlot > s.dueSlot) return 'overdue';
   if (accruedDebt(s, L.terms, nowSlot) * 10_000 > lockedValue(s, L.lastPrice) * L.terms.marginBps) return 'margin';
   return null;
 }
 
-// True when `liquidate` at nowSlot would repay the loan from the debtor's cash (overdue, and
+// True when `collect` at nowSlot would repay the loan from the debtor's cash (overdue, and
 // cash covers the accrued debt): no penalty, nothing seized. False = foreclosure, or not allowed.
 // The program decides at the slot the transaction lands, when a little more interest is owed.
 export function collects(s, L, nowSlot) {

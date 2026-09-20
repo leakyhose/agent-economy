@@ -4,7 +4,7 @@
 // the local view is replaced by what the chain says. The chain is the source of truth —
 // this file is a fast mirror.
 import { CFG, GOODS, FOOD, WOOD, NETS, BOATS, HOUSES } from './config.mjs';
-import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, liquidatable, accruedDebt } from './chain.mjs';
+import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, collectable, accruedDebt } from './chain.mjs';
 
 const S1 = ['Ka', 'Lo', 'Mi', 'Ro', 'Te', 'Su', 'Na', 'Vi', 'Jo', 'Pe', 'Di', 'Ha', 'Ba', 'Fe', 'Gu', 'Ze'];
 const S2 = ['ra', 'no', 'li', 'ko', 'sa', 'ta', 'vi', 'mo', 'ne', 'du', 'ri', 'la'];
@@ -622,7 +622,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     W.made = none(); W.shiftsNow = { worked: 0, idle: 0 };
     // Every transaction this round, with what it did. The label is written where the
     // call is made — nothing downstream has to guess which signature is which.
-    const sigs = [], liquidated = [];
+    const sigs = [], overdueLoans = [];
     const tx = (what, sig, extra = {}) => { if (sig) sigs.push({ sig, what, ...extra }); return sig; };
     const cents = c => (c / 100).toFixed(2);
     let settled = batch.length ? null : none();   // net goods settled per good (null if the settle failed)
@@ -676,35 +676,35 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         }
       } }));
 
-      // The keeper — a stranger with no authority over the ledger — calls `liquidate` on
-      // every loan past its due slot. The chain decides what happens: an overdue loan whose
-      // debtor has the cash is collected from it (no penalty); otherwise it's a foreclosure.
-      // `liquidate` still permits margin calls on-chain, but the keeper never cites one:
-      // a falling price is not a reason to seize a villager's goods (see CFG.BANK.MARGIN).
+      // The bank calls `collect` on every loan past its due slot. The chain decides what
+      // happens: an overdue loan whose debtor has the cash is collected from it (no penalty);
+      // otherwise it's a foreclosure. `collect` still permits margin calls on-chain, but the
+      // bank never cites one: a falling price is not a reason to seize a villager's goods
+      // (see CFG.BANK.MARGIN).
       let mid = await chain.fetch();
       W.slot = mid.slot; W.slotAt = Date.now();
       // An overdue loan is collected at the round it was promised for, not before: its
       // on-chain deadline was set a little early (TERM_SLACK) so that it has passed by then.
       await Promise.all(agents.map(async a => {
-        const s = mid.slots[a.id], reason = liquidatable(s, mid, mid.slot);
+        const s = mid.slots[a.id], reason = collectable(s, mid, mid.slot);
         if (reason !== 'overdue' || (a.dueRound && W.round + 1 < a.dueRound)) return;
         try {
-          const sig = await chain.liquidate(a.id);
-          tx(`the keeper collects from ${a.name}`, sig, { kind: 'liquidate', agent: a.id });
-          liquidated.push({ agent: a.id, name: a.name, reason, before: s, sig });
-        } catch (e) { emit('error', { message: `liquidate ${a.name}: ${e.message}` }); }
+          const sig = await chain.collect(a.id);
+          tx(`the bank collects from ${a.name}`, sig, { kind: 'collect', agent: a.id });
+          overdueLoans.push({ agent: a.id, name: a.name, reason, before: s, sig });
+        } catch (e) { emit('error', { message: `collect ${a.name}: ${e.message}` }); }
       }));
-      const keeperSlot = mid.slot;
-      if (liquidated.length || ops.length) mid = await chain.fetch();
+      const collectSlot = mid.slot;
+      if (overdueLoans.length || ops.length) mid = await chain.fetch();
       // What each call actually did, read off the chain.
-      for (const f of liquidated) {
+      for (const f of overdueLoans) {
         const b = f.before, s = mid.slots[f.agent], a = agents[f.agent], T = mid.terms;
         f.returned = s.goods.map((q, g) => q - b.goods[g]);
         f.seized = b.locked.map((q, g) => q - f.returned[g]);
         // A collection takes exactly the debt accrued to the slot it landed at, and nothing else.
         const owedAt = t => accruedDebt(b, T, t);
         let landed = null;
-        if (f.reason === 'overdue') for (let t = keeperSlot; t <= mid.slot && landed === null; t++)
+        if (f.reason === 'overdue') for (let t = collectSlot; t <= mid.slot && landed === null; t++)
           if (b.cash - owedAt(t) === s.cash) landed = t;
         const debt = owedAt(landed ?? mid.slot);
         f.debt = debt;
@@ -893,7 +893,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     }
     for (const o of ops) W.bankLog.push({ round: W.round + 1, kind: o.kind, name: agents[o.agent].name, amount: o.amount, ok: !!o.ok,
       ...(o.kind === 'borrow' ? { term: o.topUp ? null : o.termRounds } : {}) });
-    for (const f of liquidated) W.bankLog.push({ round: W.round + 1, kind: f.kind, reason: f.reason, name: f.name,
+    for (const f of overdueLoans) W.bankLog.push({ round: W.round + 1, kind: f.kind, reason: f.reason, name: f.name,
       amount: f.taken, debt: f.debt, seized: f.seized, returned: f.returned, refund: f.refund ?? 0 });
     W.bank = bankView(L);
 
@@ -920,8 +920,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const sum = f => L.slots.reduce((s, x) => s + f(x), 0);
     emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sigs,
                     book: bookStats, ladder, orders: orderLog, live, noBankPrice, decide,
-                    roundMs: dMs, slotsPerRound: dSlots, trades, spoiled, foreclosures: liquidated.filter(f => f.kind === 'foreclosed'),
-                    collected: liquidated.filter(f => f.kind === 'collected'), made, metrics: m,
+                    roundMs: dMs, slotsPerRound: dSlots, trades, spoiled, foreclosures: overdueLoans.filter(f => f.kind === 'foreclosed'),
+                    collected: overdueLoans.filter(f => f.kind === 'collected'), made, metrics: m,
                     bank: { supply: L.supply, debtTotal: L.debtTotal, debtTotalNow: L.debtTotalNow, badDebt: L.badDebt, goods: L.bank.goods,
                             cash: L.bank.cash, bankBook: L.bankBook,
                             equity: L.equity, lendingCap: L.lendingCap, capitalRequired: L.capitalRequired, books: L.books,

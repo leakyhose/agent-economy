@@ -59,11 +59,11 @@ process.stdout.write('  waiting for agent 2\'s loan to come due   ');
 let L = await C.fetch();
 while ((await C.slot()) <= L.slots[2].dueSlot) { await sleep(2000); process.stdout.write('.'); }
 console.log();
-await step('a stranger collects the due loan', () => C.liquidate(2));
+await step('the bank collects the due loan', () => C.collect(2));
 
 await step('wood collapses', () =>
   C.clear(WOOD, [{ agent: 1, qty: 1, limit: 10 }], [{ agent: 2, qty: 1, limit: 1 }]));
-await step('a stranger forecloses agent 0', () => C.liquidate(0));
+await step('the bank forecloses agent 0', () => C.collect(0));
 
 L = await C.fetch();
 const seized = L.bank.goods[WOOD];
