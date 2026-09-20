@@ -163,6 +163,8 @@ repay        accrued interest to equity, principal BURNED (real SPL burn); unloc
 liquidate    PERMISSIONLESS: overdue → collect from cash, or foreclose; margin call →
              foreclose. Partial seizure at fire-sale value, excess refunded
 pay_dividend PERMISSIONLESS: equity above requirement, to all agents
+init_purses  one SPL token account per agent, a PDA that owns itself (chunked)
+settle_cash  move real SETTLERS between purses until each holds that agent's cash
 ```
 
 The `Ledger` is one zero-copy account: prices, `supply`, `debt_total`, the bank's books,
@@ -231,6 +233,37 @@ them off.
 Verified end to end by `backend/scripts/check-settlers.sh`, which runs a village through
 every one of those paths on a validator of its own (port 8999, never 8899).
 
+### Purses: the agents hold the coin themselves
+
+Every agent has a purse — an SPL token account at `["purse", ledger, agent]` that, like
+the mint, **is its own owner**, so no key that could spend an agent's coins exists
+anywhere. The ledger stays the source of truth for the economics; `settle_cash` then
+moves real SETTLERS until every purse holds what that agent's slot says.
+
+`settle_money` reconciles the *total* — how many coins exist. `settle_cash` reconciles
+the *distribution* — who holds them — in the same spirit: the caller says only which
+agents to look at, and the program derives every transfer from the gap between a purse's
+balance and its `cash`. Agents who owe coins are paired against agents who are owed them,
+so **an auction settles as direct transfers between the villagers who traded**, never
+through the bank. A chunk that doesn't net to zero settles the remainder against the
+vault, which is what lets the caller chunk purely by size. It ends by proving itself:
+every purse it touched must equal its slot, or the transaction fails.
+
+No existing instruction changed. `borrow` still mints into the vault and `repay` still
+burns from it; the coins reach and leave an agent's purse on the next pass, which the
+round loop runs as soon as the round's writes are done.
+
+20 purses per transaction: ~640 bytes of account keys and, measured on a validator,
+80,522 compute units in the worst case (nothing pairs, all 20 paid from the vault) and
+66,758 when trades pair. Both are inside the **default** 200,000, so this needs no
+compute-budget instruction, no address lookup table and no v0 transactions — the chunk
+size is the only knob. `MAX_AGENTS` stays 137.
+
+Verified by `backend/scripts/check-purses.sh` (port 8997, never 8899): 32 checks over
+purse creation, the opening pay-out, an auction that moves coins straight from the
+buyer's purse to the seller's, a loan, a repayment, a dividend, and a call handing over
+the wrong purse, which is refused.
+
 **On devnet:** `backend/scripts/deploy-devnet.sh` deploys the program (~1.11 SOL of rent)
 and then walks one village through the whole monetary story slowly enough for devnet's
 rate limit — a loan, a repayment, a collection, a foreclosure, a fire sale, a dividend —
@@ -239,7 +272,6 @@ a local validator; devnet's ~10 req/s is too slow for 3-second rounds.
 
 ### Gaps
 
-- No per-agent on-chain identity — an agent is an array index, not an account.
 - No standalone script for a judge to call `liquidate` themselves.
 - No Metaplex token metadata, so explorers show the mint's address rather than the name
   "SETTLERS". The metadata program isn't on a bare `solana-test-validator`; on devnet it is.

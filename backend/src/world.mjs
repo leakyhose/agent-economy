@@ -16,6 +16,10 @@ export function gini(xs) {
 }
 
 export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
+  // Agents whose purse may no longer match their ledger cash. An entry survives a failed
+  // settle_cash, so a purse that misses one pass is caught by the next rather than
+  // drifting until that agent happens to trade again.
+  const unsettledPurses = new Set();
   let seed = CFG.SEED;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   // Round a fractional amount up or down at random, so the expected value is exact.
@@ -744,6 +748,21 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
     // the chain is the truth — replace the mirror
     const L = await chain.fetch();
+    // Now move the coins themselves. Cash changed on-chain above; these are the SPL
+    // transfers that make an agent's purse hold what the books say they have — buyers
+    // paying sellers directly, the bank paying out a loan or a dividend.
+    for (const a of agents) {
+      if (!base || base[a.id].cash !== L.slots[a.id].cash) unsettledPurses.add(a.id);
+    }
+    if (unsettledPurses.size) {
+      try {
+        sigs.push(...await chain.settleCash([...unsettledPurses]));
+        unsettledPurses.clear();
+      } catch (e) {
+        // The books are still right and the purses catch up next round: say so, don't stop.
+        emit('error', { message: `purses not settled this round: ${e.message}` });
+      }
+    }
     // what the SETTLERS mint itself says exists. The program checks this against the
     // books inside every instruction that can move it, so this is a read, not a guard.
     W.settlersSupply = await chain.settlersSupply();

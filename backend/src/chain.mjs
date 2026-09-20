@@ -30,6 +30,10 @@ const MAX_ORDERS_PER_TX = 96;          // ~1220 bytes: the legacy transaction ce
 // token program: 3 more account keys, ~99 bytes, so fewer orders fit in that one call.
 const MAX_ORDERS_BANK_TX = 84;
 const MAX_DELTAS_PER_TX = 120;
+// One purse per agent in a settle_cash or init_purses call. 20 purses is ~640 bytes of
+// account keys and at most 20 transfer CPIs: inside both the 1232-byte legacy
+// transaction and the default 200,000 compute units, so neither needs raising.
+const MAX_PURSES_PER_TX = 20;
 
 // The SPL Token program, and the SETTLERS mint's decimals. Cash is held in cents and the
 // mint has 2 decimals, so one token base unit is one cent: no conversion, anywhere.
@@ -60,6 +64,19 @@ export async function connectChain() {
     [Buffer.from('settlers'), ledger.publicKey.toBuffer()], PROGRAM_ID);
   const [vault] = PublicKey.findProgramAddressSync(
     [Buffer.from('vault'), ledger.publicKey.toBuffer()], PROGRAM_ID);
+  // An agent's purse: an SPL token account at ["purse", ledger, agent] that owns itself,
+  // so no key that could spend it exists. The bump is sent with every call and checked
+  // on-chain against the account actually passed.
+  const purses = new Map();
+  const purseOf = agent => {
+    if (!purses.has(agent)) {
+      const index = Buffer.alloc(2); index.writeUInt16LE(agent);
+      const [pda, bump] = PublicKey.findProgramAddressSync(
+        [Buffer.from('purse'), ledger.publicKey.toBuffer(), index], PROGRAM_ID);
+      purses.set(agent, { pubkey: pda, bump });
+    }
+    return purses.get(agent);
+  };
   let txCount = 0;
 
   async function send(ix, extraSigners = [], signers = [authority, ...extraSigners]) {
@@ -130,6 +147,65 @@ export async function connectChain() {
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
     }), [ledger]);
+  }
+
+  // Encode `agents: Vec<u16>` then `bumps: Vec<u8>` — the shape both purse calls take —
+  // and pass each agent's purse as a remaining account, in the same order.
+  function purseCall(disc, agents, keys) {
+    const d = Buffer.alloc(8 + 4 + agents.length * 2 + 4 + agents.length);
+    disc.copy(d, 0);
+    d.writeUInt32LE(agents.length, 8);
+    agents.forEach((a, k) => d.writeUInt16LE(a, 12 + k * 2));
+    const at = 12 + agents.length * 2;
+    d.writeUInt32LE(agents.length, at);
+    agents.forEach((a, k) => d.writeUInt8(purseOf(a).bump, at + 4 + k));
+    return new TransactionInstruction({
+      programId: PROGRAM_ID, data: d,
+      keys: [...keys, ...agents.map(a =>
+        ({ pubkey: purseOf(a).pubkey, isSigner: false, isWritable: true }))],
+    });
+  }
+
+  // Give every agent a purse of their own. Once per ledger, after initialize; re-running
+  // it is a no-op per purse, so an interrupted pass can just be run again.
+  async function initPurses(n) {
+    const keys = [
+      ...writeKeys(),
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+    // The authority pays rent for each purse, so it must be writable here.
+    keys[1] = { pubkey: authority.publicKey, isSigner: true, isWritable: true };
+    const sigs = [];
+    for (let i = 0; i < n; i += MAX_PURSES_PER_TX) {
+      const agents = Array.from({ length: Math.min(MAX_PURSES_PER_TX, n - i) }, (_, k) => i + k);
+      sigs.push(await send(purseCall(DISC.init_purses, agents, keys)));
+    }
+    return sigs;
+  }
+
+  // Move real SETTLERS between the agents named, until every purse holds what the ledger
+  // says that agent has. The program derives the transfers; we only say who to look at.
+  async function settleCash(agents) {
+    const list = [...new Set(agents)].sort((a, b) => a - b);
+    const keys = [
+      ...writeKeys(),
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    ];
+    const sigs = [];
+    for (let i = 0; i < list.length; i += MAX_PURSES_PER_TX) {
+      sigs.push(await send(purseCall(DISC.settle_cash, list.slice(i, i + MAX_PURSES_PER_TX), keys)));
+    }
+    return sigs;
+  }
+
+  // What an agent's purse actually holds on chain, in cents.
+  async function purseBalance(agent) {
+    const info = await conn.getAccountInfo(purseOf(agent).pubkey, 'confirmed');
+    return info ? Number(info.data.readBigUInt64LE(64)) : 0;
   }
 
   // Signed goods deltas: catches, meals, crafting, wear. Chunked to fit a transaction.
@@ -268,7 +344,9 @@ export async function connectChain() {
 
   return {
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
-    fundKeeper,
+    fundKeeper, initPurses, settleCash, purseBalance,
+    purseOf: agent => purseOf(agent).pubkey,
+    MAX_PURSES_PER_TX,
     slot: () => conn.getSlot('confirmed'),
     mint, vault, settlersSupply,
     MAX_ORDERS_PER_TX, MAX_ORDERS_BANK_TX, LEDGER_SIZE, txCount: () => txCount,
