@@ -8,7 +8,7 @@
 //   node backend/scripts/check-brain.mjs                 one decision each, BRAIN from .env
 //   BRAIN=openai AGENTS=3 node backend/scripts/check-brain.mjs
 import { CFG } from '../src/config.mjs';
-import { BASE_URL, basetenPool, modelFor, DEFAULT_POOL } from '../src/brains/baseten.mjs';
+import { basetenPool, modelFor, livePrices, DEFAULT_POOL } from '../src/brains/baseten.mjs';
 
 const has = f => process.argv.includes(f);
 // --pool costs nothing, so it shows the whole village; a real decision costs a call each,
@@ -36,17 +36,30 @@ if (has('--pool')) {
   process.exit(0);
 }
 
-// ---- what Baseten actually serves today -----------------------------------------
+// ---- what Baseten actually serves today, and what it costs -----------------------
+// Priced against the OpenAI brain's model on a real villager's decision: about 1,400 tokens
+// of observation in, 200 out. Input is most of the bill, so a model dear on input is dear.
 if (has('--list')) {
   const key = process.env.BASETEN_API_KEY;
   if (!key) { console.error('no BASETEN_API_KEY in the repo-root .env'); process.exit(1); }
-  const r = await fetch(`${BASE_URL}/models`, { headers: { Authorization: `Bearer ${key}` } });
-  if (!r.ok) { console.error(`${r.status} ${r.statusText}: ${(await r.text()).slice(0, 200)}`); process.exit(1); }
-  const live = (await r.json()).data.map(m => m.id).sort();
-  console.log(`baseten serves ${live.length} models:`);
-  for (const id of live) console.log(`  ${id}`);
-  const missing = basetenPool().filter(m => !live.includes(m));
-  console.log(missing.length ? `\n  ! not in the catalog: ${missing.join(', ')}` : '\n  every model in the pool is served');
+  const IN = 1400, OUT = 200;
+  const LUNA = [0.20, 1.20];                        // gpt-5.6-luna, what the openai brain runs
+  const per = ([pin, pout]) => IN * pin / 1e6 + OUT * pout / 1e6;
+  const priced = await livePrices(key);
+  const live = Object.keys(priced);
+  if (!live.length) { console.error('could not read the catalogue'); process.exit(1); }
+  const pool = basetenPool();
+  const row = (id, p) => `${(pool.includes(id) ? '* ' : '  ') + id.padEnd(42)}${p[0].toFixed(2).padStart(6)}${p[1].toFixed(2).padStart(7)}` +
+    `${(per(p) / per(LUNA)).toFixed(2).padStart(9)}x`;
+  console.log(`  ${'model'.padEnd(42)}${'$/1M in'.padStart(6)}${'  out'.padStart(7)}${'vs luna'.padStart(10)}`);
+  console.log(row('gpt-5.6-luna (openai)', LUNA).replace('*', ' '));
+  console.log('  ' + '-'.repeat(63));
+  for (const id of live.sort((a, b) => per(priced[a]) - per(priced[b]))) console.log(row(id, priced[id]));
+  const cheaper = live.filter(id => per(priced[id]) < per(LUNA));
+  console.log(`\n  * = in the pool. ${cheaper.length} of ${live.length} models cost less than gpt-5.6-luna a decision:`);
+  for (const id of cheaper) console.log(`      ${id}`);
+  const missing = pool.filter(m => !live.includes(m));
+  console.log(missing.length ? `\n  ! not in the catalogue: ${missing.join(', ')}` : '\n  every model in the pool is served');
   process.exit(missing.length ? 1 : 0);
 }
 
@@ -101,7 +114,7 @@ function fakeTools() {
 
 const brain = BRAIN === 'openai' ? (await import('../src/brains/openai.mjs')).openaiBrain()
   : BRAIN === 'claude' ? (await import('../src/brains/claude.mjs')).claudeBrain()
-    : BRAIN === 'baseten' ? (await import('../src/brains/baseten.mjs')).basetenBrain()
+    : BRAIN === 'baseten' ? await (await import('../src/brains/baseten.mjs')).basetenBrain()
       : (await import('../src/brains/stub.mjs')).stubBrain();
 
 console.log(`brain: ${brain.name}   ${N} villagers, one decision each\n`);

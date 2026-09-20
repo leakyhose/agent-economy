@@ -35,7 +35,7 @@ async function makeBrain(choice = CFG.BRAIN) {
     console.warn('\n  brain=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');
   }
   if (choice === 'baseten') {
-    if (process.env.BASETEN_API_KEY) return (await import('./brains/baseten.mjs')).basetenBrain();
+    if (process.env.BASETEN_API_KEY) return await (await import('./brains/baseten.mjs')).basetenBrain();
     console.warn('\n  brain=baseten but no BASETEN_API_KEY in the repo-root .env. Using the stub.\n');
   }
   return stubBrain();
