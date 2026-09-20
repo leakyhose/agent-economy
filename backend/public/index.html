@@ -75,6 +75,7 @@
     <div class="chart" id="k-jobs"></div>
     <div class="chart" id="wealth"></div>
     <div class="chart" id="bankfeed"></div>
+    <div class="chart" id="txfeed"></div>
   </div>
 
   <details class="more" id="more">
@@ -119,6 +120,22 @@ const hover = GN.map(() => null);   // hovered round index per chart
 const detailsOpen = () => $('more').open;
 // a Solana explorer link for a transaction, on the same cluster as the ledger link the server gives
 const txUrl = sig => last.chain.explorer.replace(/\/address\/[^?]+/, '/tx/' + sig);
+
+// Every transaction the village has just made, newest first, with what it did and a link
+// to it on the explorer. A trade in the village and a signature on the chain, side by side.
+const txColour = { auction: '#0b6', borrow: '#c77700', repay: '#1a7f37', liquidate: '#b00', purses: '#06c', settle: '#666' };
+function txFeed() {
+  const rounds = (last.events ?? []).filter(e => e.type === 'round' && e.sigs?.length);
+  const rows = rounds.slice(0, 6).flatMap(e => e.sigs.map(t => {
+    const moves = (t.moves ?? []).map(m =>
+      `<div style="padding-left:14px" class="muted">${m.from} → ${m.to} <b>${(m.amount / 100).toFixed(2)}</b></div>`).join('');
+    return `<div style="color:${txColour[t.kind] ?? '#333'}">r${e.round} · ${t.what} ` +
+      `<a target="_blank" href="${txUrl(t.sig)}" title="${t.sig}">${t.sig.slice(0, 8)}… ↗</a></div>${moves}`;
+  }));
+  $('txfeed').innerHTML =
+    `<div class="head"><b>on the chain</b><span class="muted">every village act, as a signature</span></div>` +
+    `<div style="line-height:1.45; max-height:260px; overflow-y:auto">${rows.join('') || 'waiting for the first round…'}</div>`;
+}
 
 // ---- a small live chart: price as a step line (it only changes when a trade clears),
 //      volume as bars underneath, hover shows the exact round.
@@ -463,7 +480,7 @@ function details() {
   events.innerHTML = s.events.map(e => e.type === 'error'
     ? `<div class="hungry">error: ${e.message}</div>`
     : `<div>round ${e.round}: ${e.prices.map((p, i) => (p / 100).toFixed(2) + ' (' + e.volumes[i] + ')').join(' / ')} · ${e.txs} tx · ${e.ms}ms` +
-      (e.sig ? ` · <a target="_blank" href="${txUrl(e.sig)}">last tx ↗</a>` : '') + `</div>`
+      (e.sigs?.length ? ' · ' + e.sigs.map(t => `<a target="_blank" href="${txUrl(t.sig)}" title="${t.what}">${t.what.split(' ')[0]} ↗</a>`).join(' · ') : '') + `</div>`
   ).join('') || 'waiting for first market round…';
 }
 $('more').addEventListener('toggle', () => { if (last?.running) { details(); econ(); } });
@@ -496,7 +513,7 @@ async function refresh() {
     (s.llm.calls ? ` · llm ${s.llm.calls} calls ($${s.llm.cost.toFixed(3)})` : '') +
     ` · <span class="${s.totals.hungry ? 'hungry' : 'muted'}">hungry ${s.totals.hungry}</span> · <span class="${s.totals.cold ? 'hungry' : 'muted'}">cold ${s.totals.cold}</span>` +
     (s.foreclosures.length ? ` · <span class="hungry">latest foreclosure: r${s.foreclosures[0].round} ${s.foreclosures[0].name}</span>` : '');
-  econ(); wealth(); bankFeed(); details();
+  econ(); wealth(); bankFeed(); txFeed(); details();
 }
 
 refresh();

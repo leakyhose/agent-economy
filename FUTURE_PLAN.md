@@ -142,10 +142,15 @@ after a wave of defaults, `borrow` refusals for "lending cap" rise.
 - **Devnet + "foreclose it yourself" script (≈3h).** Deploy to devnet so anyone can inspect the
   ledger in Solana Explorer; ship a tiny script a judge runs with their own key to liquidate an
   overdue loan. Dashboard lists loans that can be foreclosed right now.
-- **Per-agent identity (≈3–4h).** Each agent gets a program-derived address that every
-  transaction involving it references (program checks it), so each agent's own history shows in
-  the explorer. Needs address lookup tables so a 30-agent auction still fits in a transaction.
-  Optional: per-agent keypairs that sign their own loans (custodial; say so).
+- ~~**Per-agent identity**~~ — **done, and further than planned.** Each agent has a purse:
+  an SPL token account at `["purse", ledger, agent]` that owns itself, holding real
+  SETTLERS. An auction settles as direct transfers between the villagers who traded, so an
+  agent's own history is on the explorer. Address lookup tables turned out to be
+  unnecessary: reconciling in chunks of 20 (`settle_cash`) fits the default transaction
+  size and compute budget, and keeps `clear_auction` and `MAX_AGENTS` untouched. Per-agent
+  keypairs were considered and rejected — 30 signatures overflow even a V1 transaction, so
+  the program must move the coins either way, and a PDA that no key can sign for is the
+  stronger claim than a custodial wallet. See CONTEXT.md §3.
 - ~~**Coins as an SPL token**~~ — **done.** SETTLERS: the mint is a PDA that is its own
   authority, `borrow` mints and `repay`/foreclosure burn by CPI, and the supply is checked
   against the books in the same instruction. See CONTEXT.md §3. What's left is Metaplex
@@ -171,6 +176,10 @@ for surplus) into hoarding — use half the firewood, rot-free storage up to N u
 Another on-chain good: MAX_AGENTS drops (≈135).
 
 ## Done since this plan was written
+
+- **Purses: agents hold and pay each other in the coin** (item 6, per-agent identity).
+  Verified by `backend/scripts/check-purses.sh`: 32 checks, and a headless stub run where
+  every purse matches its agent's cash at the end.
 
 - **SETTLERS, the coin as a real SPL token** (item 6). Verified by
   `backend/scripts/check-settlers.sh`: 30 checks over minting, repayment, collection,
