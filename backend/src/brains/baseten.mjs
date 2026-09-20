@@ -15,26 +15,27 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 // (8s by default) to choose a shift and post its orders, so time to first token matters more
 // here than depth: these are the flash-class models, never the pro or code ones.
 //
-// The rule for this pool: cheap, and no dearer than gpt-5.6-luna, the model the OpenAI brain
-// runs ($0.20 / $1.20 per 1M tokens). Every one of these undercuts it — $0.30 a side at the
-// very worst, against luna's $1.20 on output — so the two brains sit in the same cost class
-// and a run compares the models rather than the budget. A village is 30 agents deciding
-// every round for hundreds of rounds, so that matters more than it looks.
-// Set BASETEN_MODELS to run a different pool, or MODEL to put the whole village on one.
+// Four houses, none of them OpenAI's: the point of this brain is to put other people's
+// models beside gpt-5.6-luna, so an OpenAI model in the pool would only muddy the reading.
+//
+// A decision is input-heavy — about 2,000 tokens of observation in, 100 out — so the input
+// price is what a run really pays. Against luna's $0.0005 a decision: GLM 5.3 Flash and the
+// DeepSeek Flashes land at a third of that or less, Inkling Small at about double, and Kimi
+// K2.6 at about four times, which makes it the one to drop first if the bill bites
+// (BASETEN_MODELS, or MODEL to put the whole village on one model).
 export const DEFAULT_POOL = [
   'zai-org/GLM-5.3-Flash',
   'deepseek-ai/DeepSeek-V4.1-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
-  'openai/gpt-oss-120b',
+  'thinkingmachines/inkling-small',
+  'moonshotai/Kimi-K2.6',
 ];
 
 // $ per 1M tokens [input, output], from baseten.co/products/model-apis, checked 2026-09-19.
-// UNVERIFIED: that page lists its input column above its output column, which is backwards
-// from every other provider, so these may be transposed. A model with no price here still
-// counts tokens; it just reports no cost. Correct them against a real bill.
-//
-// The pro, code and frontier models are priced here only for anyone who names one in
-// BASETEN_MODELS; the default pool above stays with the flash-class four.
+// Its columns read "Input, Cache Input, Output", so output really is the cheaper side here —
+// these models are priced the other way round from OpenAI's. A model with no price counts
+// tokens and reports no cost. The pro, code and frontier models are listed only for anyone
+// who names one in BASETEN_MODELS; the pool above doesn't use them.
 const PRICE = {
   'zai-org/GLM-5.3-Flash': [0.15, 0.03],
   'zai-org/GLM-5.3': [1.40, 0.14],
@@ -44,6 +45,9 @@ const PRICE = {
   'deepseek-ai/DeepSeek-V4-Flash-0731': [0.13, 0.028],
   'deepseek-ai/DeepSeek-V4-Pro': [1.74, 0.145],
   'deepseek-ai/DeepSeek-V4-Pro-0813': [1.32, 0.132],
+  // Baseten doesn't publish a rate for K2.6; this is Moonshot's own, so its cost line is an
+  // estimate until a bill says otherwise.
+  'moonshotai/Kimi-K2.6': [0.95, 4.00],
   'moonshotai/Kimi-K3': [3.00, 0.30],
   'moonshotai/Kimi-K2.7-Code': [0.95, 0.16],
   'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B': [0.60, 0.12],
@@ -59,14 +63,33 @@ export function basetenPool() {
   return listed.length ? listed : DEFAULT_POOL;
 }
 
-// Same seed, same line-up: agent 3 draws the same model every run, the way its name and its
-// talents are drawn (CFG.SEED). Random across agents, repeatable across runs — otherwise two
-// runs of the same village couldn't be compared at all.
-export function modelFor(id, pool) {
+function hash(id) {
   let h = Math.imul((CFG.SEED ^ 0x9e3779b9) >>> 0, 0x85ebca6b) >>> 0;
   h = Math.imul((h ^ id) >>> 0, 0xc2b2ae35) >>> 0;
-  h = (h ^ (h >>> 15)) >>> 0;      // XOR gives back a SIGNED int32; unsign it or the index goes negative
-  return pool[h % pool.length];
+  return (h ^ (h >>> 15)) >>> 0;   // XOR gives back a SIGNED int32; unsign it or the index goes negative
+}
+
+// Deal, don't draw. Drawing each villager's model independently left the pool lumpy — eleven
+// villagers on one model and three on another at 30 agents — and then a comparison between
+// two models is also a comparison between a big sample and a small one. So the villagers are
+// shuffled by a seeded hash and the pool is dealt round the table: who gets what is random,
+// how many each model gets is even. Same seed, same deal, so runs stay comparable.
+const deals = new Map();
+export function deal(pool, n = CFG.AGENTS) {
+  const key = `${n}|${pool.join(',')}`;
+  let byId = deals.get(key);
+  if (!byId) {
+    const order = Array.from({ length: n }, (_, i) => i).sort((a, b) => hash(a) - hash(b) || a - b);
+    byId = new Array(n);
+    order.forEach((id, seat) => { byId[id] = pool[seat % pool.length]; });
+    deals.set(key, byId);
+  }
+  return byId;
+}
+
+// A villager past the deal (a check run with more agents than AGENTS) falls back to the hash.
+export function modelFor(id, pool, n = CFG.AGENTS) {
+  return deal(pool, n)[id] ?? pool[hash(id) % pool.length];
 }
 
 export function basetenBrain() {
@@ -74,7 +97,7 @@ export function basetenBrain() {
   return chatBrain({
     label: pool.length === 1 ? `baseten (${pool[0]})` : `baseten (${pool.length} models)`,
     client: new OpenAI({ baseURL: BASE_URL, apiKey: process.env.BASETEN_API_KEY }),
-    pickModel: a => modelFor(a.id, pool),
+    pickModel: a => modelFor(a.id, pool, CFG.AGENTS),
     price: model => PRICE[model] ?? [0, 0],
   });
 }
