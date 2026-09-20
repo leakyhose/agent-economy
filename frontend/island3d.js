@@ -57,7 +57,10 @@
   }
 
   // The coast road: a loop of waypoints just above the beach. Blobs walk area -> road -> along
-  // it -> area, so nobody climbs the mountain or swims.
+  // it -> area, so nobody climbs the mountain or swims. ROAD_HALF_W is the ribbon's half-width
+  // (see the "sandy ribbon" mesh below) — every lane offset below is clamped inside it, so a
+  // blob's path and its standing spot both always stay on the road, never spilling into the grass.
+  const ROAD_HALF_W = 3.2;
   const ROAD = Array.from({ length: 36 }, (_, i) => {
     const t = i / 36 * Math.PI * 2;
     let r = 120;
@@ -66,23 +69,55 @@
   });
   const nearestRoad = (x, z) => ROAD.reduce((best, p, i) =>
     Math.hypot(p[0] - x, p[1] - z) < Math.hypot(ROAD[best][0] - x, ROAD[best][1] - z) ? i : best, 0);
-  // waypoints from (x0,z0) to (x1,z1); (ox,oz) keeps each blob in its own lane on the road
-  function route(x0, z0, x1, z1, ox, oz) {
+  // shortest distance from (x,z) to the road as a polyline (not just to the nearest waypoint,
+  // which under-measures on the straight stretch between two of them) — used to keep trees,
+  // grass and rocks from clipping through the ribbon.
+  function distToRoad(x, z) {
+    let best = Infinity;
+    for (let i = 0; i < ROAD.length; i++) {
+      const [ax, az] = ROAD[i], [bx, bz] = ROAD[(i + 1) % ROAD.length];
+      const dx = bx - ax, dz = bz - az, len2 = dx * dx + dz * dz || 1;
+      const t = Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / len2));
+      const d = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
+      if (d < best) best = d;
+    }
+    return best;
+  }
+  // the road's direction and sideways normal at waypoint i, so a lane offset can be applied
+  // perpendicular to the road no matter which way it is curving at that point
+  function roadFrame(i) {
+    const n = ROAD.length, p = ROAD[i], nxt = ROAD[(i + 1) % n], prv = ROAD[(i - 1 + n) % n];
+    const dx = nxt[0] - prv[0], dz = nxt[1] - prv[1], len = Math.hypot(dx, dz) || 1;
+    const tx = dx / len, tz = dz / len;
+    return { x: p[0], z: p[1], tx, tz, nx: -tz, nz: tx };
+  }
+  // waypoints from (x0,z0) to (x1,z1); lane (a signed distance across the ribbon) keeps each
+  // blob in its own strip of the road, offset sideways at every waypoint rather than in one
+  // fixed world direction, so it tracks the road through curves instead of cutting corners.
+  function route(x0, z0, x1, z1, lane) {
     const path = [];
     if (Math.hypot(x1 - x0, z1 - z0) > 40) {
       const a = nearestRoad(x0, z0), b = nearestRoad(x1, z1), n = ROAD.length;
       const step = (b - a + n) % n <= n / 2 ? 1 : n - 1;         // the shorter way round
-      for (let i = a; ; i = (i + step) % n) { path.push([ROAD[i][0] + ox, ROAD[i][1] + oz]); if (i === b) break; }
+      for (let i = a; ; i = (i + step) % n) {
+        const f = roadFrame(i);
+        path.push([f.x + f.nx * lane, f.z + f.nz * lane]);
+        if (i === b) break;
+      }
     }
     path.push([x1, z1]);
     return path;
   }
   const rand = (id, salt) => { const v = Math.sin((id + 1) * (12.9898 + salt * 17.31)) * 43758.5453; return v - Math.floor(v); };
-  // an agent's own standing spot in an area — the same every visit
+  // a blob's own lane across the road — stable per agent, always inside the ribbon
+  const laneFor = id => (rand(id, 3) * 2 - 1) * (ROAD_HALF_W - 0.6);
+  // an agent's own standing spot for an area: the point on the road nearest that area, nudged
+  // along the road (so a crowd queues rather than stacking) and across it into its own lane —
+  // always on the road itself, never out on the grass around the area.
   function spot(id, area) {
-    let jx = (rand(id, 1) * 2 - 1) * 11, jz = (rand(id, 2) * 2 - 1) * 11;
-    for (let k = 0; k < 6 && height(area.x + jx, area.z + jz) < 1.2; k++) { jx *= 0.6; jz *= 0.6; }   // stay on dry land
-    return [area.x + jx, area.z + jz];
+    const f = roadFrame(nearestRoad(area.x, area.z));
+    const along = (rand(id, 1) * 2 - 1) * 8;
+    return [f.x + f.tx * along + f.nx * laneFor(id), f.z + f.tz * along + f.nz * laneFor(id)];
   }
 
   const TEMPLATE_CSS = `
@@ -313,6 +348,7 @@
         const sl = Math.abs(hgt - height(x + 1.5, z)) + Math.abs(hgt - height(x, z + 1.5));
         if (sl > 3.4) continue;
         if (hash2(i * 5.3, 1.9) > 0.018) continue;
+        if (distToRoad(x, z) < ROAD_HALF_W + 3) continue;   // clear of the road, canopy included
         const s = 1.25 + hash2(i * 0.9, 4.4) * 1.0;
         tp.set(x, hgt - 0.3, z);
         sc.set(s, s * (0.8 + hash2(i, 7) * 0.7), s);
@@ -347,6 +383,7 @@
         const hgt = height(x, z);
         const slope = Math.abs(hgt - height(x + 1.2, z)) + Math.abs(hgt - height(x, z + 1.2));
         if (hgt < 2.1 || hgt > 19 || slope > 2.55 || hash2(i * 3.7, 14.9) > 0.052) continue;
+        if (distToRoad(x, z) < ROAD_HALF_W + 1.5) continue;   // clear of the road
         const s = 0.42 + hash2(i * 5.1, 3.2) * 0.75;
         tp.set(x, hgt - 0.06, z);
         sc.set(s * (0.75 + hash2(i, 31) * 0.55), s * (0.65 + hash2(i, 33) * 0.8), s);
@@ -489,7 +526,7 @@
       g.lineWidth = 8; g.strokeStyle = "rgba(255,255,255,.95)"; g.stroke();
       const sprite = new THREE.CanvasTexture(cvs);
       this.dotGeo = new THREE.BufferGeometry();
-      this.dotMat = new THREE.PointsMaterial({ size: 9, map: sprite, vertexColors: true, transparent: true, alphaTest: 0.35, sizeAttenuation: true, depthWrite: false });
+      this.dotMat = new THREE.PointsMaterial({ size: 5, map: sprite, vertexColors: true, transparent: true, alphaTest: 0.35, sizeAttenuation: true, depthWrite: false });
       this.dots = new THREE.Points(this.dotGeo, this.dotMat);
       this.dots.frustumCulled = false;
       scene.add(this.dots);
@@ -548,27 +585,165 @@
         scene.add(pier);
       }
 
+      // ---- one small low-poly building at each of the other destinations, same
+      // box-walls-and-pyramid-roof style as the dock hut above ----
+      {
+        const strut = (a, b, thick, mat) => {
+          const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], len = Math.hypot(dx, dy, dz);
+          const m = new THREE.Mesh(new THREE.BoxGeometry(thick, len, thick), mat);
+          m.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+          m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
+          m.castShadow = true; m.receiveShadow = true;
+          return m;
+        };
+        // a nearby spot that is dry, reasonably flat and clear of the road, so the building
+        // never floats, tilts, or ends up straddling the ribbon
+        const flatSpot = (cx, cz, r = 9) => {
+          for (let i = 0; i < 60; i++) {
+            const a = i * 2.4, rad = r * (0.35 + 0.65 * (i / 60));
+            const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad;
+            const h = height(x, z);
+            const slope = Math.abs(h - height(x + 1.5, z)) + Math.abs(h - height(x, z + 1.5));
+            if (h > 2 && h < 22 && slope < 2.2 && distToRoad(x, z) > ROAD_HALF_W + 2.5) return [x, z, h];
+          }
+          return [cx, cz, height(cx, cz)];
+        };
+        const cabin = (cx, cz, { w = 5, d = 4.6, h = 3.2, roofH = 2.1, wall = 0xe4d3ad, roof = 0x9a5f45, rot = 0 } = {}) => {
+          const [x, z, gy] = flatSpot(cx, cz);
+          const group = new THREE.Group();
+          const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color: wall, roughness: 1 }));
+          box.position.y = h / 2; box.castShadow = true; box.receiveShadow = true;
+          const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.62, roofH, 4), new THREE.MeshStandardMaterial({ color: roof, roughness: 1 }));
+          cone.position.y = h + roofH / 2 - 0.1; cone.rotation.y = Math.PI / 4; cone.castShadow = true;
+          group.add(box, cone);
+          group.position.set(x, gy, z);
+          group.rotation.y = rot;
+          scene.add(group);
+          return { x, y: gy, z };
+        };
+
+        // forest: a woodcutter's cabin with a log pile stacked outside
+        {
+          const b = cabin(40, -48, { w: 4.4, d: 4, h: 2.9, roofH: 1.9, wall: 0x8a6a45, roof: 0x4a3a26, rot: 0.6 });
+          const logMat = [new THREE.MeshStandardMaterial({ color: 0xb08a5e, roughness: 1 }), new THREE.MeshStandardMaterial({ color: 0x7d5c3c, roughness: 1 })];
+          const logGeo = new THREE.CylinderGeometry(0.32, 0.32, 3, 7);
+          [[0, 0], [1, 0], [2, 0], [0.5, 1], [1.5, 1], [1, 2]].forEach(([col, row], i) => {
+            const log = new THREE.Mesh(logGeo, logMat[i % 2]);
+            log.rotation.z = Math.PI / 2;
+            log.position.set(b.x + 3.6 + col * 0.66, b.y + 0.32 + row * 0.58, b.z - 1.2);
+            log.castShadow = true; log.receiveShadow = true;
+            scene.add(log);
+          });
+        }
+
+        // workshop: a bigger shed with a stone chimney and a workbench
+        {
+          const b = cabin(60, 8, { w: 6, d: 5, h: 3.6, roofH: 2.3, wall: 0xd9c9a0, roof: 0xb5652f, rot: -0.4 });
+          const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.9, 3.4, 0.9), new THREE.MeshStandardMaterial({ color: 0x8f8378, roughness: 1 }));
+          chimney.position.set(b.x - 2, b.y + 3.6, b.z + 1.6);
+          chimney.castShadow = true;
+          scene.add(chimney);
+          const bench = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.9, 1.1), new THREE.MeshStandardMaterial({ color: 0x7d5c3c, roughness: 1 }));
+          bench.position.set(b.x + 3.6, b.y + 0.45, b.z - 1);
+          bench.castShadow = true; bench.receiveShadow = true;
+          scene.add(bench);
+        }
+
+        // building site: just a frame going up — beams and a stack of spare boards, no walls yet
+        {
+          const [x, z, y] = flatSpot(-16, -50);
+          const wx = 3, dz = 2.4, wallH = 3.2, ridgeH = 4.7;
+          const corners = [[-wx, 0, -dz], [wx, 0, -dz], [wx, 0, dz], [-wx, 0, dz]];
+          const tops = corners.map(([cx, , cz]) => [cx, wallH, cz]);
+          const ridgeA = [0, ridgeH, -dz], ridgeB = [0, ridgeH, dz];
+          const beam = new THREE.MeshStandardMaterial({ color: 0xc79a5e, roughness: 1 });
+          const beamDark = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 1 });
+          const frame = new THREE.Group();
+          corners.forEach((c, i) => frame.add(strut(c, tops[i], 0.34, i % 2 ? beamDark : beam)));
+          tops.forEach((t, i) => frame.add(strut(t, tops[(i + 1) % 4], 0.3, beam)));
+          frame.add(strut(ridgeA, ridgeB, 0.32, beamDark));
+          frame.add(strut(tops[0], ridgeA, 0.28, beam));
+          frame.add(strut(tops[1], ridgeA, 0.28, beam));
+          frame.add(strut(tops[2], ridgeB, 0.28, beam));
+          frame.add(strut(tops[3], ridgeB, 0.28, beam));
+          frame.position.set(x, y, z);
+          frame.rotation.y = 0.3;
+          scene.add(frame);
+          const boardGeo = new THREE.BoxGeometry(3.2, 0.24, 0.7);
+          const boardMat = new THREE.MeshStandardMaterial({ color: 0xd9b26a, roughness: 1 });
+          for (let i = 0; i < 4; i++) {
+            const board = new THREE.Mesh(boardGeo, boardMat);
+            board.position.set(x + 4.4, y + 0.14 + i * 0.26, z + 1.4);
+            board.rotation.y = 0.15;
+            board.castShadow = true; board.receiveShadow = true;
+            scene.add(board);
+          }
+        }
+
+        // market: an open-sided stall — posts and a canopy, no walls, a table underneath
+        {
+          const [x, z, y] = flatSpot(18, 56, 7);
+          const w = 5.4, d = 4.4, postH = 2.6;
+          const postMat = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: 1 });
+          const stall = new THREE.Group();
+          [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]].forEach(([px, pz]) => {
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, postH, 7), postMat);
+            post.position.set(px, postH / 2, pz);
+            post.castShadow = true;
+            stall.add(post);
+          });
+          const canopy = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.72, 1.6, 4), new THREE.MeshStandardMaterial({ color: 0xcf6a4a, roughness: 1 }));
+          canopy.position.y = postH + 0.7;
+          canopy.rotation.y = Math.PI / 4;
+          canopy.castShadow = true;
+          stall.add(canopy);
+          const table = new THREE.Mesh(new THREE.BoxGeometry(w * 0.7, 0.9, d * 0.6), new THREE.MeshStandardMaterial({ color: 0xe6d6a4, roughness: 1 }));
+          table.position.y = 0.45;
+          table.castShadow = true; table.receiveShadow = true;
+          stall.add(table);
+          stall.position.set(x, y, z);
+          stall.rotation.y = -0.5;
+          scene.add(stall);
+        }
+      }
+
       this._frame = 0;
       this.bindInput();
       this.ro = new ResizeObserver(() => this.resize());
       this.ro.observe(this);
       this.resize();
       this.loop();
-      // the road: a sandy ribbon laid on the ground along the waypoints
+      // the road: a sandy ribbon laid on the ground along the waypoints. Each slice samples
+      // several points across the width, not just the two edges — on a slope the terrain
+      // between two edge samples can bulge up above the straight line joining them, which is
+      // what pokes the mountain through a wide, coarsely-sliced ribbon.
       {
         const pts = [];
         ROAD.forEach(([x, z], i) => {
           const [nx, nz] = ROAD[(i + 1) % ROAD.length], steps = Math.ceil(Math.hypot(nx - x, nz - z) / 3);
           for (let k = 0; k < steps; k++) pts.push([x + (nx - x) * k / steps, z + (nz - z) * k / steps]);
         });
-        const verts = [], index = [], n = pts.length;
-        pts.forEach(([x, z], i) => {
+        const n = pts.length, SPAN = 5;      // cross-section samples per slice, edge to edge
+        const verts = [], index = [];
+        const rings = pts.map(([x, z], i) => {
           const [ax, az] = pts[(i + n - 1) % n], [bx, bz] = pts[(i + 1) % n];
-          const len = Math.hypot(bx - ax, bz - az), px = -(bz - az) / len * 1.8, pz = (bx - ax) / len * 1.8;
-          for (const side of [-1, 1]) { const vx = x + px * side, vz = z + pz * side; verts.push(vx, height(vx, vz) + 0.35, vz); }
-          const a = i * 2, b = (i + 1) % n * 2;
-          index.push(a, a + 1, b, b, a + 1, b + 1);
+          const len = Math.hypot(bx - ax, bz - az) || 1, px = -(bz - az) / len, pz = (bx - ax) / len;
+          const ring = [];
+          for (let s = 0; s < SPAN; s++) {
+            const t = (s / (SPAN - 1) * 2 - 1) * ROAD_HALF_W;
+            const vx = x + px * t, vz = z + pz * t;
+            ring.push([vx, height(vx, vz) + 0.4, vz]);
+          }
+          return ring;
         });
+        rings.forEach(ring => ring.forEach(([vx, vy, vz]) => verts.push(vx, vy, vz)));
+        for (let i = 0; i < n; i++) {
+          const ni = (i + 1) % n;
+          for (let s = 0; s < SPAN - 1; s++) {
+            const a = i * SPAN + s, b = a + 1, c = ni * SPAN + s, d = c + 1;
+            index.push(a, b, c, b, d, c);
+          }
+        }
         const roadGeo = new THREE.BufferGeometry();
         roadGeo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
         roadGeo.setIndex(index);
@@ -659,7 +834,7 @@
         const dest = atMarket ? MARKET : b.job;
         if (dest !== b.dest) {
           b.dest = dest;
-          b.path = route(b.x, b.z, ...spot(b.id, dest), (rand(b.id, 3) - 0.5) * 5, (rand(b.id, 4) - 0.5) * 5);
+          b.path = route(b.x, b.z, ...spot(b.id, dest), laneFor(b.id));
         }
         let left = this.speed * dt;
         while (b.path.length && left > 0) {
@@ -704,7 +879,7 @@
       const now = performance.now();
       this.walk(Math.min(0.1, (now - (this._last || now)) / 1000), now);
       this._last = now;
-      if (this.dotMat) this.dotMat.size = Math.max(8, 1300 / Math.max(60, o.r));
+      if (this.dotMat) this.dotMat.size = Math.max(4.5, 750 / Math.max(60, o.r));
 
       // Area labels follow their spot on the island, hidden behind the camera, off-screen,
       // or behind the mountain along the view ray, and decluttered when two overlap.
