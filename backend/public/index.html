@@ -172,7 +172,7 @@ const txUrl = sig => last.chain.explorer.replace(/\/address\/[^?]+/, '/tx/' + si
 
 // Every transaction the village has just made, newest first, with what it did and a link
 // to it on the explorer. A trade in the village and a signature on the chain, side by side.
-const txColour = { auction: '#0b6', borrow: '#c77700', repay: '#1a7f37', liquidate: '#b00', purses: '#06c', settle: '#666' };
+const txColour = { auction: '#0b6', borrow: '#c77700', repay: '#1a7f37', collect: '#b00', purses: '#06c', settle: '#666' };
 function txFeed() {
   const rounds = (last.events ?? []).filter(e => e.type === 'round' && e.sigs?.length);
   const rows = rounds.slice(0, 6).flatMap(e => e.sigs.map(t => {

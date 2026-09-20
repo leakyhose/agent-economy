@@ -124,7 +124,7 @@ const MARKUP = `
 
 // Every transaction the village has just made, newest first, with what it did and a link
 // to it on the explorer. A trade in the village and a signature on the chain, side by side.
-const txColour = { auction: C.green, borrow: C.amber, repay: C.green, liquidate: C.red, purses: C.blue, settle: C.ink };
+const txColour = { auction: C.green, borrow: C.amber, repay: C.green, collect: C.red, purses: C.blue, settle: C.ink };
 function txFeed() {
   // The round log is the usual source. With many agents the server's event buffer fills with
   // per-agent events before a round is read back, so fall back to the last round's own list.

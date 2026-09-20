@@ -399,7 +399,7 @@ export default class IslandApp extends React.Component {
     const signatures = chainTxs.map(t => t.sig);
     for (const entry of snapshot.bankFeed || []) if (entry.sig && !signatures.includes(entry.sig)) signatures.push(entry.sig);
     const txUrl = signature => (snapshot.chain?.explorer || "").replace(/\/address\/[^?]+/, "/tx/" + signature);
-    const CHAIN_KIND = { borrow: "mint_loan", repay: "burn_repay", liquidate: "burn_repay", purses: "transfer_goods", settle: "transfer_goods", auction: "settle_auction" };
+    const CHAIN_KIND = { borrow: "mint_loan", repay: "burn_repay", collect: "burn_repay", purses: "transfer_goods", settle: "transfer_goods", auction: "settle_auction" };
     const feed = signatures.slice(0, FEED_ROWS).map(signature => {
       const entry = bankBySig.get(signature);
       const tx = chainBySig.get(signature);
