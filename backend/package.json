@@ -5,10 +5,10 @@
   "scripts": {
     "start": "node src/server.mjs",
     "stub": "BRAIN=stub node src/server.mjs",
-    "claude": "BRAIN=claude node src/server.mjs"
+    "baseten": "BRAIN=baseten node src/server.mjs",
+    "check-brain": "node scripts/check-brain.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "latest",
     "@solana/web3.js": "^1.99.0",
     "openai": "^7.19.0"
   }
