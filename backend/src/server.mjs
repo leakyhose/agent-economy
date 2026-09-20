@@ -74,6 +74,11 @@ async function start() {
       penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA), marginBps: bps(B.MARGIN),
       termUnitSlots: 1, maxTermUnits: 65_535, equityFloor: Math.round(B.EQUITY_FLOOR * money),
     });
+  // Every agent gets a purse: an SPL token account of their own, so the coins they earn
+  // and spend are real SETTLERS moving between real addresses, not a number in our ledger.
+  await chain.initPurses(CFG.AGENTS);
+  await chain.settleCash(Array.from({ length: CFG.AGENTS }, (_, i) => i));
+
   const W = createWorld(chain, await chain.fetch(), { onEvent: e => sim && broadcast(e) });
 
   // every run is saved: runs/<timestamp>/events.jsonl + meta.json (+ final.json on stop)
@@ -274,8 +279,17 @@ if (CFG.RUN_SECONDS) {
   ];
   const settlers = await chain.settlersSupply();
   inv.push(['SETTLERS supply = Σ cash + bank cash', settlers === cash + L.bank.cash]);
+  // What the agents' own purses actually hold. settle_cash proves this inside the program
+  // on every pass; reading it back here is the same claim made from outside.
+  const held = [];
+  for (let i = 0; i < L.slots.length && i < CFG.AGENTS; i++) held.push(await chain.purseBalance(i));
+  const purseTotal = held.reduce((t, x) => t + x, 0);
+  inv.push(['every agent purse = that agent\'s cash',
+    held.every((x, i) => x === L.slots[i].cash)]);
   console.log(`\ninvariants: ${inv.map(([k, v]) => `${k} ${ok(v)}`).join('; ')}`);
   console.log(`SETTLERS ${chain.mint.toBase58()}: ${coins(settlers)} in existence, all of it minted by the bank's rules`);
+  console.log(`purses: ${coins(purseTotal)} held by ${CFG.AGENTS} agents in token accounts of their own, ` +
+    `${coins(settlers - purseTotal)} in the bank's vault`);
   console.log(`bank: equity ${coins(L.equity)} (seed ${coins(b.bankSeed)}), lending cap ${coins(L.lendingCap)}, interest ${coins(b.interestIncome)}, ` +
     `penalties ${coins(b.penalties)}, recovered ${coins(b.recovered)}, refunds ${coins(b.refunds)}, written off ${coins(b.writtenOff)}, bad debt ${coins(b.badDebt)}; ` +
     `${W.autoRepaid} collected at the deadline, ${W.overdue} foreclosed overdue`);

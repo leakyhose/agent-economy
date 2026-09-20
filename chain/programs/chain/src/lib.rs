@@ -66,9 +66,13 @@ pub const SETTLERS_DECIMALS: u8 = 2;
 const MINT_LEN: usize = 82;                  // an SPL mint account
 const TOKEN_ACCOUNT_LEN: usize = 165;        // an SPL token account
 const MINT_SUPPLY_OFFSET: usize = 36;        // mint_authority COption<Pubkey> is 4 + 32 bytes
+const TOKEN_AMOUNT_OFFSET: usize = 64;       // an SPL token account is mint 0..32, owner 32..64, amount 64..72
 /// PDA seeds. The mint is its own authority and the vault's owner.
 pub const MINT_SEED: &[u8] = b"settlers";
 pub const VAULT_SEED: &[u8] = b"vault";
+/// One purse per agent: an SPL token account at `["purse", ledger, agent]` that, like the
+/// mint, is its own owner — so no key that could spend an agent's coins exists anywhere.
+pub const PURSE_SEED: &[u8] = b"purse";
 
 pub const MAX_AGENTS: usize = 137;        // 8 + 360 + 137×72 = 10,232 bytes: under the 10 KiB CPI-create limit
 pub const N_GOODS: usize = 5;
@@ -434,6 +438,127 @@ pub mod chain {
     /// Apply what happened in the world since the last round: catches, wood cut,
     /// meals eaten, nets, boats and houses built, things worn out. Signed deltas;
     /// nothing may go negative.
+    /// Give a batch of agents a purse: an SPL token account of their own, at
+    /// `["purse", ledger, agent]`, owning itself. Call it once per ledger, in chunks,
+    /// after `initialize`. Re-running it over a purse that already exists is a no-op,
+    /// so a partly-finished pass can simply be run again.
+    ///
+    /// The purses come in as remaining accounts, one per entry in `agents`, in order.
+    /// `bumps` are checked, not trusted: a wrong bump derives a different address and
+    /// fails against the account that was actually passed.
+    pub fn init_purses<'i>(ctx: Context<'i, InitPurses<'i>>, agents: Vec<u16>, bumps: Vec<u8>) -> Result<()> {
+        require!(agents.len() == bumps.len(), EconErr::BadAmount);
+        require!(agents.len() == ctx.remaining_accounts.len(), EconErr::BadAmount);
+        require_keys_eq!(*ctx.accounts.token_program.key, TOKEN_PROGRAM_ID, EconErr::BadMint);
+        let ledger_key = ctx.accounts.ledger.key();
+        let num_agents = ctx.accounts.load_checked()?.num_agents;
+        let rent = Rent::get()?;
+        for (i, (&agent, &bump)) in agents.iter().zip(bumps.iter()).enumerate() {
+            require!((agent as u32) < num_agents, EconErr::BadAgent);
+            let purse = &ctx.remaining_accounts[i];
+            check_purse(purse.key, &ledger_key, agent, bump)?;
+            if !purse.data_is_empty() {
+                continue;                       // already has a purse
+            }
+            let index = agent.to_le_bytes();
+            let seeds: &[&[u8]] = &[PURSE_SEED, ledger_key.as_ref(), &index, &[bump]];
+            invoke_signed(
+                &system_instruction::create_account(
+                    ctx.accounts.authority.key, purse.key,
+                    rent.minimum_balance(TOKEN_ACCOUNT_LEN), TOKEN_ACCOUNT_LEN as u64,
+                    &TOKEN_PROGRAM_ID),
+                &[ctx.accounts.authority.to_account_info(), purse.clone(),
+                  ctx.accounts.system_program.to_account_info()],
+                &[seeds],
+            )?;
+            // InitializeAccount3: the purse owns itself, so only the program can spend it
+            invoke_signed(
+                &token_ix(18, purse.key.as_ref(), vec![
+                    AccountMeta::new(*purse.key, false),
+                    AccountMeta::new_readonly(*ctx.accounts.mint.key, false),
+                ]),
+                &[purse.clone(), ctx.accounts.mint.to_account_info(),
+                  ctx.accounts.token_program.to_account_info()],
+                &[seeds],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Move real SETTLERS between agents until every purse holds what the ledger says
+    /// that agent has.
+    ///
+    /// `settle_money` reconciles the *total* — how many coins exist. This reconciles the
+    /// *distribution* — who holds them — and in the same spirit: the client says only
+    /// which agents to look at, and the program derives every transfer from the gap
+    /// between a purse's balance and its slot's `cash`. Nothing about a transfer is
+    /// taken on the caller's word.
+    ///
+    /// Agents who owe coins are paired against agents who are owed them, so an auction
+    /// settles as direct transfers between the villagers who traded. A chunk that
+    /// doesn't net to zero settles the remainder against the vault, which is what lets
+    /// the caller chunk purely by size and never produce a wrong state.
+    ///
+    /// It ends by proving itself: every purse it touched must equal its slot's cash.
+    pub fn settle_cash<'i>(ctx: Context<'i, SettleCash<'i>>, agents: Vec<u16>, bumps: Vec<u8>) -> Result<()> {
+        require!(agents.len() == bumps.len(), EconErr::BadAmount);
+        require!(agents.len() == ctx.remaining_accounts.len(), EconErr::BadAmount);
+        require_keys_eq!(*ctx.accounts.token_program.key, TOKEN_PROGRAM_ID, EconErr::BadMint);
+        let ledger_key = ctx.accounts.ledger.key();
+
+        // What each purse holds now, and what it should hold. Read in its own scope:
+        // no account data may stay borrowed across a CPI.
+        let mut want: Vec<u64> = Vec::with_capacity(agents.len());
+        let mut owed: Vec<i128> = Vec::with_capacity(agents.len());
+        {
+            let l = ctx.accounts.load_checked()?;
+            for (i, (&agent, &bump)) in agents.iter().zip(bumps.iter()).enumerate() {
+                require!((agent as u32) < l.num_agents, EconErr::BadAgent);
+                let purse = &ctx.remaining_accounts[i];
+                check_purse(purse.key, &ledger_key, agent, bump)?;
+                let cash = l.slots[agent as usize].cash;
+                want.push(cash);
+                owed.push(cash as i128 - token_amount(purse)? as i128);
+            }
+        }
+
+        // Pair those holding too much against those holding too little, so the coins
+        // move between the agents themselves rather than through the bank.
+        let (mut payer, mut receiver) = (0usize, 0usize);
+        while payer < agents.len() && receiver < agents.len() {
+            if owed[payer] >= 0 { payer += 1; continue; }
+            if owed[receiver] <= 0 { receiver += 1; continue; }
+            let amount = (-owed[payer]).min(owed[receiver]) as u64;
+            transfer_coins(
+                &ctx.remaining_accounts[payer], &ctx.remaining_accounts[receiver],
+                &ctx.accounts.token_program, &ledger_key, agents[payer], bumps[payer], amount,
+            )?;
+            owed[payer] += amount as i128;
+            owed[receiver] -= amount as i128;
+        }
+
+        // Whatever a chunk can't match among itself settles against the vault.
+        let vault = ctx.accounts.vault.to_account_info();
+        for (i, &agent) in agents.iter().enumerate() {
+            if owed[i] < 0 {
+                transfer_coins(
+                    &ctx.remaining_accounts[i], &vault, &ctx.accounts.token_program,
+                    &ledger_key, agent, bumps[i], (-owed[i]) as u64,
+                )?;
+            } else if owed[i] > 0 {
+                transfer_from_vault(
+                    &vault, &ctx.remaining_accounts[i], &ctx.accounts.mint,
+                    &ctx.accounts.token_program, &ledger_key, ctx.bumps.mint, owed[i] as u64,
+                )?;
+            }
+        }
+
+        for (i, &cash) in want.iter().enumerate() {
+            require_eq!(token_amount(&ctx.remaining_accounts[i])?, cash, EconErr::CashMismatch);
+        }
+        Ok(())
+    }
+
     pub fn settle(ctx: Context<Write>, deltas: Vec<Delta>) -> Result<()> {
         let mut l = ctx.accounts.load_checked()?;
         let n = l.num_agents;
@@ -785,6 +910,73 @@ fn create_coin<'i>(
     Ok(())
 }
 
+// ---------------------------------------------------------------- purses
+
+/// An agent's purse address, derived from the bump the caller supplied. A wrong bump
+/// derives a different address, which then fails against the account actually passed —
+/// so the caller cannot name an account the program didn't choose.
+fn check_purse(purse: &Pubkey, ledger_key: &Pubkey, agent: u16, bump: u8) -> Result<()> {
+    let index = agent.to_le_bytes();
+    let want = Pubkey::create_program_address(
+        &[PURSE_SEED, ledger_key.as_ref(), &index, &[bump]], &crate::ID,
+    ).map_err(|_| error!(EconErr::BadPurse))?;
+    require_keys_eq!(*purse, want, EconErr::BadPurse);
+    Ok(())
+}
+
+/// What a token account holds. Read in its own scope — never across a CPI.
+fn token_amount(account: &AccountInfo) -> Result<u64> {
+    let data = account.try_borrow_data()?;
+    require!(data.len() >= TOKEN_ACCOUNT_LEN, EconErr::BadPurse);
+    let bytes: [u8; 8] = data[TOKEN_AMOUNT_OFFSET..TOKEN_AMOUNT_OFFSET + 8]
+        .try_into()
+        .map_err(|_| error!(EconErr::BadPurse))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// Transfer: source (w), destination (w), authority (s). A purse owns itself, so the
+/// program signs for it with the purse's own seeds.
+fn transfer_coins<'i>(
+    from: &AccountInfo<'i>, to: &AccountInfo<'i>, token_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey, agent: u16, bump: u8, amount: u64,
+) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let index = agent.to_le_bytes();
+    invoke_signed(
+        &token_ix(3, &amount.to_le_bytes(), vec![
+            AccountMeta::new(*from.key, false),
+            AccountMeta::new(*to.key, false),
+            AccountMeta::new_readonly(*from.key, true),
+        ]),
+        &[from.clone(), to.clone(), token_program.clone()],
+        &[&[PURSE_SEED, ledger_key.as_ref(), &index, &[bump]]],
+    )?;
+    Ok(())
+}
+
+/// The vault pays out what a chunk couldn't match among its own agents. The vault is
+/// owned by the mint PDA, so the mint signs.
+fn transfer_from_vault<'i>(
+    vault: &AccountInfo<'i>, to: &AccountInfo<'i>, mint: &AccountInfo<'i>,
+    token_program: &AccountInfo<'i>, ledger_key: &Pubkey, bump: u8, amount: u64,
+) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    invoke_signed(
+        &token_ix(3, &amount.to_le_bytes(), vec![
+            AccountMeta::new(*vault.key, false),
+            AccountMeta::new(*to.key, false),
+            AccountMeta::new_readonly(*mint.key, true),
+        ]),
+        &[vault.clone(), to.clone(), mint.clone(), token_program.clone()],
+        &[&[MINT_SEED, ledger_key.as_ref(), &[bump]]],
+    )?;
+    Ok(())
+}
+
 /// The bump for this ledger's mint, found the long way. Used only on the rare auction
 /// that carries the mint, where Anchor has no bump for an optional account.
 fn mint_bump_for(ledger_key: &Pubkey) -> u8 {
@@ -977,6 +1169,39 @@ pub struct AnyoneMint<'info> {
     pub token_program: UncheckedAccount<'info>,
 }
 
+/// Creating agents' purses: the authority pays their rent, so it signs.
+/// The purses themselves come in as remaining accounts, one per agent in the batch.
+#[derive(Accounts)]
+pub struct InitPurses<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// CHECK: the SETTLERS mint, validated by its seeds.
+    #[account(seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID.
+    pub token_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Moving coins between purses. The mint signs for the vault, so it is here even
+/// though nothing is minted or burned. The purses come in as remaining accounts.
+#[derive(Accounts)]
+pub struct SettleCash<'info> {
+    #[account(mut)]
+    pub ledger: AccountLoader<'info, Ledger>,
+    pub authority: Signer<'info>,
+    /// CHECK: the SETTLERS mint, validated by its seeds. Signs for the vault.
+    #[account(seeds = [MINT_SEED, ledger.key().as_ref()], bump)]
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: the vault, validated by its seeds.
+    #[account(mut, seeds = [VAULT_SEED, ledger.key().as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: checked by address against TOKEN_PROGRAM_ID.
+    pub token_program: UncheckedAccount<'info>,
+}
+
 /// Every write to the ledger must be signed by the ledger's authority.
 #[derive(Accounts)]
 pub struct Write<'info> {
@@ -1003,6 +1228,22 @@ impl<'info> Write<'info> {
 }
 
 impl<'info> WriteMint<'info> {
+    fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
+        let l = self.ledger.load_mut()?;
+        require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
+        Ok(l)
+    }
+}
+
+impl<'info> InitPurses<'info> {
+    fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
+        let l = self.ledger.load_mut()?;
+        require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
+        Ok(l)
+    }
+}
+
+impl<'info> SettleCash<'info> {
     fn load_checked(&self) -> Result<std::cell::RefMut<'_, Ledger>> {
         let l = self.ledger.load_mut()?;
         require_keys_eq!(l.authority, self.authority.key(), EconErr::Unauthorized);
@@ -1064,4 +1305,8 @@ pub enum EconErr {
     MintAccountsRequired,
     #[msg("not this ledger's SETTLERS mint")]
     BadMint,
+    #[msg("not this agent's purse for this ledger")]
+    BadPurse,
+    #[msg("a purse no longer holds what the village's books say that agent has")]
+    CashMismatch,
 }

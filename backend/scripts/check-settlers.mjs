@@ -34,6 +34,10 @@ const TERMS = {
   kappaBps: 1000, marginBps: 8000, termUnitSlots: TERM_UNIT_SLOTS, maxTermUnits: 3, equityFloor: 0,
 };
 const BANK_SEED = 900;
+// The suite's own opening prices, not the village's. Every step below is calibrated
+// against these — loan sizes, the auction that drains the borrower, the wood collapse
+// that triggers the margin call — so a change to CFG.START_PRICES must not reach in here.
+const PRICES = [500, 300, 2000, 8000, 7000];   // food, wood, nets, labour, houses
 
 const C = await connectChain();
 
@@ -50,7 +54,7 @@ async function invariant(after) {
 console.log('\nSETTLERS\n');
 
 // ---- 1. the mint itself ------------------------------------------------------------
-await C.initialize(AGENTS, START_CASH, START_FOOD, START_WOOD, CFG.START_PRICES, BANK_SEED, TERMS);
+await C.initialize(AGENTS, START_CASH, START_FOOD, START_WOOD, PRICES, BANK_SEED, TERMS);
 const mintAcct = await C.conn.getAccountInfo(C.mint, 'confirmed');
 eq('mint account size', mintAcct.data.length, 82);
 eq('decimals', mintAcct.data.readUInt8(44), 2);
