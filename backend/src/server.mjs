@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { CFG, GOODS, ROOT, HOUSES } from './config.mjs';
-import { connectChain, explorer, PROGRAM_ID, lockedValue } from './chain.mjs';
+import { connectChain, explorer, PROGRAM_ID, lockedValue, MAX_AGENTS } from './chain.mjs';
 import { createWorld } from './world.mjs';
 import { makeTools } from './tools.mjs';
 import { stubBrain } from './brains/stub.mjs';
@@ -65,8 +65,21 @@ function broadcast(e) {
   if (e.type === 'error') console.error(`  ! ${e.message}`);
 }
 
-async function start(choice) {
+// How many villagers, from the dashboard or from .env. The ledger has room for MAX_AGENTS
+// and the program refuses more, so the dial stops where the chain does. Every villager
+// decides at once, so the concurrency gate rises with the village; it never falls below
+// what .env asked for.
+function setAgents(n) {
+  const want = Math.round(+n);
+  if (!Number.isFinite(want) || want < 1) return CFG.AGENTS;
+  CFG.AGENTS = Math.min(want, MAX_AGENTS);
+  CFG.LLM_CONCURRENCY = Math.max(CFG.LLM_CONCURRENCY, CFG.AGENTS);
+  return CFG.AGENTS;
+}
+
+async function start(choice, agents) {
   if (sim) return 'already running';
+  if (agents != null) setAgents(agents);
   const myGen = ++gen;
   const brain = await makeBrain(BRAINS.includes(choice) ? choice : CFG.BRAIN);
   const chain = await connectChain();
@@ -215,7 +228,8 @@ async function stop() {
 
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
-  if (!sim) return { running: false, brains: BRAINS, config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
+  if (!sim) return { running: false, brains: BRAINS, maxAgents: MAX_AGENTS,
+                     config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
@@ -347,8 +361,11 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/state') return json(res, state());
     if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
     if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
-    // { brain: "baseten" } picks the brain for this run; no body means the one from .env
-    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start((await readBody(req)).brain) });
+    // { brain: "baseten", agents: 30 } sets up the run; no body means what .env says
+    if (pathname === '/start'  && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, { result: await start(body.brain, body.agents) });
+    }
     if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
     if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
     if (pathname === '/resume' && req.method === 'POST') return json(res, { result: resume() });

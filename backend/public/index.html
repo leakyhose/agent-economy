@@ -10,8 +10,9 @@
   .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
   .top button { font-size: 15px; padding: 6px 20px; font-weight: bold; }
   #status { font-size: 14px; }
-  #brainpick select { font: inherit; padding: 3px 4px; }
-  #brainpick[hidden] { display: none; }
+  #brainpick select, #agentpick input { font: inherit; padding: 3px 4px; }
+  #agentpick input { width: 4.5em; }
+  #brainpick[hidden], #agentpick[hidden] { display: none; }
   td.model, th.model { color: #555; font-size: 11px; }
   table.nomodels .model { display: none; }      /* one brain, one model: the column says nothing */
   #models { color: #444; margin: 0 0 10px; line-height: 1.6; font-size: 12px; }
@@ -94,6 +95,7 @@
   <a href="/">← Island view</a>
   <button id="btn" onclick="toggle()">…</button>
   <label id="brainpick" class="muted">brain <select id="brainsel"></select></label>
+  <label id="agentpick" class="muted">villagers <input id="agentsel" type="number" min="1" step="1"></label>
   <button id="dialsbtn" onclick="toggleDials()">dials ⚙</button>
   <span id="status"></span>
 </div>
@@ -646,13 +648,17 @@ function modelFeed(llm) {
 // Pick the brain for the next run: .env's choice is the default, and the picker is only
 // shown between runs — a running village is bound to the brain (and models) it started with.
 function brainPicker(s) {
-  const pick = $('brainsel'), box = $('brainpick');
-  box.hidden = s.running;
+  const pick = $('brainsel'), box = $('brainpick'), n = $('agentsel'), nbox = $('agentpick');
+  box.hidden = nbox.hidden = s.running;
   if (s.running || !s.brains) return;
   if (pick.options.length !== s.brains.length) {
     pick.innerHTML = s.brains.map(b => `<option value="${b}">${b}</option>`).join('');
     pick.value = s.config.brain;
   }
+  // .env's number to begin with, then whatever was typed — refreshing every few seconds
+  // must not snatch the field back while it is being edited.
+  n.max = s.maxAgents ?? 137;
+  if (!n.value && document.activeElement !== n) n.value = s.config.agents;
 }
 
 async function toggle() {
@@ -661,7 +667,7 @@ async function toggle() {
   // the brain is chosen for the run that is starting; a run already going keeps its own
   await fetch(running ? '/stop' : '/start', running ? { method: 'POST' }
     : { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ brain: $('brainsel').value }) });
+        body: JSON.stringify({ brain: $('brainsel').value, agents: +$('agentsel').value || undefined }) });
   btn.disabled = false;
   refresh();
 }

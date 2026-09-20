@@ -18,17 +18,21 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 // Four houses, none of them OpenAI's: the point of this brain is to put other people's
 // models beside gpt-5.6-luna, so an OpenAI model in the pool would only muddy the reading.
 //
-// Everything in this pool costs less than gpt-5.6-luna, the model the OpenAI brain runs, so
-// a village of these is unambiguously the cheaper village. Of the seventeen models Baseten
-// serves, exactly three are (check-brain --list ranks them): these two, at 0.45x and 0.60x
-// luna a decision, and OpenAI's own gpt-oss-120b, which has no business in a pool meant to
-// stand against OpenAI. Everything else is dearer — V4.1 Flash by 1.27x, Inkling Small 1.8x,
-// Kimi K2.6 4.1x, Kimi K3 nearly fourteen. Name one in BASETEN_MODELS if you want it anyway.
+// DeepSeek V4 Flash, and only it. Two things have to be true of a model that thirty
+// villagers think with every round, and exactly one model in Baseten's catalogue is both:
 //
-// A decision is input-heavy — about 1,400 tokens of observation in, 200 out — so the input
-// price is most of what a run pays, and a model dear on input is dear.
+//   cheap   - 0.45x gpt-5.6-luna a decision, the cheapest thing Baseten serves that isn't
+//             OpenAI's own gpt-oss-120b.
+//   willing - Baseten runs it 120 at a time. The cheap alternative, GLM 5.3 Flash, is one
+//             of the handful it runs 15 at a time, and under a village's load it turns
+//             requests away however patiently they are retried: two villagers in seven lost
+//             their decision outright, which the round reads as nobody speaking.
+//
+// check-brain --list ranks the catalogue by price. The limit is the other half of the
+// question and it is in the x-ratelimit-limit-requests header (see liveLimits below).
+// For a village of more than one mind again, both DeepSeek Flashes clear the 120 bar:
+//   BASETEN_MODELS=deepseek-ai/DeepSeek-V4-Flash-0731,deepseek-ai/DeepSeek-V4.1-Flash
 export const DEFAULT_POOL = [
-  'zai-org/GLM-5.3-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
 ];
 
