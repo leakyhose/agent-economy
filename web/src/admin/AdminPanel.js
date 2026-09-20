@@ -5,6 +5,7 @@
 // `dash` namespace rather than globals, and it draws nothing while it is out of view.
 import './admin.css';
 import { subscribe, refresh as refreshState } from '../store.js';
+import { mountSwarm } from './Swarm.js';
 
 const $ = id => document.getElementById(id);
 const GN = ['food', 'wood', 'nets', 'boats', 'houses'];  // good index -> name, same order as the chain
@@ -120,7 +121,12 @@ const MARKUP = `
       <tbody id="rows"></tbody>
     </table></div>
   </details>
-</div>`;
+</div>
+
+<details class="more swarmbox" id="swarmbox">
+  <summary>Agent swarm: every villager as one living graph, and the coins moving between them</summary>
+  <div id="swarm"></div>
+</details>`;
 
 // Every transaction the village has just made, newest first, with what it did and a link
 // to it on the explorer. A trade in the village and a signature on the chain, side by side.
@@ -454,7 +460,7 @@ function agentTable() {
   $('allbtn').textContent = showAll ? 'top 10 only' : `show all ${ag.length}`;
   rows.innerHTML = shown.map(a => {
     const open = openAgents.has(a.id);
-    return `<tr class="agent ${open ? 'open' : ''}" onclick="dash.toggleAgent(${a.id})"><td class="tw">${open ? '▾' : '▸'}</td><td>${esc(a.name)}</td>` +
+    return `<tr id="agent-row-${a.id}" class="agent ${open ? 'open' : ''}" onclick="dash.toggleAgent(${a.id})"><td class="tw">${open ? '▾' : '▸'}</td><td>${esc(a.name)}</td>` +
     `<td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
     `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
     `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/${a.buildShifts ?? 0}` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
@@ -463,8 +469,11 @@ function agentTable() {
     `<td class="n">${a.wellbeing.toFixed(1)}</td><td class="n">${a.wealth.toFixed(2)}</td>` +
     `<td class="n">${a.debt ? a.debt.toFixed(2) : ''}</td>` +
     `<td class="n ${a.dueIn !== null && a.dueIn <= 1 ? 'hungry' : ''}">${a.dueIn === null ? '' : a.dueIn + ' r'}</td>` +
-    `<td class="t">${a.orders.join('<br>')}</td>` +
-    `<td class="t">${esc(a.thought ?? '')}</td></tr>` +
+    // One line each, cut with an ellipsis: these two change every round, and letting them
+    // wrap made every row a different height from one poll to the next, which shoved the
+    // whole page below the table up and down. The full text is a hover away, and in the log.
+    `<td class="t one" title="${esc(a.orders.join('\n'))}">${esc(a.orders.join(' · '))}</td>` +
+    `<td class="t one" title="${esc(a.thought ?? '')}">${esc(a.thought ?? '')}</td></tr>` +
     (open ? `<tr class="agentlog"><td></td><td colspan="${AGENT_COLS - 1}"><div class="alog" id="alog-${a.id}" onscroll="dash.logScrolled(${a.id}, this)">${agentLogHtml(a.id)}</div></td></tr>` : '');
   }).join('');
   // the table is rebuilt every poll: put each open log back where the reader had scrolled it
@@ -483,6 +492,14 @@ function toggleAgent(id) {
   if (openAgents.has(id)) { openAgents.delete(id); logScroll.delete(id); }
   else { openAgents.add(id); logsAt = 0; }
   agentTable();
+}
+/** From the swarm: open this villager's log, wherever in the table they are, and go to it. */
+function openAgent(id) {
+  $('more').open = true;
+  showAll = true;                       // they may not be in the top ten
+  openAgents.add(id); logsAt = 0;
+  details();
+  requestAnimationFrame(() => $('agent-row-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 async function refreshOpenLogs() {
   if (!openAgents.size || Date.now() - logsAt < 2500) return;
@@ -712,6 +729,7 @@ function render(s, error) {
 }
 
 /** Mount the panel into `el`. Called once; the panel then lives for the life of the page. */
+let swarm = null;
 export function mountAdmin(el) {
   root = el;
   el.innerHTML = MARKUP;
@@ -726,11 +744,15 @@ export function mountAdmin(el) {
                   toggleAgent, logScrolled: (id, el) => logScroll.set(id, el.scrollTop) };
   subscribe(render);
   loadDials();
+  // the swarm simulates and draws only while its section is open and the panel is on screen
+  swarm = mountSwarm($('swarm'), { onPick: openAgent });
+  $('swarmbox').addEventListener('toggle', () => swarm.setActive(visible && $('swarmbox').open));
 }
 
 /** The shell tells us whether we are on screen; hidden, we draw nothing. */
 export function setAdminVisible(on) {
   const was = visible;
   visible = on;
+  swarm?.setActive(on && $('swarmbox').open);
   if (on && !was && last) render(last);
 }

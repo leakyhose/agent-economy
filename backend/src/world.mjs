@@ -879,7 +879,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
           const name = i2 => i2 === 'the bank' ? 'the bank' : (agents[i2]?.name ?? `agent ${i2}`);
           tx(moves.length ? `coins move · ${moves.length} payment${moves.length > 1 ? 's' : ''}`
                           : `purses · ${paid.length} settled`, sig,
-             { kind: 'purses', moves: moves.map(m => ({ from: name(m.from), to: name(m.to), amount: m.amount })) });
+             { kind: 'purses', moves: moves.map(m => ({ from: name(m.from), to: name(m.to), amount: m.amount,
+               // ids too, for the dashboard's swarm graph: an agent's index, or -1 for the bank
+               fromId: typeof m.from === 'number' ? m.from : -1, toId: typeof m.to === 'number' ? m.to : -1 })) });
         });
         unsettledPurses.clear();
         purseCash = L.slots.map(s => s.cash);

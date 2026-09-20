@@ -42,6 +42,7 @@ body.view-admin #admin-root #headline {
 #admin-root td, #admin-root th { padding: 2px 8px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
 #admin-root td.n, #admin-root th.n { text-align: right; }
 #admin-root td.t { white-space: normal; color: #555; }
+#admin-root td.t.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
 #admin-root .hungry { color: #b00; }
 #admin-root .muted { color: #666; }
 #admin-root .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; }
@@ -144,3 +145,19 @@ body.view-admin #admin-root #headline {
 #admin-root .alog .act .res { color: #666; white-space: pre-wrap; margin-left: 12px; }
 #admin-root .alog .told { color: #555; margin-left: 10px; }
 #admin-root .alog .told::before { content: "· "; color: #aaa; }
+
+/* ---- the agent swarm: a plain white stage at the foot of the page ---- */
+#admin-root details.swarmbox { padding-bottom: 10px; }
+#admin-root .swarm-stage { position: relative; height: min(82vh, 900px); min-height: 480px; margin-top: 8px; background: #fff; border: 1px solid #ddd; overflow: hidden; font-family: Nunito, system-ui, sans-serif; color: #33373b; user-select: none; }
+#admin-root .swarm-stage:fullscreen { height: 100vh; border: 0; }
+#admin-root .swarm-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+#admin-root .swarm-legend { position: absolute; left: 14px; bottom: 10px; right: 14px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 11px; font-weight: 700; color: #555; pointer-events: none; }
+#admin-root .swarm-legend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+#admin-root .swarm-legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+#admin-root .swarm-legend .swarm-key { margin-left: auto; color: #888; font-weight: 600; }
+#admin-root .swarm-full { all: unset; position: absolute; right: 12px; top: 10px; cursor: pointer; color: #33373b; border: 1px solid #bbb; border-radius: 4px; padding: 2px 10px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; background: #fff; }
+#admin-root .swarm-empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; font-weight: 700; color: #999; pointer-events: none; }
+#admin-root .swarm-tip { position: absolute; z-index: 2; max-width: 300px; padding: 8px 10px; border-radius: 5px; background: #fff; border: 1px solid #ccc; box-shadow: 0 4px 14px rgba(0,0,0,.12); font-size: 11.5px; line-height: 1.4; color: #444; pointer-events: none; }
+#admin-root .swarm-tip b { color: #111; font-size: 12.5px; }
+#admin-root .swarm-tip .swarm-said { margin-top: 5px; padding-top: 5px; border-top: 1px solid #eee; color: #222; font-weight: 600; }
+#admin-root .swarm-tip .swarm-hint { margin-top: 5px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #999; }
