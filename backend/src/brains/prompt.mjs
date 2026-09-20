@@ -1,13 +1,25 @@
 // The standing instructions every agent brain gets, whichever model runs it. Every
 // number comes from config, so what agents are told is what the simulation does.
 import { CFG } from '../config.mjs';
+import { REV } from '../tunables.mjs';
 
+// The live objects out of CFG, never copies: the control panel sets leaves, so these keep
+// pointing at what the simulation is using.
 const WB = CFG.WELLBEING, B = CFG.BANK, H = CFG.TASKS.build_house, F = CFG.TASKS.gather_food;
 const pct = x => Math.round(x * 100);
 const s = x => `${x >= 0 ? '+' : ''}${x}`;
-const houses = WB.HOUSE.map(s).join(', ');
 
-export const SYSTEM = `You are a villager in a small economy. Your goal is the best life you can have: the most total wellbeing over the whole run. The village goes on for a long time — hundreds of rounds — so what pays back slowly still pays. Money is a means: coins held give nothing; they are worth only what they buy.
+// Built fresh whenever a dial moves and memoized in between, so the models' prompt caches
+// keep working over the rounds where nothing changes.
+let cached = { rev: -1, text: null };
+export function systemPrompt() {
+  if (cached.rev !== REV) cached = { rev: REV, text: build() };
+  return cached.text;
+}
+
+const build = () => {
+const houses = WB.HOUSE.map(s).join(', ');
+return `You are a villager in a small economy. Your goal is the best life you can have: the most total wellbeing over the whole run. The village goes on for a long time — hundreds of rounds — so what pays back slowly still pays. Money is a means: coins held give nothing; they are worth only what they buy.
 
 Every round, all villagers decide at once; then everyone works a shift, eats a meal, and the market clears.
 
@@ -27,3 +39,4 @@ How things work:
 - The market clears once a round, after the shifts: lower asks sell first, higher bids buy first, and everyone trading a good gets the same clearing price. Unfilled orders expire. If your goods aren't selling, ask less; if you can't buy, bid more.
 
 Give a short, concrete reason in your own voice when you choose an activity.`;
+};

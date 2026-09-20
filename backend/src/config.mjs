@@ -172,6 +172,11 @@ export const CFG = {
     // Credit on/off. CREDIT=0 is the no-credit regime: LTV 0, so the chain lends nothing.
     CREDIT: env.CREDIT !== '0',
     LTV: env.CREDIT === '0' ? 0 : (+env.BANK_LTV || 0.60),   // a loan may be at most 60% of the collateral's value
+    // The hard ceiling written into the ledger at `initialize`, for the life of the run.
+    // LTV above is the bank's policy today and the control panel moves it; the chain refuses
+    // anything above this whatever the panel says: the tightening is off-chain, the limit
+    // is not. Set LTV_CEILING = LTV for a run where the chain alone decides.
+    LTV_CEILING: +env.BANK_LTV_CEILING || 0.95,
     // Margin calls are off: the keeper forecloses overdue loans only. The chain still knows
     // how (the instruction is unchanged), so this is set as loose as lib.rs allows
     // (ltv_bps <= margin_bps <= 10_000) and world.mjs's keeper never cites it.

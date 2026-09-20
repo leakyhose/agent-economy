@@ -1,7 +1,7 @@
 // OpenAI brain. Same tools, same prompt, same interface as the Claude brain.
 import OpenAI from 'openai';
 import { CFG } from '../config.mjs';
-import { SYSTEM } from './prompt.mjs';
+import { systemPrompt } from './prompt.mjs';
 
 // $ per 1M tokens [input, output], standard tier, checked 2026-09-19
 const PRICE = {
@@ -33,7 +33,7 @@ export function openaiBrain() {
       const tools = t.defs.map(d => ({
         type: 'function', function: { name: d.name, description: d.description, parameters: d.input_schema },
       }));
-      const messages = [{ role: 'system', content: SYSTEM }, { role: 'user', content: t.observe() }];
+      const messages = [{ role: 'system', content: systemPrompt() }, { role: 'user', content: t.observe() }];
 
       for (let turn = 0; turn < 3; turn++) {
         let r;

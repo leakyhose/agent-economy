@@ -4,7 +4,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { CFG } from '../config.mjs';
 
-import { SYSTEM } from './prompt.mjs';
+import { systemPrompt } from './prompt.mjs';
 
 function semaphore(n) {
   let active = 0; const q = [];
@@ -33,7 +33,7 @@ export function claudeBrain() {
           r = await limit(() => client.messages.create({
             model: CFG.MODEL,
             max_tokens: 400,
-            system: SYSTEM,
+            system: systemPrompt(),
             tools: t.defs,
             cache_control: { type: 'ephemeral' },
             messages,

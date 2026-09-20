@@ -10,6 +10,7 @@ import { connectChain, explorer, PROGRAM_ID, lockedValue } from './chain.mjs';
 import { createWorld } from './world.mjs';
 import { makeTools } from './tools.mjs';
 import { stubBrain } from './brains/stub.mjs';
+import { snapshot as tunableSnapshot, apply as applyTunables, preset as presetChanges } from './tunables.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const coins = c => (c / 100).toFixed(2);
@@ -68,7 +69,11 @@ async function start() {
   const minute = Math.round(60_000 / CFG.SLOT_MS);
   await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, CFG.START_PRICES,
     Math.round(B.SEED * money), {
-      ltvBps: B.CREDIT ? bps(B.LTV) : 0, rateBps: bps(B.RATE_PER_MIN), ratePeriodSlots: minute,
+      // The ledger's LTV is the run's hard ceiling, enforced by the program and unchangeable
+      // once the ledger exists. The bank's policy today (CFG.BANK.LTV, which the control
+      // panel moves) is applied inside it by world.mjs — so the panel can tighten credit
+      // mid-run and can never loosen it past what the chain agreed to.
+      ltvBps: B.CREDIT ? bps(Math.max(B.LTV, B.LTV_CEILING)) : 0, rateBps: bps(B.RATE_PER_MIN), ratePeriodSlots: minute,
       // marginBps 10000 is the loosest lib.rs allows (ltv_bps <= margin_bps <= 10000); the
       // keeper never cites a margin call anyway, so the chain's margin path is dead.
       penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA), marginBps: bps(B.MARGIN),
@@ -151,6 +156,7 @@ async function stop() {
   const L = await s.chain.fetch();
   fs.writeFileSync(path.join(s.dir, 'final.json'), JSON.stringify({
     stoppedAt: new Date().toISOString(), rounds: s.W.round, transactions: s.chain.txCount(),
+    policy: s.W.policyLog,          // every dial pulled, and the round it landed on
     llm: s.brain.stats(), chain: L,
     mint: s.chain.mint.toBase58(), settlersSupply: await s.chain.settlersSupply(),
   }, null, 2));
@@ -162,7 +168,7 @@ async function stop() {
 
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
-  if (!sim) return { running: false, config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL } };
+  if (!sim) return { running: false, config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
@@ -175,7 +181,8 @@ function state() {
     volumes: Object.fromEntries(GOODS.map((g, i) => [g, W.volumes[i]])),
     bank: { supply: W.bank.supply / 100, startSupply: CFG.AGENTS * CFG.START_CASH / 100,
             debt: W.bank.debtTotalNow / 100, badDebt: W.bank.badDebt / 100, goods: W.bank.goods,
-            creditOn: W.bank.terms.ltvBps > 0, ratePerMin: W.ratePerMin(), ratePerRound: W.ratePerRound(), terms: W.termRounds(), autoRepaid: W.autoRepaid,
+            creditOn: W.ltvBps() > 0, ltv: W.ltvBps() / 10_000, ltvCeiling: W.bank.terms.ltvBps / 10_000,
+            ratePerMin: W.ratePerMin(), ratePerRound: W.ratePerRound(), terms: W.termRounds(), autoRepaid: W.autoRepaid,
             equity: W.bank.equity / 100, lendingCap: W.bank.lendingCap / 100, capitalRequired: W.bank.capitalRequired / 100,
             books: Object.fromEntries(Object.entries(W.bank.books).map(([k, v]) => [k, v / 100])),
             overdue: W.overdue,
@@ -201,6 +208,9 @@ function state() {
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
     })),
+    // every dial pulled this run, with the round it landed on: the charts mark those rounds,
+    // so a kink in a price line can be read straight off against the lever that caused it
+    policy: W.policyLog.map(p => ({ round: p.round, changes: p.changes.map(c => ({ label: c.label, group: c.group, fromShown: c.fromShown, toShown: c.toShown })) })),
     events: W.events.filter(e => e.type === 'round' || e.type === 'error').slice(-15).reverse(),
     foreclosures: W.bankLog.filter(f => f.kind === 'foreclosed').slice(-8).reverse(),
     metrics: (h => h ? { ...h, gdp: h.gdp / 100, realGdp: (h.realGdp ?? 0) / 100, slack: h.slack / 100, credit: h.credit / 100, money: h.money / 100 } : null)(W.priceHistory.at(-1)),
@@ -235,9 +245,34 @@ const json = (res, body, code = 200) => {
   res.end(JSON.stringify(body));
 };
 
+const readBody = req => new Promise((resolve, reject) => {
+  let s = '';
+  req.on('data', c => { s += c; if (s.length > 1e6) req.destroy(); });
+  req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch (e) { reject(e); } });
+  req.on('error', reject);
+});
+
+// The control panel. GET is every dial with its value right now; POST moves them — either
+// { changes: { "<key>": value } } or { preset: "<id>" }, which is only a bundle of changes.
+// A change lands on the running world at once (the simulation reads CFG every round), is
+// announced to the villagers as a plain fact, and is written to the run log.
+function setTunables(body) {
+  const changes = body.preset ? presetChanges(body.preset) : body.changes;
+  if (!changes) return { error: 'send { changes: {...} } or { preset: "id" }' };
+  const moved = applyTunables(changes, sim?.W ?? null);
+  if (moved.length) {
+    const round = sim ? sim.W.round + 1 : null;
+    // A running world has already emitted (and logged) the change itself, via W.notePolicy.
+    console.log(`panel${round ? ` r${round}` : ''}: ${moved.map(m => `${m.label} ${m.fromShown} → ${m.toShown}${m.live ? '' : ' (next run)'}`).join('; ')}`);
+  }
+  return { moved, ...tunableSnapshot() };
+}
+
 http.createServer(async (req, res) => {
   try {
     if (req.url === '/state') return json(res, state());
+    if (req.url === '/tunables' && req.method === 'GET') return json(res, tunableSnapshot());
+    if (req.url === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
     if (req.url === '/start' && req.method === 'POST') return json(res, { result: await start() });
     if (req.url === '/stop'  && req.method === 'POST') return json(res, { result: await stop() });
     if (req.url === '/events') {

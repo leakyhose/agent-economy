@@ -114,6 +114,24 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   };
   const remember = (a, line) => { a.memory.push(line); if (a.memory.length > 6) a.memory.shift(); };
 
+  // ---- the control panel (tunables.mjs) -----------------------------------------
+  // A dial moved mid-run changes the economics, and the villagers are told what changed as
+  // a plain fact — never as advice, and never a number the simulation doesn't actually use.
+  // (Everything they are shown each turn is read live from CFG anyway, so this only makes
+  // the change hard to miss; it is not the only way they learn of it.)
+  W.announce = lines => {
+    for (const line of [].concat(lines)) for (const a of agents) remember(a, line);
+    emit('announce', { round: W.round + 1, lines: [].concat(lines) });
+  };
+  // Every change, with the round it landed on: the dashboard marks its charts there, and
+  // analyze.mjs can line a run's kinks up against the levers that caused them.
+  W.policyLog = [];
+  W.notePolicy = moved => {
+    const entry = { round: W.round + 1, at: Date.now(), changes: moved };
+    W.policyLog.push(entry);
+    emit('policy', entry);
+  };
+
   // ---- reservations: what an agent has promised to its orders -----------------
   // During a decision, the orders posted so far; after it, this round's orders.
   const ordersOf = a => a.draft ?? a.orders;
@@ -207,17 +225,19 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.netWood = a => Math.max(1, Math.round(CFG.TASKS.craft_net.wood / W.craftSkill(a)));
   // Crafting is the maker's skill for houses too: a build_house shift adds this much progress,
   // and a house needs build_house.shifts of it. The wood stays flat (see W.houseWood).
-  const BUILD = CFG.TASKS.build_house.shifts;
+  // Read from CFG on every call, never captured: the control panel moves these mid-run
+  // (tunables.mjs), and a captured copy would go on quoting the old village.
+  const BUILD = () => CFG.TASKS.build_house.shifts;
   W.buildSkill = a => Math.min(CFG.BUILD_CLAMP[1], Math.max(CFG.BUILD_CLAMP[0], W.skill(a, 'craft_net')));
-  W.buildShiftsFor = a => Math.ceil(BUILD / W.buildSkill(a));                  // a fresh house, whole shifts
-  W.buildShiftsLeft = a => a.building ? Math.ceil((BUILD - a.building.done - 1e-9) / W.buildSkill(a)) : W.buildShiftsFor(a);
+  W.buildShiftsFor = a => Math.ceil(BUILD() / W.buildSkill(a));                  // a fresh house, whole shifts
+  W.buildShiftsLeft = a => a.building ? Math.max(0, Math.ceil((BUILD() - a.building.done - 1e-9) / W.buildSkill(a))) : W.buildShiftsFor(a);
   // Building is paid for as it goes: the wood still owed is spread evenly over the shifts the
   // builder still needs (a 2.0 crafter pays 30 + 30, a 1.0 crafter 20 × 3), so a builder needs
   // one shift's materials to start, not all of them. Charging by progress instead asked a fast
   // builder for 40 wood up front, and crafters — who hold no wood — never got started.
   W.trancheWood = a => {
-    const owed = W.buildWoodLeft(a), left = BUILD - (a.building?.done ?? 0), step = W.buildSkill(a);
-    return Math.ceil(owed / Math.max(1, Math.ceil((left - 1e-9) / step)));
+    const owed = W.buildWoodLeft(a), left = BUILD() - (a.building?.done ?? 0), step = W.buildSkill(a);
+    return Math.max(0, Math.ceil(owed / Math.max(1, Math.ceil((left - 1e-9) / step))));
   };
   W.buildWoodLeft = a => W.houseWood(a) - (a.building?.wood ?? 0);   // wood the house in hand (or a fresh one) still takes
   // A good nobody has ever traded has no price: what agents are shown is what it costs to
@@ -382,18 +402,22 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.bankRoom = () => Math.max(0, W.bank.lendingCap - W.bankCommitted());
   // new coins the bank would lend on top of what's owed: the collateral limit, and the bank's
   // capital. The debt is taken as it will be when the request lands: after the decisions, at settlement.
-  const SOON = Math.ceil((CFG.DECIDE_TIMEOUT_MS + 2000) / CFG.SLOT_MS);
+  const SOON = () => Math.ceil((CFG.DECIDE_TIMEOUT_MS + 2000) / CFG.SLOT_MS);
+  // The loan-to-value in force. The ledger's own `ltvBps` is the hard ceiling, fixed for the
+  // life of the run and enforced by the program; the bank's policy today (CFG.BANK) may be
+  // tighter, and the control panel moves it mid-run. Tightening is off-chain, the limit is not.
+  W.ltvBps = () => Math.min(W.bank.terms.ltvBps, CFG.BANK.CREDIT ? Math.round(CFG.BANK.LTV * 10_000) : 0);
   W.loanLimits = (a, extra = none()) => {
     const value = W.collateralValue((a.debt > 0 ? a.locked : none()).map((q, g) => q + extra[g]));
-    const owed = a.debt ? W.debtNow(a, W.nowSlot() + SOON) : 0;
-    return { collateral: Math.max(0, Math.floor(value * W.bank.terms.ltvBps / 10_000) - owed), bank: W.bankRoom() };
+    const owed = a.debt ? W.debtNow(a, W.nowSlot() + SOON()) : 0;
+    return { collateral: Math.max(0, Math.floor(value * W.ltvBps() / 10_000) - owed), bank: W.bankRoom() };
   };
   W.maxLoan = (a, extra) => { const l = W.loanLimits(a, extra); return Math.min(l.collateral, l.bank); };
   W.requestBorrow = (a, amount, collateral) => {
     amount = Math.round(amount);
-    const t = W.bank.terms, termRounds = W.termRounds();
+    const termRounds = W.termRounds();
     if (amount < 1) return 'Borrow a positive amount.';
-    if (!t.ltvBps) return 'The bank is not lending: credit is switched off.';
+    if (!W.ltvBps()) return 'The bank is not lending: credit is switched off.';
     if (a.debt && (W.nowSlot() > a.dueSlot || (a.dueRound && W.round + 1 >= a.dueRound)))
       return 'Your loan is due: it can\'t be topped up, only repaid or collected.';
     if (collateral.some((q, g) => q && !PLEDGEABLE[g])) return `The bank does not take ${GOODS.filter((_, g) => collateral[g] && !PLEDGEABLE[g]).join(' or ')} as collateral${collateral[FOOD] ? ' (food rots)' : ''}.`;
@@ -418,7 +442,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const paid = Math.min(Math.round(amount), owed, W.availCash(a));
     if (paid < 1) return 'You have no free cash to repay with.';
     // repaying "everything" pays what will have accrued by the time it lands, if the cash allows
-    const all = paid >= owed ? Math.min(W.availCash(a), W.debtNow(a, W.nowSlot() + SOON)) : paid;
+    const all = paid >= owed ? Math.min(W.availCash(a), W.debtNow(a, W.nowSlot() + SOON())) : paid;
     const op = { kind: 'repay', agent: a.id, amount: all };
     W.loanOps.push(op); applyLoan(a, op);
     emit('repay', { agent: a.id, name: a.name, amount: all });
@@ -451,7 +475,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // the shift's wood was taken when it began
       if (a.building) {
         a.building.done += W.buildSkill(a); a.building.shifts++;
-        if (a.building.done >= BUILD - 1e-9) {
+        if (a.building.done >= BUILD() - 1e-9) {
           const shifts = a.building.shifts;
           a.building = null; a.housesBuilt++; W.housesBuilt++; W.made[HOUSES]++;
           remember(a, `You finished building a house. You now own ${W.houses(a)}.`);
@@ -514,7 +538,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.spoiled = none();
   function spoil() {
     for (const a of agents) for (let g = 0; g < GOODS.length; g++) {
-      const rate = CFG.SPOIL[g], free = a.goods[g];
+      // A house under construction is never taken: it is on-chain but is not a house yet,
+      // and losing it would leave the builder's `building` pointing at nothing. (Houses only
+      // spoil at all when the panel turns that dial up — a hurricane.)
+      const rate = CFG.SPOIL[g], free = g === HOUSES ? a.goods[g] - W.unfinished(a) : a.goods[g];
       if (!rate || free <= 0) continue;
       const n = roll(free * rate);
       if (n > 0) {

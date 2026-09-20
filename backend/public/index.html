@@ -46,6 +46,36 @@
   #bankfeed .feed { max-height: 420px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px; }
   #bankfeed .feed div { padding: 1px 0; }
 
+  /* the control panel: a drawer on the right, so the charts keep running beside it.
+     On a wide screen the page makes room for it rather than hiding behind it. */
+  #panel { position: fixed; top: 0; right: 0; bottom: 0; width: 404px; max-width: 94vw; overflow-y: auto;
+           background: #fff; border-left: 1px solid #bbb; box-shadow: -6px 0 18px rgba(0,0,0,.07);
+           padding: 12px 14px 80px; z-index: 50; transform: translateX(101%); transition: transform .18s ease; }
+  #panel.open { transform: none; }
+  @media (min-width: 1180px) { body.dials-open { margin-right: 412px; } }
+  #panel h2 { font-size: 14px; margin: 0; display: inline; }
+  #panel .close { float: right; border: 1px solid #ccc; background: #fff; padding: 1px 8px; }
+  #panel .blurb { color: #666; margin: 6px 0 10px; line-height: 1.5; }
+  .presets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+  .presets button { font-size: 11px; padding: 3px 8px; border: 1px solid #ccc; background: #fafafa; }
+  .presets button:hover { border-color: #c77700; background: #fff7ec; }
+  .presets button.base { border-color: #aaa; background: #f0f0f0; }
+  #panel .grp { border-top: 1px solid #ddd; margin-top: 12px; padding-top: 8px; }
+  #panel .grp > .gh { font-weight: bold; }
+  #panel .grp > .gb { color: #888; font-size: 11px; margin-bottom: 6px; }
+  .dial { margin: 0 0 9px; }
+  .dial .dl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .dial .dl span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dial .dv { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dial.moved .dv { color: #c77700; }
+  .dial .rst { border: 0; background: none; color: #c77700; cursor: pointer; padding: 0 0 0 4px; font: inherit; }
+  .dial input[type=range] { width: 100%; margin: 2px 0 0; accent-color: #2458a6; }
+  .dial.moved input[type=range] { accent-color: #c77700; }
+  .dial .dh { color: #888; font-size: 11px; line-height: 1.45; }
+  .dial .next { color: #888; font-size: 10px; border: 1px solid #ddd; padding: 0 4px; margin-left: 4px; }
+  #pfeed { margin-top: 12px; border-top: 1px solid #ddd; padding-top: 8px; line-height: 1.5; }
+  #pfeed div { color: #c77700; }
+
   details.more { border: 1px solid #ccc; padding: 6px 10px; margin: 12px 0; }
   details.more > summary { cursor: pointer; font-weight: bold; padding: 2px 0; }
   .small { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0; }
@@ -56,9 +86,18 @@
 <div class="top">
   <h1>agent-economy</h1>
   <button id="btn" onclick="toggle()">…</button>
+  <button id="dialsbtn" onclick="toggleDials()">dials ⚙</button>
   <span id="status"></span>
 </div>
 <div id="headline"></div>
+
+<div id="panel">
+  <button class="close" onclick="toggleDials()">close</button>
+  <h2>the dials</h2>
+  <div class="presets" id="presets"></div>
+  <div id="dialgroups"></div>
+  <div id="pfeed"></div>
+</div>
 
 <div id="dash" style="display:none">
   <div class="tiles" id="tiles"></div>
@@ -177,6 +216,7 @@ function chart(g) {
     ${bars}
     <text x="${PAD}" y="${H - 2}" font-size="9" fill="#888">round ${h[0].round}</text>
     <text x="${W - 4}" y="${H - 2}" text-anchor="end" font-size="9" fill="#888">round ${h.at(-1).round}</text>
+    ${policyMarks(h, x, top, vTop + VH)}
     ${tip}
     <rect x="${PAD}" y="0" width="${W - PAD}" height="${H}" fill="transparent" data-g="${g}"/>
   </svg>`;
@@ -234,6 +274,7 @@ function lines(id, title, series, opts = {}) {
     <text x="${PAD}" y="${top + PH + fs + 3}" font-size="${fs}" fill="#888">round ${h[0].round}</text>
     <text x="${W - 4}" y="${top + PH + fs + 3}" text-anchor="end" font-size="${fs}" fill="#888">round ${h.at(-1).round}</text>
     <text x="${PAD}" y="${H - 2}" font-size="${fs}" fill="#666">${note}</text>
+    ${policyMarks(h, x, top, top + PH)}
     ${tip}<rect x="${PAD}" y="0" width="${W - PAD}" height="${top + PH}" fill="transparent" data-k="1"/></svg>`;
   const hit = el.querySelector('rect[data-k]'), redraw = () => lines(id, title, series, opts);
   hit.onmousemove = ev => { const r = hit.getBoundingClientRect();
@@ -484,6 +525,100 @@ function details() {
 }
 $('more').addEventListener('toggle', () => { if (last?.running) { details(); econ(); } });
 
+// ---- the control panel ----------------------------------------------------------
+// One slider per dial in backend/src/tunables.mjs. Dragging one posts it; the simulation
+// reads CFG every round, so the change lands on the next one. Nothing here is a special
+// "disaster" mechanism — a hurricane is the houses-lost dial, and that is the point.
+let dials = null;                 // the last /tunables snapshot
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function toggleDials() {
+  const open = $('panel').classList.toggle('open');
+  document.body.classList.toggle('dials-open', open);
+  if (open && !dials) loadDials();
+}
+
+// A panel that fails silently is worse than no panel: say so on the page.
+async function loadDials() {
+  try {
+    const r = await fetch('/tunables');
+    if (!r.ok) throw new Error(`/tunables returned ${r.status}`);
+    dials = await r.json();
+    if (!dials?.tunables?.length) throw new Error('/tunables returned no dials');
+    drawDials();
+  } catch (e) {
+    dials = null;
+    console.error('loadDials:', e);
+    $('dialgroups').innerHTML = `<div class="hungry">could not load the dials: ${esc(e.message)}` +
+      `<br><button onclick="loadDials()" style="margin-top:6px">try again</button></div>`;
+  }
+}
+
+// POST one dial (or a preset) and redraw from the snapshot that comes back.
+async function post(body) {
+  dials = await (await fetch('/tunables', { method: 'POST', headers: { 'content-type': 'application/json' },
+                                            body: JSON.stringify(body) })).json();
+  drawDials();
+  refresh();
+}
+let pending = null;               // debounce: a drag posts once it settles, not per pixel
+function slide(key, raw, el) {
+  const t = dials.tunables.find(d => d.key === key);
+  const v = t.int ? Math.round(+raw) : +raw;
+  el.closest('.dial').querySelector('.dv').textContent = fmtDial(t, v);
+  clearTimeout(pending);
+  pending = setTimeout(() => post({ changes: { [key]: v } }), 120);
+}
+// The server is the authority on how a value reads; this is only what the label says while
+// a slider is still moving, so it matches the same rounding.
+function fmtDial(t, v) {
+  if (t.bool) return v ? 'on' : 'off';
+  const d = Math.max(0, (String(t.step).split('.')[1] ?? '').length);
+  return t.shown.includes('%') ? `${+(v * 100).toFixed(1)}%`
+       : t.shown.endsWith('×') ? `${+v.toFixed(2)}×`
+       : t.shown.endsWith('s') && t.key.endsWith('_MS') ? `${(v / 1000).toFixed(1)}s`
+       : String(+v.toFixed(d));
+}
+
+function drawDials() {
+  if (!dials) return;
+  $('presets').innerHTML = (dials.presets ?? []).map(p =>
+    `<button class="${p.id === 'baseline' ? 'base' : ''}" title="${esc(p.note)}" onclick="post({preset:'${p.id}'})">${esc(p.label)}</button>`).join('');
+  $('dialgroups').innerHTML = (dials.groups ?? []).map(g => {
+    const ds = (dials.tunables ?? []).filter(t => t.group === g.id);
+    if (!ds.length) return '';
+    return `<div class="grp"><div class="gh">${esc(g.title)}</div><div class="gb">${esc(g.blurb)}</div>` +
+      ds.map(t => `<div class="dial ${t.moved ? 'moved' : ''}" data-key="${esc(t.key)}">
+        <div class="dl"><span title="${esc(t.key)}">${esc(t.label)}${t.live ? '' : '<span class="next">next run</span>'}</span>
+          <span><b class="dv">${esc(t.shown)}</b>${t.moved ? `<button class="rst" title="back to ${esc(String(t.dflt))}" onclick="post({changes:{'${esc(t.key)}':${JSON.stringify(t.dflt)}}})">↺</button>` : ''}</span></div>` +
+        (t.bool
+          ? `<div><label><input type="checkbox" ${t.value ? 'checked' : ''} onchange="post({changes:{'${esc(t.key)}':this.checked}})"> ${esc(t.label)}</label></div>`
+          : `<input type="range" min="${t.min}" max="${t.max}" step="${t.step}" value="${t.value}" oninput="slide('${esc(t.key)}', this.value, this)">`) +
+        (t.help ? `<div class="dh">${esc(t.help)}</div>` : '') + `</div>`).join('') + '</div>';
+  }).join('');
+  policyFeed();
+}
+
+// What has been pulled this run, newest first — the same list the charts are marked from.
+function policyFeed() {
+  const p = last?.policy ?? [];
+  $('pfeed').innerHTML = !p.length ? '<span class="muted">nothing pulled yet this run.</span>'
+    : '<b>pulled this run</b>' + p.slice().reverse().slice(0, 12).map(e =>
+        `<div>r${e.round} · ${e.changes.map(c => `${esc(c.label)} ${esc(c.fromShown)} → ${esc(c.toShown)}`).join('; ')}</div>`).join('');
+}
+
+// Where on a chart's x-axis a policy change landed: the first round at or after it.
+function policyMarks(h, x, y1, y2) {
+  return (last?.policy ?? []).map(p => {
+    const i = h.findIndex(r => r.round >= p.round);
+    if (i < 0) return '';
+    const what = p.changes.map(c => `${c.label} ${c.fromShown} → ${c.toShown}`).join('\n');
+    return `<line x1="${x(i)}" x2="${x(i)}" y1="${y1}" y2="${y2}" stroke="#c77700" stroke-width="1" stroke-dasharray="3 3" opacity=".75">` +
+      `<title>round ${p.round}\n${what}</title></line>` +
+      `<polygon points="${x(i) - 3},${y1} ${x(i) + 3},${y1} ${x(i)},${y1 + 4}" fill="#c77700" opacity=".75"/>`;
+  }).join('');
+}
+
 async function toggle() {
   btn.disabled = true;
   statusEl.textContent = running ? 'stopping…' : 'starting (creating ledger on Solana)…';
@@ -513,8 +648,10 @@ async function refresh() {
     ` · <span class="${s.totals.hungry ? 'hungry' : 'muted'}">hungry ${s.totals.hungry}</span> · <span class="${s.totals.cold ? 'hungry' : 'muted'}">cold ${s.totals.cold}</span>` +
     (s.foreclosures.length ? ` · <span class="hungry">latest foreclosure: r${s.foreclosures[0].round} ${s.foreclosures[0].name}</span>` : '');
   econ(); wealth(); bankFeed(); txFeed(); details();
+  if (dials) policyFeed();
 }
 
 refresh();
+loadDials();
 setInterval(refresh, 1000);
 </script>
