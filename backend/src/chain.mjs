@@ -202,6 +202,21 @@ export async function connectChain() {
     return sigs;
   }
 
+  // Who paid whom in a settle_cash transaction, read back off the chain: the SPL
+  // transfers it actually made, with each purse resolved to the agent who owns it.
+  // This is the transaction's own record, not our account of it.
+  async function transfersIn(sig) {
+    const tx = await conn.getParsedTransaction(sig,
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+    const who = new Map([[vault.toBase58(), 'the bank']]);
+    for (const [agent, p] of purses) who.set(p.pubkey.toBase58(), agent);
+    return (tx?.meta?.innerInstructions ?? []).flatMap(g => g.instructions)
+      .filter(i => i.parsed?.type === 'transfer')
+      .map(i => ({ from: who.get(i.parsed.info.source) ?? null,
+                   to: who.get(i.parsed.info.destination) ?? null,
+                   amount: Number(i.parsed.info.amount) }));
+  }
+
   // What an agent's purse actually holds on chain, in cents.
   async function purseBalance(agent) {
     const info = await conn.getAccountInfo(purseOf(agent).pubkey, 'confirmed');
@@ -344,7 +359,7 @@ export async function connectChain() {
 
   return {
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
-    fundKeeper, initPurses, settleCash, purseBalance,
+    fundKeeper, initPurses, settleCash, purseBalance, transfersIn,
     purseOf: agent => purseOf(agent).pubkey,
     MAX_PURSES_PER_TX,
     slot: () => conn.getSlot('confirmed'),

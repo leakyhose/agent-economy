@@ -596,7 +596,11 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     const ops = W.loanOps; W.loanOps = []; W.opsInflight = ops;
     const made = W.made, shifts = W.shiftsNow;
     W.made = none(); W.shiftsNow = { worked: 0, idle: 0, hired: 0 }; W.handsNow = 0;
+    // Every transaction this round, with what it did. The label is written where the
+    // call is made — nothing downstream has to guess which signature is which.
     const sigs = [], liquidated = [];
+    const tx = (what, sig, extra = {}) => { if (sig) sigs.push({ sig, what, ...extra }); return sig; };
+    const cents = c => (c / 100).toFixed(2);
     let settled = batch.length ? null : none();   // net goods settled per good (null if the settle failed)
     // On-chain balances right before the auctions: every change after them is a fill. Stays
     // null if the round fails before the auctions, and then no fills are reported.
@@ -619,7 +623,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // this round's goods changes are lost, but loans, the keeper and the auction go on.
       if (batch.length) {
         try {
-          sigs.push(...await chain.settle(batch));
+          const parts = await chain.settle(batch);
+          parts.forEach((sig, i) => tx(`goods · ${batch.length} change${batch.length > 1 ? 's' : ''}${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`, sig, { kind: 'settle' }));
           settled = none(); for (const d of batch) settled[d.good] += d.delta;
         } catch (e) { emit('error', { message: `settle: ${e.message}` }); }
       }
@@ -631,7 +636,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       await Promise.all([...byAgent.values()].map(async list => { for (const op of list) {
         const a = agents[op.agent];
         try {
-          sigs.push(op.kind === 'borrow' ? await chain.borrow(op.agent, op.amount, op.termSlots, op.collateral) : await chain.repay(op.agent, op.amount));
+          tx(op.kind === 'borrow' ? `${a.name} borrows ${cents(op.amount)}` : `${a.name} repays ${cents(op.amount)}`,
+             op.kind === 'borrow' ? await chain.borrow(op.agent, op.amount, op.termSlots, op.collateral) : await chain.repay(op.agent, op.amount),
+             { kind: op.kind, agent: op.agent });
           op.ok = true;
           if (op.kind === 'borrow' && !op.topUp) a.dueRound = op.dueRound;
           remember(a, op.kind === 'repay' ? `You repaid ${(op.amount / 100).toFixed(2)} of your loan (interest first).`
@@ -658,7 +665,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         const s = mid.slots[a.id], reason = liquidatable(s, mid, mid.slot);
         if (reason !== 'overdue' || (a.dueRound && W.round + 1 < a.dueRound)) return;
         try {
-          const sig = await chain.liquidate(a.id); sigs.push(sig);
+          const sig = await chain.liquidate(a.id);
+          tx(`the keeper collects from ${a.name}`, sig, { kind: 'liquidate', agent: a.id });
           liquidated.push({ agent: a.id, name: a.name, reason, before: s, sig });
         } catch (e) { emit('error', { message: `liquidate ${a.name}: ${e.message}` }); }
       }));
@@ -734,13 +742,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         bids = bids.map(o => take(o, Math.min(o.qty, Math.floor(cashLeft[o.agent] / o.limit))))
           .filter(o => { if (o.qty < 1) return false; cashLeft[o.agent] -= o.qty * o.limit; return true; });
         Object.assign(sent[g], { bids, asks, last: mid.lastPrice[g] });
-        if (bids.length && asks.length) txs.push(chain.clear(g, bids, asks).then(sig => { sent[g].ok = true; return sig; }));
+        if (bids.length && asks.length) txs.push(chain.clear(g, bids, asks).then(sig => { sent[g].ok = true; return { sig, g }; }));
       }
       // Cash and goods were split between goods above, so the auctions can't conflict: send
       // them together instead of waiting on each confirmation in turn.
       for (const r of await Promise.allSettled(txs)) {
-        if (r.status === 'fulfilled') { if (r.value) sigs.push(r.value); }
-        else emit('error', { message: r.reason?.message ?? String(r.reason) });
+        if (r.status === 'fulfilled') {
+          if (r.value?.sig) tx(`${GOODS[r.value.g]} auction`, r.value.sig, { kind: 'auction', good: r.value.g });
+        } else emit('error', { message: r.reason?.message ?? String(r.reason) });
       }
     } catch (e) {
       emit('error', { message: e.message });
@@ -756,7 +765,17 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     }
     if (unsettledPurses.size) {
       try {
-        sigs.push(...await chain.settleCash([...unsettledPurses]));
+        const paid = [...unsettledPurses];
+        for (const sig of await chain.settleCash(paid)) {
+          // Read the transfers back off the transaction rather than restating them: this is
+          // what the chain says happened, and it is what the dashboard shows.
+          let moves = [];
+          try { moves = await chain.transfersIn(sig); } catch { /* the label survives without them */ }
+          const name = i => i === 'the bank' ? 'the bank' : (agents[i]?.name ?? `agent ${i}`);
+          tx(moves.length ? `coins move · ${moves.length} payment${moves.length > 1 ? 's' : ''}`
+                          : `purses · ${paid.length} settled`, sig,
+             { kind: 'purses', moves: moves.map(m => ({ from: name(m.from), to: name(m.to), amount: m.amount })) });
+        }
         unsettledPurses.clear();
       } catch (e) {
         // The books are still right and the purses catch up next round: say so, don't stop.
@@ -879,7 +898,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     if (W.priceHistory.length > 1000) W.priceHistory.shift();
     W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs, decide };
     const sum = f => L.slots.reduce((s, x) => s + f(x), 0);
-    emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sig: sigs.at(-1),
+    emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sigs,
                     book: bookStats, ladder, orders: orderLog, live, noBankPrice, decide,
                     roundMs: dMs, slotsPerRound: dSlots, trades, spoiled, foreclosures: liquidated.filter(f => f.kind === 'foreclosed'),
                     collected: liquidated.filter(f => f.kind === 'collected'), made, metrics: m,
