@@ -126,7 +126,7 @@ export async function liveLimits(pool, key = process.env.BASETEN_API_KEY) {
       await r.text();
       const n = +(r.headers.get('x-ratelimit-limit-requests') ?? 0);
       if (n > 0) limits[model] = Math.max(2, Math.floor(n / 2));
-    } catch { /* no header, no gate: the global one still applies */ }
+    } catch { /* no header, no gate */ }
   }));
   return limits;
 }

@@ -5,9 +5,7 @@
 // this file is a fast mirror.
 import { CFG, GOODS, FOOD, WOOD, NETS, BOATS, HOUSES } from './config.mjs';
 import { BANK, PLEDGEABLE, FIRE_SALE_BPS, FORGIVE_BELOW, liquidatable, accruedDebt } from './chain.mjs';
-
-const S1 = ['Ka', 'Lo', 'Mi', 'Ro', 'Te', 'Su', 'Na', 'Vi', 'Jo', 'Pe', 'Di', 'Ha', 'Ba', 'Fe', 'Gu', 'Ze'];
-const S2 = ['ra', 'no', 'li', 'ko', 'sa', 'ta', 'vi', 'mo', 'ne', 'du', 'ri', 'la'];
+import { villagerNames } from './names.mjs';
 
 // Gini coefficient of non-negative values: 0 = all equal, 1 = one holds everything.
 export function gini(xs) {
@@ -20,6 +18,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // settle_cash, so a purse that misses one pass is caught by the next rather than
   // drifting until that agent happens to trade again.
   const unsettledPurses = new Set();
+  // What every purse held the last time settle_cash went through, per agent. The server
+  // settles every purse before the first round, so it starts as the opening cash. Anything
+  // the ledger says differs from this needs moving.
+  let purseCash = initial.slots.map(s => s.cash);
   let seed = CFG.SEED;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   // Round a fractional amount up or down at random, so the expected value is exact.
@@ -41,9 +43,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   const REAL_PRICES = CFG.START_PRICES.map(p => p > 1 ? p : 0);
   const none = () => GOODS.map(() => 0);
   const list = q => q.map((n, g) => n ? `${n} ${n === 1 ? GOODS[g].replace(/s$/, '') : GOODS[g]}` : '').filter(Boolean).join(' and ');
+  const names = villagerNames(initial.slots.length, CFG.SEED);
   const agents = initial.slots.map((s, i) => ({
     id: i,
-    name: `${S1[i % 16]}${S2[(i * 7 + 3) % 12]}-${i}`,
+    name: names[i],
     cash: s.cash, goods: [...s.goods],              // mirror: chain + pending deltas
     chain: { cash: s.cash, goods: [...s.goods] },   // last confirmed on-chain state
     locked: none(), debt: 0, principal: 0, dueSlot: 0, accruedSlot: 0,   // the bank loan, mirrored from chain (debt as last accrued)
@@ -63,8 +66,9 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     housesBuilt: 0,
     fills: null,                                    // how the agent's orders did in the last round it traded in
     warmPhase: i % CFG.WARM_ROUNDS,
-    thought: 'just arrived in the village',
+    thought: '',                                    // only ever the model's own words (tools.mjs `reason`, or the brain's text)
     memory: [],
+    journal: [],                                    // every memory line of the run, timestamped (dashboard only)
     traits: { patience: +rnd().toFixed(2), risk: +rnd().toFixed(2) },
     skills: talents(i),
     upkeepPaid: 0,                                  // houses whose upkeep wood was paid last round
@@ -112,7 +116,13 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
     W.events.push(e); if (W.events.length > 300) W.events.shift();
     onEvent(e);
   };
-  const remember = (a, line) => { a.memory.push(line); if (a.memory.length > 6) a.memory.shift(); };
+  // `memory` is what the villager is shown next turn: the last six lines, no more. `journal`
+  // is the same lines kept for the whole run, for the dashboard's per-agent log — the agent
+  // never sees it, so keeping it changes nothing about how anyone decides.
+  const remember = (a, line) => {
+    a.memory.push(line); if (a.memory.length > 6) a.memory.shift();
+    a.journal.push({ t: Date.now(), line }); if (a.journal.length > 3000) a.journal.shift();
+  };
 
   // ---- the control panel (tunables.mjs) -----------------------------------------
   // A dial moved mid-run changes the economics, and the villagers are told what changed as
@@ -366,8 +376,13 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   W.nowSlot = () => W.slot + Math.max(0, Math.floor((Date.now() - W.slotAt) / CFG.SLOT_MS));
   W.debtNow = (a, slot = W.nowSlot()) => accruedDebt(a, W.bank.terms, slot);
   W.slotsPerMin = () => Math.round(60_000 / CFG.SLOT_MS);
+  // Kept for the dashboard: what the ledger's terms work out to per minute of real time.
+  // It is no longer the dial anyone sets — the rate is per ROUND now (CFG.BANK.RATE_PER_ROUND).
   W.ratePerMin = () => W.bank.terms.rateBps / 10_000 * W.slotsPerMin() / W.bank.terms.ratePeriodSlots;
-  // Interest is charged by the slot, so what a round costs depends on how long rounds take: measured.
+  // What a loan costs to hold for one round: the rate the ledger was created with, scaled by
+  // how long a round is really taking against the round the terms were written for
+  // (CFG.ROUND_MS_EXPECTED). The chain can only count slots, so this is measured, not assumed
+  // — and it is what the villagers are shown, so the number they act on is the number charged.
   W.ratePerRound = () => W.bank.terms.rateBps / 10_000 * W.slotsPerRound / W.bank.terms.ratePeriodSlots;
   W.termRounds = () => CFG.BANK.TERM_ROUNDS;
   W.termSlots = rounds => Math.min(65_535, Math.max(1, Math.floor(rounds * W.slotsPerRound * CFG.BANK.TERM_SLACK)));
@@ -556,6 +571,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
   // decide: how the decisions went (the slowest answer is how long the round waited).
   W.playRound = async (decide = null) => {
     W.tick = W.round + 1;
+    const simAt = Date.now();
     for (const a of agents) {
       if (!a.activity) W.keepJob(a);
       finish(a);
@@ -563,6 +579,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       if ((W.tick + a.warmPhase) % CFG.WARM_ROUNDS === 0) warm(a);
     }
     spoil();
+    W.simMs = Date.now() - simAt;      // the shifts, meals, fires and rot: pure JS, no chain
     await W.runRound(decide);
   };
 
@@ -612,6 +629,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
 
   async function round(decide) {
     const t0 = Date.now();
+    // Where a round's wall-clock actually goes, phase by phase (ms). Logged with the round
+    // and shown in /state, so a slow round can be read off instead of guessed at.
+    // `sim` is the shifts, meals, fires and rot that ran just before this; `emitPrev` is what
+    // building the LAST round's event, writing it to the run log and pushing it to every
+    // dashboard cost — this round's own emit hasn't happened yet when the event is built.
+    const phase = { sim: W.simMs ?? 0, emitPrev: W.emitMs ?? 0 };
+    let pt = t0;
+    const mark = k => { const n = Date.now(); phase[k] = (phase[k] ?? 0) + (n - pt); pt = n; };
     const batch = W.pending; W.pending = [];
     // the book: the orders every agent posted this round
     const book = GOODS.map((_, g) => agents.flatMap(a => a.orders.filter(o => o.good === g)));
@@ -647,11 +672,21 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // this round's goods changes are lost, but loans, the keeper and the auction go on.
       if (batch.length) {
         try {
-          const parts = await chain.settle(batch);
-          parts.forEach((sig, i) => tx(`goods · ${batch.length} change${batch.length > 1 ? 's' : ''}${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`, sig, { kind: 'settle' }));
+          // One net line per agent and good. The chain applies signed deltas, so a catch and
+          // the rot that follows it are the same line: fewer lines, fewer transactions, and
+          // the same balances at the end. It can only make the "no balance goes negative"
+          // check easier to pass, never harder — and it leaves the order the chunks land in
+          // with nothing to decide, which is what lets chain.settle send them together.
+          const net = new Map();
+          for (const d of batch) { const k = d.agent * GOODS.length + d.good; net.set(k, (net.get(k) ?? 0) + d.delta); }
+          const lines = [];
+          for (const [k, delta] of net) if (delta) lines.push({ agent: Math.floor(k / GOODS.length), good: k % GOODS.length, delta });
+          const parts = await chain.settle(lines);
+          parts.forEach((sig, i) => tx(`goods · ${lines.length} change${lines.length > 1 ? 's' : ''}${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ''}`, sig, { kind: 'settle' }));
           settled = none(); for (const d of batch) settled[d.good] += d.delta;
         } catch (e) { emit('error', { message: `settle: ${e.message}` }); }
       }
+      mark('settle');
 
       // loans — each agent's in the order asked, agents in parallel. The program has the final say.
       const byAgent = new Map();
@@ -668,13 +703,14 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
           remember(a, op.kind === 'repay' ? `You repaid ${(op.amount / 100).toFixed(2)} of your loan (interest first).`
             : op.topUp ? `The bank added ${(op.amount / 100).toFixed(2)} new coins to your loan; it is due at the same round as before.`
             : `The bank lent you ${(op.amount / 100).toFixed(2)} new coins for ${op.termRounds} rounds (due at the end of round ${op.dueRound}). ` +
-              `Interest: ${rate} on what you borrowed, charged for the time you hold it.`);
+              `Interest: ${rate} on what you borrowed, charged for every round you hold it.`);
         } catch (e) {
           // the program's own reason, e.g. "the bank has reached its lending cap"
           const why = e.message.match(/Error Message: (.*)/)?.[1] ?? e.message.replace(/^chain tx failed: /, '');
           remember(a, `The bank refused your ${op.kind}: ${why.slice(0, 120)}`);
         }
       } }));
+      mark('loans');
 
       // The keeper — a stranger with no authority over the ledger — calls `liquidate` on
       // every loan past its due slot. The chain decides what happens: an overdue loan whose
@@ -683,6 +719,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       // a falling price is not a reason to seize a villager's goods (see CFG.BANK.MARGIN).
       let mid = await chain.fetch();
       W.slot = mid.slot; W.slotAt = Date.now();
+      mark('read');
       // An overdue loan is collected at the round it was promised for, not before: its
       // on-chain deadline was set a little early (TERM_SLACK) so that it has passed by then.
       await Promise.all(agents.map(async a => {
@@ -695,7 +732,8 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         } catch (e) { emit('error', { message: `liquidate ${a.name}: ${e.message}` }); }
       }));
       const keeperSlot = mid.slot;
-      if (liquidated.length || ops.length) mid = await chain.fetch();
+      mark('keeper');
+      if (liquidated.length || ops.length) { mid = await chain.fetch(); mark('read'); }
       // What each call actually did, read off the chain.
       for (const f of liquidated) {
         const b = f.before, s = mid.slots[f.agent], a = agents[f.agent], T = mid.terms;
@@ -744,6 +782,29 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       base = mid.slots.map(x => ({ cash: x.cash, goods: [...x.goods] }));
       bankGoods = [...mid.bank.goods];
 
+      // One good's auction. The bank's own ask is the one order in a book that can make the
+      // whole transaction fail on something other than the market: a fire sale that pays down
+      // `bad_debt` has to burn coins, and those coins are in the buyers' purses, not in the
+      // vault the burn reads — so with bad debt outstanding the SPL burn can come back
+      // "insufficient funds" (0x1) and take the villagers' market down with it. If that
+      // happens, send the same book again without the bank's ask: the village still trades,
+      // and the bank simply keeps the goods and marks them down again next round.
+      const clearGood = async (g, bids, asks) => {
+        try {
+          const sig = await chain.clear(g, bids, asks);
+          sent[g].ok = true;
+          return { sig, g };
+        } catch (e) {
+          const own = asks.filter(o => o.agent !== BANK);
+          if (own.length === asks.length || !own.length) throw e;
+          const sig = await chain.clear(g, bids, own);
+          Object.assign(sent[g], { asks: own, ok: true });
+          bookStats[g].bankQty = 0; bookStats[g].bankPrice = null;
+          emit('error', { message: `${GOODS[g]} auction: the bank's fire sale could not settle, so it was left out of the clear` });
+          return { sig, g };
+        }
+      };
+
       const cashLeft = base.map(e => e.cash);
       const goodsLeft = base.map(e => [...e.goods]);
       for (let g = 0; g < GOODS.length; g++) {
@@ -766,7 +827,7 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
         bids = bids.map(o => take(o, Math.min(o.qty, Math.floor(cashLeft[o.agent] / o.limit))))
           .filter(o => { if (o.qty < 1) return false; cashLeft[o.agent] -= o.qty * o.limit; return true; });
         Object.assign(sent[g], { bids, asks, last: mid.lastPrice[g] });
-        if (bids.length && asks.length) txs.push(chain.clear(g, bids, asks).then(sig => { sent[g].ok = true; return { sig, g }; }));
+        if (bids.length && asks.length) txs.push(clearGood(g, bids, asks));
       }
       // Cash and goods were split between goods above, so the auctions can't conflict: send
       // them together instead of waiting on each confirmation in turn.
@@ -775,40 +836,62 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
           if (r.value?.sig) tx(`${GOODS[r.value.g]} auction`, r.value.sig, { kind: 'auction', good: r.value.g });
         } else emit('error', { message: r.reason?.message ?? String(r.reason) });
       }
+      mark('auctions');
     } catch (e) {
       emit('error', { message: e.message });
     }
 
     // the chain is the truth — replace the mirror
     const L = await chain.fetch();
+    mark('read');
     // Now move the coins themselves. Cash changed on-chain above; these are the SPL
     // transfers that make an agent's purse hold what the books say they have — buyers
     // paying sellers directly, the bank paying out a loan or a dividend.
+    // Compared against what the purses actually hold, not against `base`: `base` is read
+    // AFTER the loans and the keeper, so a villager who borrowed or repaid but did not trade
+    // looked unchanged and their purse was left stale until they next traded — the headless
+    // summary's "every agent purse = that agent's cash" check would then fail.
     for (const a of agents) {
-      if (!base || base[a.id].cash !== L.slots[a.id].cash) unsettledPurses.add(a.id);
+      if (purseCash[a.id] !== L.slots[a.id].cash) unsettledPurses.add(a.id);
     }
+    // A repayment or a foreclosure burns the debtor's own coins and takes them straight out
+    // of that purse (chain.mjs, lib.rs fund_burn), so the purse moved even in the rare case
+    // where the ledger cash came back to where it started (a foreclosure refund exactly
+    // matching what was collected). Name them regardless: settle_cash on a purse that
+    // already matches moves nothing, so this costs at most one more agent in a chunk.
+    for (const o of ops) unsettledPurses.add(o.agent);
+    for (const f of liquidated) unsettledPurses.add(f.agent);
+    // what the SETTLERS mint itself says exists. The program checks this against the
+    // books inside every instruction that can move it, so this is a read, not a guard —
+    // and moving coins between purses can't change it, so it is read alongside them.
+    const supplyRead = chain.settlersSupply();
     if (unsettledPurses.size) {
       try {
         const paid = [...unsettledPurses];
-        for (const sig of await chain.settleCash(paid)) {
-          // Read the transfers back off the transaction rather than restating them: this is
-          // what the chain says happened, and it is what the dashboard shows.
-          let moves = [];
-          try { moves = await chain.transfersIn(sig); } catch { /* the label survives without them */ }
-          const name = i => i === 'the bank' ? 'the bank' : (agents[i]?.name ?? `agent ${i}`);
+        const sigs2 = await chain.settleCash(paid, id => L.slots[id].cash);
+        // Read the transfers back off the transactions rather than restating them: this is
+        // what the chain says happened, and it is what the dashboard shows. One read per
+        // transaction, all at once — they don't depend on each other.
+        const moveLists = await Promise.all(sigs2.map(sig =>
+          chain.transfersIn(sig).catch(() => [])));   // the label survives without them
+        sigs2.forEach((sig, i) => {
+          const moves = moveLists[i];
+          const name = i2 => i2 === 'the bank' ? 'the bank' : (agents[i2]?.name ?? `agent ${i2}`);
           tx(moves.length ? `coins move · ${moves.length} payment${moves.length > 1 ? 's' : ''}`
                           : `purses · ${paid.length} settled`, sig,
              { kind: 'purses', moves: moves.map(m => ({ from: name(m.from), to: name(m.to), amount: m.amount })) });
-        }
+        });
         unsettledPurses.clear();
+        purseCash = L.slots.map(s => s.cash);
       } catch (e) {
         // The books are still right and the purses catch up next round: say so, don't stop.
+        // purseCash is left as it was, so next round asks for everyone who still differs —
+        // settle_cash on a purse that already matches moves nothing.
         emit('error', { message: `purses not settled this round: ${e.message}` });
       }
     }
-    // what the SETTLERS mint itself says exists. The program checks this against the
-    // books inside every instruction that can move it, so this is a read, not a guard.
-    W.settlersSupply = await chain.settlersSupply();
+    W.settlersSupply = await supplyRead;
+    mark('purses');
     W.slot = L.slot; W.slotAt = Date.now();
     const fills = none(), trades = [], dgs = [];
     if (base) for (let g = 0; g < GOODS.length; g++) fills[g] += Math.max(0, bankGoods[g] - L.bank.goods[g]);   // foreclosure sales
@@ -916,9 +999,11 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
       offered: bookStats.map(b => b.askQty + b.bankQty), wanted: bookStats.map(b => b.bidQty), catch: W.catch(),
       wellbeing: m.wellbeing, lifestyle: agents.reduce((s, a) => s + a.lifestyle, 0) / agents.length, ...m });
     if (W.priceHistory.length > 1000) W.priceHistory.shift();
-    W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs, decide };
+    mark('books');
+    W.lastRound = { round: W.round, ms: Date.now() - t0, txs: sigs.length, sigs, decide, phases: phase };
     const sum = f => L.slots.reduce((s, x) => s + f(x), 0);
     emit('round', { round: W.round, prices: L.lastPrice, volumes: fills, txs: sigs.length, ms: Date.now() - t0, sigs,
+                    phases: phase,
                     book: bookStats, ladder, orders: orderLog, live, noBankPrice, decide,
                     roundMs: dMs, slotsPerRound: dSlots, trades, spoiled, foreclosures: liquidated.filter(f => f.kind === 'foreclosed'),
                     collected: liquidated.filter(f => f.kind === 'collected'), made, metrics: m,
@@ -941,6 +1026,10 @@ export function createWorld(chain, initial, { onEvent = () => {} } = {}) {
                       activity: a.activity?.task ?? null, kept: !!a.activity?.kept, lifestyle: a.lifestyle,
                       building: a.building ? a.building.shifts : null, house: W.hasHouse(a), housesBuilt: a.housesBuilt,
                       wellbeing: +a.wellbeing.toFixed(2), wbParts: a.wbParts, wealth: Math.round(W.wealth(a)), shifts: a.shifts })) });
+    // What building that event, writing it to the run log and pushing it to every dashboard
+    // cost. Measured after the fact, so it is reported with the NEXT round, as `emitPrev`.
+    W.emitMs = Date.now() - pt;
+    phase.emit = W.emitMs;
   }
 
   // ---- how the economy is doing, once a round ------------------------------------

@@ -33,8 +33,15 @@ agent-economy/
 │   │       ├── stub.mjs      free heuristic placeholder (no API key needed)
 │   │       ├── claude.mjs    Claude, tool-calling
 │   │       └── openai.mjs    OpenAI, tool-calling (default gpt-5.6-luna)
-│   ├── public/index.html   the dashboard — one file, no build step
+│   ├── public/index.html   the old standalone dashboard (kept as a fallback)
 │   └── scripts/analyze.mjs analyze any saved run
+├── web/              the front end: island + admin panel in one Vite app (§10)
+│   └── src/
+│       ├── main.jsx        the shell: two views, the CCTV inset, the URL
+│       ├── store.js        one /state poll and one /events stream for everything
+│       ├── island/         the island view, ported from frontend/ (React + three.js)
+│       └── admin/          the admin panel, ported from backend/public/index.html
+├── frontend/         the old standalone island page (kept as a fallback)
 ├── runs/             every run, saved automatically (gitignored)
 ├── FIX_PLAN.md       the work in progress
 ├── FUTURE_PLAN.md    later features, and what was cut
@@ -55,7 +62,8 @@ faked."*
 ## 2. The economy
 
 ```
-ROUND  →  every agent decides at once; the clock waits for the slowest (up to DECIDE_TIMEOUT_MS, 8s)
+ROUND  →  every agent decides at once; the clock runs as soon as DECIDE_QUORUM (90%) have
+          answered, or at DECIDE_TIMEOUT_MS (8s), whichever comes first (§5)
 WORK   →  gather_food / gather_wood / craft_net / build_house / rest   (one shift = one round)
 SELL   →  standing limit orders; a batch auction clears once per round, on-chain
 EAT    →  one meal a round; the agent's lifestyle sets 1, 2 or 3 food per meal
@@ -112,9 +120,22 @@ Rules, all enforced on-chain (dials in `CFG.BANK`):
   `CREDIT=0` sets LTV to 0: the no-credit regime.
 - **Capital limit:** all loans together ≤ equity / `KAPPA` (0.10). Defaults eat equity,
   which tightens lending for everyone.
-- **Interest by time held:** `RATE_PER_MIN` (5%) a minute on the principal, accrued per
-  slot, nothing up front; agents see it per round at the measured round length. The
-  borrower picks a term of 10, 20 or 30 rounds (`TERM_ROUNDS`): the chain counts slots, so
+- **Interest per round held:** `BANK.RATE_PER_ROUND` (0.79%) on the principal, nothing up
+  front. A round is the village's unit of time — one shift, one meal, one market — so the
+  cost of credit is a cost per round, and making the simulation run faster no longer makes
+  borrowing cheaper. (It used to: the dial was `RATE_PER_MIN`, 5% a *minute of real time*,
+  so a round that went from 9.5s to 5s halved what a loan cost to hold for a round without
+  anyone touching a dial.) 0.79% is exactly what the old dial charged at the original
+  round: `0.05 × (9500/400 slots a round) / (60000/400 slots a minute) = 0.79167%`, so the
+  credit economy is unchanged. Over a 30-round loan that is ~23.8% of the principal.
+  The chain can only count slots, so `initialize` sends the rate over
+  `ROUND_MS_EXPECTED / SLOT_MS` slots — one round's worth, at the slot length measured at
+  startup, so neither `TICKS_PER_SLOT` nor the slot length changes what a round costs.
+  What is left is that a run whose rounds are longer than `ROUND_MS_EXPECTED` (6.0s, the
+  measured round at 100 LLM agents) pays in that proportion; the rate agents are *shown*
+  is computed from the round actually measured (`world.mjs ratePerRound`), so the number
+  they act on is always the number charged.
+  The borrower picks a term of 10, 20 or 30 rounds (`TERM_ROUNDS`): the chain counts slots, so
   a new loan is sent with 0.8 × term × measured slots per round, and the keeper collects
   at the promised round, not before. A top-up keeps the due round. Repaying pays interest
   first; under 1 coin left owing is forgiven.
@@ -253,6 +274,28 @@ No existing instruction changed. `borrow` still mints into the vault and `repay`
 burns from it; the coins reach and leave an agent's purse on the next pass, which the
 round loop runs as soon as the round's writes are done.
 
+**A burn takes coins out of the vault, and the vault holds only the bank's cash.** Every
+other SETTLER in existence is in an agent's purse. But the coins a repayment or a
+foreclosure *destroys* are the debtor's, not the bank's — so the burn was asking the bank
+to front them, and once write-offs had eaten the bank's cash the vault was empty and the
+SPL burn came back `0x1`, "insufficient funds". Long runs reached that state and then
+every foreclosure reverted for good: 20 failures in a 111-round load test, and faster
+rounds get there inside a minute.
+
+So `repay` and `liquidate` now carry the debtor's purse as a **remaining account** (no
+instruction data, `Accounts` struct, discriminator or IDL changed, and a caller that sends
+none behaves exactly as before), and `fund_burn` moves the coins home before burning: it
+takes from that purse the larger of what the burn is short and what the purse is holding
+that the ledger no longer says is that agent's. The second half matters as much as the
+first — leaving the interest and the penalty behind in the purse was what made the vault
+drift below the bank's cash, so the *next* foreclosure in the same round found it short
+even though its own debtor was good for it. Nothing about the economy moves: the debtor's
+`cash` has already been reduced by at least this much, and `settle_cash` would have moved
+exactly these coins at the end of the round anyway. The purse is checked against its PDA,
+so no other account can be drained. Verified at 100 agents over 206 rounds: **0 failures,
+every invariant intact**, and `check-purses.sh` (32/32) and `check-settlers.sh` (30/30)
+still pass unchanged.
+
 20 purses per transaction: ~640 bytes of account keys and, measured on a validator,
 80,522 compute units in the worst case (nothing pairs, all 20 paid from the vault) and
 66,758 when trades pair. Both are inside the **default** 200,000, so this needs no
@@ -275,8 +318,17 @@ a local validator; devnet's ~10 req/s is too slow for 3-second rounds.
 - No standalone script for a judge to call `liquidate` themselves.
 - No Metaplex token metadata, so explorers show the mint's address rather than the name
   "SETTLERS". The metadata program isn't on a bare `solana-test-validator`; on devnet it is.
+- **The bank's fire sale is the one burn left without a purse to draw on.** Selling seized
+  goods pays down `bad_debt`, which destroys coins — and those coins are spread across
+  every buyer's purse, so there is no single account to pull them from. While bad debt is
+  outstanding that auction can still come back `0x1`. It no longer costs the villagers
+  their market: `world.mjs clearGood` sends the same book again without the bank's ask, so
+  the village trades and the bank keeps the goods and marks them down again next round (2
+  such rounds in 206). The proper fix is to credit the sale to the bank's cash and sweep
+  the bad debt down inside `settle_cash`, which is the one instruction that can burn once
+  every purse matches.
 
-All three are in FUTURE_PLAN.md §6.
+All of these are in FUTURE_PLAN.md §6.
 
 ---
 
@@ -324,17 +376,81 @@ check_market                                                  — last round's b
 |---|---|---|
 | `stub` | `brains/stub.mjs` | Free heuristic placeholder. No API key. For load tests. |
 | `openai` | `brains/openai.mjs` | Chat Completions tool-calling, default `gpt-5.6-luna`. `reasoning_effort` must be `'none'` — gpt-5.x refuses tools otherwise. |
-| `claude` | `brains/claude.mjs` | Messages API tool-calling, `claude-haiku-4-5`. |
+| `baseten` | `brains/baseten.mjs` | Baseten's OpenAI-compatible Model APIs. Each agent is dealt a model from a pool (`BASETEN_MODELS`) and keeps it for the run; stats are kept per model. |
+
+Both real brains run the same decision loop, `brains/chat.mjs`; they differ only in client, prices and model choice.
 
 Both real brains get the same system prompt (`brains/prompt.mjs`) and the same
 per-turn observation: cash and goods (free vs. committed), hunger, wellbeing, lake
 level, prices, sell-through, and a short memory of what just happened, including
 rejected actions.
 
-**One decision per agent per round**, all in parallel. The round waits up to
-`DECIDE_TIMEOUT_MS` (8s); a late call is aborted and anything it still tries is refused,
-so it never touches a round that has run; the agent keeps its last job and standing
-orders. Each round logs how long it waited for its slowest agent.
+**One decision per agent per round**, all in parallel. The round closes as soon as
+`DECIDE_QUORUM` of the village has answered (0.9; 1.0 waits for everyone, as it used to),
+or at `DECIDE_TIMEOUT_MS` (8s), whichever comes first. The last tenth of a village is the
+slow tenth: at 100 agents the slowest answer *was* the timeout itself while the median was
+2.3s, so waiting for it cost more than half the round.
+
+A villager the quorum leaves behind is treated exactly as one that ran out of time: the
+call is aborted, `tools.close()` refuses anything it still tries, its draft orders are
+dropped, and even the thought its reply carries is discarded — so a late answer can
+neither touch the round that has run nor leak into the next one. It keeps its last job and
+posts no orders. Both dials are live in the control panel, and each round reports
+`decide.stragglers` and `decide.quorumMs` beside the old `timeouts` and `noAnswer`.
+
+### Decisions on the wire
+
+Each villager's decision is broadcast on `/events` **the moment that villager's own answer
+lands**, not at the round barrier: at 100 agents the decisions of one round arrive spread
+over several seconds, and the island can show each one acting as it comes in. `/state`
+reflects the same thing at once (`agents[].activity` is `deciding` from the start of a
+villager's turn until its answer arrives, then the task it chose).
+
+```jsonc
+{ "type": "decision", "t": 1758342000123, "tick": 7,
+  "agent": 13, "name": "Tracyrus", "round": 8,     // the round being decided
+  "ms": 3565,                                       // how long this villager took
+  "outcome": "ok",                                  // "ok" | "timeout" | "error" | "no answer"
+  "straggler": true,                                // only present when the quorum moved on without it
+  "kept": false,                                    // true = it repeated its last job (no answer)
+  "activity": "build_house",                        // the shift it chose, or null
+  "place": "building site",                         // where that shift happens (CFG.TASKS[...].place)
+  "thought": "…",                                   // its own one-line reason
+  "orders": [{ "side": "buy", "good": "wood", "qty": 31, "limit": 100, "seq": 3 }],  // limit in cents
+  "saw": "…", "actions": [ … ]                      // the full prompt and every tool call, for the run log
+}
+```
+
+`straggler` and `place` were added beside the existing fields; nothing was renamed or
+removed. Two other per-agent events land during the same window and are worth listening
+for: `activity` (`{agent, name, task, kept}`), emitted the instant the shift is chosen —
+before the decision is even finished — and `order` (`{agent, name, side, good, qty, price,
+seq, reason?, stall?, shop?}`) for each order as it is posted.
+
+### Speed, measured (100 agents, `gpt-5.6-luna`, 100ms slots)
+
+| | before | after |
+|---|---|---|
+| round length | 9.5s | **6.4s** (5.9s before the provider throttled us) |
+| rounds a minute | 6.2 | **9.4** |
+| the chain half of a round | 2.35s | **0.92s** |
+| wait for the decide phase, median | 7.3s | **5.0s** |
+| turns that timed out | 122 / 3,100 (3.9%) | 11 / 1,100 (1.0%) |
+| villagers the quorum left behind | — | 100 / 1,100 (9.1%) |
+| villagers that answered nothing | 88 | 52 |
+| 429s per call | 0.59 (`LLM_CONCURRENCY=100`) | 0.37 (`=50`) |
+
+Three things bought that: the quorum close (§5), 100ms slots (§7), and the earlier round
+of behaviour-neutral work on the chain phase.
+
+**There is no concurrency setting any more** (that run had one, `LLM_CONCURRENCY`, since
+removed): every villager calls the model at once, so concurrency is the number of agents,
+and the village's size is chosen on the dashboard beside Start (default 100, up to the
+ledger's 137). The provider's limit is **per minute**, and faster rounds spend it
+faster: this run was clean for 9 rounds, then 429s arrived at ~1,000 calls a minute and
+the next round's median decision went 3.3s → 5.3s. That, not concurrency, is now the
+ceiling at 100 agents — a higher-tier key, or a shorter observation, is what moves it.
+A village of 30 runs at ~3.6s a round and never sees a 429.
 
 ### Cost, measured
 
@@ -390,6 +506,15 @@ goods, no metrics) still analyze.
   it's the answer to growing past ~100 agents in one atomic auction.
 - **`solana-test-validator`** (`http://127.0.0.1:8899`) is what this is developed
   against, not devnet — devnet's public RPC limit (~10 req/s) is too slow for the sim.
+- **`--ticks-per-slot 16` (~100ms slots) is the default** in `backend/scripts/validator.sh`,
+  because almost all of a round's chain time is waiting for confirmations and a
+  confirmation can't come sooner than a slot. At 100 agents it takes the chain half of a
+  round from 2.35s to 0.92s. Two things had to be true first: the blockhash cache is
+  retired well inside 150 slots (`chain.mjs BLOCKHASH_TTL`, which is what "Blockhash not
+  found" used to be at short slots), and the bank's rate is per round rather than per
+  minute of real time, so shorter slots no longer change what credit costs. Measured over
+  206 rounds at 100 agents: no blockhash failure, every invariant intact. It costs about
+  twice the CPU; `TICKS_PER_SLOT=64` gives Solana's own 400ms slots back.
 - **Anchor's JS `BorshInstructionCoder` caps instruction data at 1000 bytes** and a full
   order book overflows it with an unhelpful `ERR_OUT_OF_RANGE`. Instructions are
   hand-encoded in `chain.mjs` instead of `program.methods.*`.
@@ -431,3 +556,52 @@ instructions a stranger can call.
 - **Public bank:** terms are policy set in config (a central-bank panel later), not
   chosen for profit.
 - **Change the economics or fix the information, never steer the result in the prompt.**
+
+---
+
+## 10. The front end
+
+The island and the admin panel are **one page** (`web/`, Vite). The island's 3D scene and the
+`/events` stream are created once and live for as long as the tab does: switching views only
+moves them. In the admin panel the island keeps rendering as a small live inset in
+the top right corner, at about 8 fps; clicking it expands it to the full island, and `Esc`
+or the "Detailed dashboard" button goes back. The view is the URL (`/` island,
+`/dashboard` admin), so links and the back button work.
+
+```bash
+npm run web:install          # once
+npm run web:build            # build to web/dist; the backend then serves it
+npm start                    # the village, serving web/dist at http://localhost:8787
+
+npm run web:dev              # Vite on http://localhost:5183, proxying to the backend
+BACKEND=http://127.0.0.1:8811 npm run web:dev    # ...to a different backend
+```
+
+`backend/src/server.mjs` serves `web/dist` with a single-page fallback when it exists, and the
+old standalone pages (`frontend/Moku Island.dc.html`, `backend/public/index.html`) when it
+doesn't, so the village runs whether or not the app has been built.
+
+One store (`web/src/store.js`) polls `/state` once a second and holds the one `EventSource`;
+every view reads from it. The panel's charts share a range toggle (all rounds, or the last 50)
+that is remembered in `localStorage`, and long runs are drawn from a sample of at most 400
+points.
+
+**Nobody moves in a lump.** A round's hundred answers land spread over a few seconds, and the
+island shows each villager the moment *their own* answer lands rather than all of them at the
+barrier. `web/src/island/pulse.js` turns the per-agent events — `decision` first, else
+`activity` / `order` / `borrow` / `repay` — into one "act" per villager per round: the first
+event of the round from an agent starts their act, everything after it that round fills it in.
+That act is what walks that one blob to its new workplace and writes its line
+on the market wire and the live feed. `/state` is still the truth — first load, reconnection,
+drift — but it only sets villagers whose news the pulse does not already hold (`owns()`),
+so a poll landing mid-burst can never gather the village up again. The market trip after a
+settle is per villager too: each sets off in their own moment and leaves the moment their own
+next answer arrives, and dusk follows the size of the crowd rather than a flag.
+
+A burst (the stub brain, or a quorum close) is spread over at most 1.5 s, a gap of
+`1500 ms / villagers` at a time, and the queue is always released at the round barrier — so
+nobody ever lags more than 1.5 s behind their own event or spills into the next round. Answers
+that are already spread out, as a real model's are, find the queue empty and pass through
+untouched. `?jitter=1200` is a test-only front-end flag: it holds each agent's events back by
+its own slice of that many ms, so the stub can be made to arrive like a model. Nothing in the
+backend knows about it.

@@ -12,6 +12,10 @@ const PRICE = {
   'gpt-5-nano': [0.05, 0.40], 'gpt-5-mini': [0.25, 2.00], 'gpt-5.4-nano': [0.20, 1.25],
 };
 
+// One cache key for the whole village: every villager's request starts with the same system
+// prompt and tool schemas, so they should all read the same cached prefix.
+const CACHE_KEY = 'moku-village';
+
 export function openaiBrain() {
   return chatBrain({
     label: `openai (${CFG.MODEL})`,
@@ -20,6 +24,10 @@ export function openaiBrain() {
     price: model => PRICE[model] ?? [0, 0],
     // gpt-5.x models reason by default, and chat completions refuses tools unless
     // reasoning is off. Off is also faster and cheaper — this is a quick decision.
-    params: model => (model.startsWith('gpt-5') ? { reasoning_effort: 'none' } : {}),
+    // Every villager sends the same system prompt and the same tool schemas — ~78% of the
+    // request, and identical until a dial moves. One key for the whole village keeps those
+    // requests on the same cache, so that prefix is read, not re-read.
+    params: model => ({ prompt_cache_key: CACHE_KEY, ...(model.startsWith('gpt-5') ? { reasoning_effort: 'none' } : {}) }),
+    cachedRate: 0.1,   // OpenAI bills a cached input token at a tenth of the input price
   });
 }

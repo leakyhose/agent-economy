@@ -79,7 +79,34 @@ export async function connectChain() {
   };
   let txCount = 0;
 
+  // web3.js puts a blockhash on every transaction out of a cache it holds for 30 seconds,
+  // refilled from `getLatestBlockhash('finalized')`. A blockhash is good for 150 slots —
+  // 60s at the default 400ms slot, but only 20s on a validator run with shorter slots, and
+  // then every send is rejected with "Blockhash not found". So retire the cache well inside
+  // 150 slots and let web3.js refill it: it is also what stops two identical instructions
+  // sent moments apart from colliding on one signature, so we don't set blockhashes ourselves.
+  const BLOCKHASH_TTL = () => Math.min(25_000, CFG.SLOT_MS * 50);
+  const freshenBlockhash = () => {
+    const info = conn._blockhashInfo;
+    if (info?.latestBlockhash && Date.now() - info.lastFetch > BLOCKHASH_TTL()) info.latestBlockhash = null;
+  };
+
+  // How long a slot really takes on this cluster. The bank's interest is a rate per ROUND
+  // and the chain can only count slots, so a validator with a different slot length puts a
+  // different number of slots in the same round and would quietly change the rate. Measured
+  // once, at startup (server.mjs turns it into the interest period, and it also sizes the
+  // blockhash cache above); CFG.SLOT_MS is the fallback if the read fails.
+  async function measureSlotMs(overMs = 1200) {
+    try {
+      const a = await conn.getSlot('confirmed'), t0 = Date.now();
+      await new Promise(r => setTimeout(r, overMs));
+      const b = await conn.getSlot('confirmed'), dt = Date.now() - t0;
+      return b > a ? dt / (b - a) : CFG.SLOT_MS;
+    } catch { return CFG.SLOT_MS; }
+  }
+
   async function send(ix, extraSigners = [], signers = [authority, ...extraSigners]) {
+    freshenBlockhash();
     const tx = new Transaction().add(ix);
     try {
       const sig = await sendAndConfirmTransaction(conn, tx, signers, { commitment: 'confirmed' });
@@ -177,29 +204,57 @@ export async function connectChain() {
     ];
     // The authority pays rent for each purse, so it must be writable here.
     keys[1] = { pubkey: authority.publicKey, isSigner: true, isWritable: true };
-    const sigs = [];
-    for (let i = 0; i < n; i += MAX_PURSES_PER_TX) {
-      const agents = Array.from({ length: Math.min(MAX_PURSES_PER_TX, n - i) }, (_, k) => i + k);
-      sigs.push(await send(purseCall(DISC.init_purses, agents, keys)));
-    }
-    return sigs;
+    // Disjoint purses again, so the chunks go out together: one wait at startup, not n/20.
+    const groups = [];
+    for (let i = 0; i < n; i += MAX_PURSES_PER_TX)
+      groups.push(Array.from({ length: Math.min(MAX_PURSES_PER_TX, n - i) }, (_, k) => i + k));
+    return Promise.all(groups.map(g => send(purseCall(DISC.init_purses, g, keys))));
   }
 
   // Move real SETTLERS between the agents named, until every purse holds what the ledger
   // says that agent has. The program derives the transfers; we only say who to look at.
-  async function settleCash(agents) {
-    const list = [...new Set(agents)].sort((a, b) => a - b);
+  //
+  // A chunk pays its own receivers out of its own payers and settles the remainder against
+  // the vault, so a chunk that is short pulls coins the vault may not hold yet. That is why
+  // the chunks cannot simply all go out at once: whichever the validator happened to run
+  // first could find the vault empty (SPL "insufficient funds") and lose the whole pass.
+  // With `cashOf` we can read every purse in ONE call, sort the agents so the payers come
+  // first, and send the chunks in two waves — everything that pays into the vault, then
+  // everything that draws on it. Inside a wave the order cannot matter: the first wave only
+  // ever adds, and after it the vault holds the whole of what the second wave takes out
+  // (vault + purses = supply + bank cash is the program's own invariant). Two waits instead
+  // of one per chunk — five at a hundred agents.
+  async function settleCash(agents, cashOf = null) {
+    let list = [...new Set(agents)].sort((a, b) => a - b);
     const keys = [
       ...writeKeys(),
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: vault, isSigner: false, isWritable: true },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     ];
-    const sigs = [];
-    for (let i = 0; i < list.length; i += MAX_PURSES_PER_TX) {
-      sigs.push(await send(purseCall(DISC.settle_cash, list.slice(i, i + MAX_PURSES_PER_TX), keys)));
+    const chunk = c => send(purseCall(DISC.settle_cash, c, keys));
+    const cut = xs => { const out = []; for (let i = 0; i < xs.length; i += MAX_PURSES_PER_TX) out.push(xs.slice(i, i + MAX_PURSES_PER_TX)); return out; };
+    if (!cashOf || list.length <= MAX_PURSES_PER_TX) {
+      const out = []; for (const c of cut(list)) out.push(await chunk(c)); return out;
     }
-    return sigs;
+    // what each purse holds now, in one read
+    let held;
+    try {
+      held = new Map();
+      for (let i = 0; i < list.length; i += 100) {
+        const part = list.slice(i, i + 100);
+        const infos = await conn.getMultipleAccountsInfo(part.map(a => purseOf(a).pubkey), 'confirmed');
+        part.forEach((a, k) => held.set(a, infos[k] ? Number(infos[k].data.readBigUInt64LE(64)) : 0));
+      }
+    } catch { held = null; }
+    if (!held) { const out = []; for (const c of cut(list)) out.push(await chunk(c)); return out; }
+    const owed = a => cashOf(a) - held.get(a);                 // > 0: this purse must be paid
+    list = list.slice().sort((a, b) => owed(a) - owed(b));     // payers first, receivers last
+    const groups = cut(list);
+    const pays = groups.filter(c => c.reduce((t, a) => t + owed(a), 0) <= 0);
+    const draws = groups.filter(c => c.reduce((t, a) => t + owed(a), 0) > 0);
+    const first = await Promise.all(pays.map(chunk));
+    return [...first, ...await Promise.all(draws.map(chunk))];
   }
 
   // Who paid whom in a settle_cash transaction, read back off the chain: the SPL
@@ -224,20 +279,24 @@ export async function connectChain() {
   }
 
   // Signed goods deltas: catches, meals, crafting, wear. Chunked to fit a transaction.
+  // The chunks go out together, not one after another: they all write the same ledger, so
+  // the validator runs them in turn inside one block instead of making us wait a slot each.
+  // Callers must hand in at most ONE line per (agent, good) — world.mjs nets them first —
+  // so which chunk lands first can't decide whether a balance dips below zero.
+  function settleIx(chunk) {
+    const d = Buffer.alloc(8 + 4 + chunk.length * 7);
+    DISC.settle.copy(d, 0);
+    d.writeUInt32LE(chunk.length, 8);
+    chunk.forEach((x, k) => {
+      const o = 12 + k * 7;
+      d.writeUInt16LE(x.agent, o); d.writeUInt8(x.good, o + 2); d.writeInt32LE(x.delta, o + 3);
+    });
+    return new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeKeys() });
+  }
   async function settle(deltas) {
-    const sigs = [];
-    for (let i = 0; i < deltas.length; i += MAX_DELTAS_PER_TX) {
-      const chunk = deltas.slice(i, i + MAX_DELTAS_PER_TX);
-      const d = Buffer.alloc(8 + 4 + chunk.length * 7);
-      DISC.settle.copy(d, 0);
-      d.writeUInt32LE(chunk.length, 8);
-      chunk.forEach((x, k) => {
-        const o = 12 + k * 7;
-        d.writeUInt16LE(x.agent, o); d.writeUInt8(x.good, o + 2); d.writeInt32LE(x.delta, o + 3);
-      });
-      sigs.push(await send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeKeys() })));
-    }
-    return sigs;
+    const chunks = [];
+    for (let i = 0; i < deltas.length; i += MAX_DELTAS_PER_TX) chunks.push(deltas.slice(i, i + MAX_DELTAS_PER_TX));
+    return Promise.all(chunks.map(c => send(settleIx(c))));
   }
 
   // One good's batch auction. bids desc, asks asc — the program verifies it.
@@ -273,15 +332,24 @@ export async function connectChain() {
     collateral.forEach((q, g) => d.writeUInt32LE(q, 26 + g * 4));
     return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
   }
+  // The purse of the agent whose coins an instruction is about to burn, sent as a trailing
+  // (remaining) account. Repaying principal and foreclosing both DESTROY coins, and the
+  // coins they destroy are the debtor's own — they sit in the debtor's purse, while the
+  // vault a burn reads holds only the bank's cash. Without this the bank had to front every
+  // burn, and once write-offs had eaten its cash the vault was empty and the SPL burn failed
+  // with "insufficient funds" (0x1): foreclosures reverted for good. The program checks the
+  // account against the purse PDA and draws only what the burn is short (lib.rs fund_burn),
+  // so this moves coins the round would have moved anyway, a few seconds earlier.
+  const purseKey = agent => ({ pubkey: purseOf(agent).pubkey, isSigner: false, isWritable: true });
   // Interest accrued to the chain's slot is paid first. Leaving < FORGIVE_BELOW owing closes the loan.
   async function repay(agent, amount) {
     const d = Buffer.alloc(8 + 2 + 8);
     DISC.repay.copy(d, 0);
     d.writeUInt16LE(agent, 8); d.writeBigUInt64LE(BigInt(amount), 10);
-    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: writeMintKeys() }));
+    return send(new TransactionInstruction({ programId: PROGRAM_ID, data: d, keys: [...writeMintKeys(), purseKey(agent)] }));
   }
   // Signed and paid for by the keeper alone — the authority is not on these transactions.
-  const anyone = (name, arg, coin = false) => {
+  const anyone = (name, arg, coin = false, rest = []) => {
     const d = Buffer.alloc(8 + (arg === undefined ? 0 : 2));
     DISC[name].copy(d, 0);
     if (arg !== undefined) d.writeUInt16LE(arg, 8);
@@ -289,12 +357,13 @@ export async function connectChain() {
       { pubkey: ledger.publicKey, isSigner: false, isWritable: true },
       { pubkey: keeper.publicKey, isSigner: true, isWritable: false },
       ...(coin ? coinKeys() : []),
+      ...rest,
     ] }), [], [keeper]);
   };
   // Collect or foreclose: allowed once overdue or under margin (see liquidatable()). An overdue
   // loan whose debtor has the cash is simply repaid from it — no penalty, collateral released
   // (see collects()); otherwise it's a foreclosure with the penalty.
-  const liquidate = agent => anyone('liquidate', agent, true);
+  const liquidate = agent => anyone('liquidate', agent, true, [purseKey(agent)]);
   // Pay half the bank's equity above its capital requirement to every agent equally. A no-op without a surplus.
   const payDividend = () => anyone('pay_dividend');
 
@@ -359,7 +428,7 @@ export async function connectChain() {
 
   return {
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, liquidate, payDividend,
-    fundKeeper, initPurses, settleCash, purseBalance, transfersIn,
+    fundKeeper, initPurses, settleCash, purseBalance, transfersIn, measureSlotMs,
     purseOf: agent => purseOf(agent).pubkey,
     MAX_PURSES_PER_TX,
     slot: () => conn.getSlot('confirmed'),

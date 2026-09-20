@@ -2,6 +2,9 @@
   "name": "agent-economy",
   "private": true,
   "scripts": {
-    "start": "node -e \"const p=require('node:path');const u=require('node:url');import(u.pathToFileURL(p.join(process.env.INIT_CWD||process.cwd(),'backend','src','server.mjs')).href)\""
+    "start": "node -e \"const p=require('node:path');const u=require('node:url');import(u.pathToFileURL(p.join(process.env.INIT_CWD||process.cwd(),'backend','src','server.mjs')).href)\"",
+    "web:install": "npm --prefix web install",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build"
   }
 }

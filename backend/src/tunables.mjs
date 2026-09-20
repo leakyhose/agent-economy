@@ -32,6 +32,8 @@ export const getVal = path => { const [o, k] = walk(path); return o[k]; };
 const setVal = (path, v) => { const [o, k] = walk(path); o[k] = v; };   // always a leaf: object identities never change
 
 const pctFmt = v => `${+(v * 100).toFixed(1)}%`;
+// A rate small enough that one decimal place of a percent would round it away.
+const ratePct = v => `${+(v * 100).toFixed(2)}%`;
 const x = v => `${+v.toFixed(2)}×`;
 const n = v => String(+v.toFixed(2));
 
@@ -55,7 +57,7 @@ export const TUNABLES = [
   { key: 'TASKS.build_house.wood', group: 'nature', label: 'wood a house costs', min: 1, max: 300, step: 5, int: true,
     help: 'The same for everyone, paid as the house goes up. The village\'s biggest single demand for wood.' },
   { key: 'TASKS.build_house.shifts', group: 'nature', label: 'shifts a house takes', min: 1, max: 12, step: 1, int: true,
-    help: 'At crafting skill 1.0; a 2.0 crafter halves it. Longer builds mean more time between spending and payback — which is what credit is for.' },
+    help: 'At crafting skill 1.0; a 2.0 crafter halves it. Longer builds mean more time between spending and payback, which is what credit is for.' },
   { key: 'NET_WEAR', group: 'nature', label: 'chance a net tears per fishing shift', min: 0, max: 0.5, step: 0.01, fmt: pctFmt,
     help: 'Nets are the village\'s wearing capital. At 0 they last forever and crafting dies after everyone owns one.' },
   { key: 'LEARN', group: 'nature', label: 'learning by doing, per shift', min: 0, max: 0.03, step: 0.001, fmt: pctFmt,
@@ -68,11 +70,11 @@ export const TUNABLES = [
     help: 'Of every villager\'s free (unsold, unpledged) food. The blight dial: push it up and a full larder stops being safety.',
     say: (a, b) => `Food is keeping ${b > a ? 'worse' : 'better'} than it did: ${pctFmt(b)} of what is not sold or pledged now spoils each round, where it was ${pctFmt(a)}.` },
   { key: 'SPOIL.1', group: 'spoilage', label: 'wood that rots each round', min: 0, max: 0.6, step: 0.01, fmt: pctFmt,
-    help: 'Normally 0. Raise it and stockpiling firewood stops working — a damp winter.' },
+    help: 'Normally 0. Raise it and stockpiling firewood stops working: a damp winter.' },
   { key: 'SPOIL.2', group: 'spoilage', label: 'nets lost each round', min: 0, max: 0.4, step: 0.01, fmt: pctFmt,
     help: 'On top of tearing while fishing. A storm on the drying racks.' },
   { key: 'SPOIL.4', group: 'spoilage', label: 'houses lost each round', min: 0, max: 0.2, step: 0.005, fmt: pctFmt,
-    help: 'The hurricane dial. Finished houses only — a half-built one is never taken. Destroys the village\'s savings and its collateral at once.',
+    help: 'The hurricane dial. Finished houses only: a half-built one is never taken. Destroys the village\'s savings and its collateral at once.',
     say: (a, b) => b > a ? `Houses are standing badly: about ${pctFmt(b)} of the village\'s finished houses are being lost each round.`
                          : `Houses are standing better again: ${pctFmt(b)} lost each round, where it was ${pctFmt(a)}.` },
 
@@ -96,7 +98,7 @@ export const TUNABLES = [
     help: 'What going hungry costs. The whole reason food comes first.' },
   { key: 'WELLBEING.EAT.1', group: 'wellbeing', label: 'eating one helping', min: 0, max: 4, step: 0.1, fmt: n },
   { key: 'WELLBEING.EAT.2', group: 'wellbeing', label: 'eating two helpings', min: 0, max: 4, step: 0.1, fmt: n,
-    help: 'The gap to one helping is what a second helping is worth — and what it competes with a house for.' },
+    help: 'The gap to one helping is what a second helping is worth, and what it competes with a house for.' },
   { key: 'WELLBEING.EAT.3', group: 'wellbeing', label: 'eating three helpings', min: 0, max: 4, step: 0.1, fmt: n },
   { key: 'WELLBEING.WARM', group: 'wellbeing', label: 'being warm', min: 0, max: 4, step: 0.1, fmt: n },
   { key: 'WELLBEING.COLD', group: 'wellbeing', label: 'going cold', min: -6, max: 0, step: 0.1, fmt: n },
@@ -115,7 +117,7 @@ export const TUNABLES = [
   { key: 'BANK_SALE_STEP', group: 'market', label: 'the bank cuts a seized good by, each unsold round', min: 0, max: 0.3, step: 0.01, fmt: pctFmt,
     help: 'A fire sale descends from the last price until someone takes it, never below book value.' },
   { key: 'LADDER', group: 'market', label: 'show villagers the depth ladder', bool: true,
-    help: 'On: they see the top few levels a side, what was offered and what sold. Off: best bid and cheapest ask only — and prices stop responding to a glut.' },
+    help: 'On: they see the top few levels a side, what was offered and what sold. Off: best bid and cheapest ask only, and prices stop responding to a glut.' },
 
   // ---- the bank ------------------------------------------------------------------
   { key: 'BANK.CREDIT', group: 'bank', label: 'credit', bool: true,
@@ -127,8 +129,8 @@ export const TUNABLES = [
   { key: 'BANK.TERM_ROUNDS', group: 'bank', label: 'rounds a loan runs', min: 2, max: 120, step: 1, int: true,
     help: 'New loans only; loans already out keep the round they were promised.',
     say: (a, b) => `The bank is writing new loans over ${b} rounds now, where it wrote them over ${a}.` },
-  { key: 'BANK.RATE_PER_MIN', group: 'bank', label: 'interest, per minute held', min: 0, max: 0.5, step: 0.01, fmt: pctFmt, live: false,
-    help: 'Charged per slot for the time a loan is held. Fixed on the ledger at creation: changing it mid-run needs a set_terms instruction in lib.rs, so this applies to the next run.' },
+  { key: 'BANK.RATE_PER_ROUND', group: 'bank', label: 'interest, per round held', min: 0, max: 0.05, step: 0.0005, fmt: ratePct, live: false,
+    help: 'What a loan costs to hold for one round, on the principal. A round is the village\'s unit of time, so the cost of credit is a cost per round: running the simulation faster no longer makes borrowing cheaper. The chain counts slots, so it is sent as this rate over one round\'s worth of them. Fixed on the ledger at creation: changing it mid-run needs a set_terms instruction in lib.rs, so this applies to the next run.' },
   { key: 'BANK.LTV_CEILING', group: 'bank', label: 'LTV ceiling written into the ledger', min: 0, max: 0.95, step: 0.05, fmt: pctFmt, live: false,
     help: 'The hard limit the Solana program enforces for the life of the ledger. The live LTV dial tightens inside it and is enforced off-chain; set the two equal for a run where the chain alone decides.' },
   { key: 'BANK.KAPPA', group: 'bank', label: 'capital ratio', min: 0.01, max: 1, step: 0.01, fmt: pctFmt, live: false,
@@ -142,6 +144,8 @@ export const TUNABLES = [
   { key: 'DECIDE_TIMEOUT_MS', group: 'clock', label: 'how long a round waits for the slowest villager', min: 1000, max: 30000, step: 500, int: true,
     fmt: v => `${(v / 1000).toFixed(1)}s`,
     help: 'A villager who does not answer keeps its last job and posts no new orders.' },
+  { key: 'DECIDE_QUORUM', group: 'clock', label: 'villagers a round waits for before it starts', min: 0.1, max: 1, step: 0.05, fmt: pctFmt,
+    help: 'Once this share of the village has answered, the round runs. The rest are left behind exactly as if they had run out of time: they keep their last job and post no new orders. 100% waits for everyone, as it used to. The last tenth of a village is usually the slow tenth, so lowering this is the single quickest way to shorten a round.' },
 
   // ---- what the village is born with: next run only -------------------------------
   { key: 'AGENTS', group: 'start', label: 'villagers', min: 2, max: 137, step: 1, int: true, live: false,
@@ -168,7 +172,7 @@ export const GROUPS = [
   { id: 'nature',    title: 'nature & production', blurb: 'what a shift of work brings in' },
   { id: 'spoilage',  title: 'spoilage',            blurb: 'what the village loses every round whether it sells or not' },
   { id: 'needs',     title: 'needs',               blurb: 'what people must eat, burn and keep up' },
-  { id: 'wellbeing', title: 'wellbeing',           blurb: 'the goal — and so what everything is worth' },
+  { id: 'wellbeing', title: 'wellbeing',           blurb: 'the goal, and so what everything is worth' },
   { id: 'market',    title: 'the market',          blurb: 'how fast prices find their level' },
   { id: 'bank',      title: 'the bank',            blurb: 'credit, and the only way new coins are made' },
   { id: 'clock',     title: 'the clock',           blurb: '' },

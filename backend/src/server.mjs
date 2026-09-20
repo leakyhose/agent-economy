@@ -46,6 +46,16 @@ function broadcast(e) {
   const line = `data: ${JSON.stringify(e)}\n\n`;
   for (const res of sseClients) res.write(line);
   sim?.log.write(JSON.stringify(e) + '\n');
+  // Each villager's decisions, kept for the dashboard's per-agent log (GET /agent). The
+  // observation (`saw`) is left out — it is kilobytes a turn and is in events.jsonl anyway.
+  if (e.type === 'decision' && sim?.agentLog) {
+    const log = sim.agentLog.get(e.agent) ?? [];
+    if (!log.length) sim.agentLog.set(e.agent, log);
+    log.push({ t: e.t, round: e.round, outcome: e.outcome, ms: e.ms, kept: e.kept, thought: e.thought, activity: e.activity,
+               orders: e.orders,
+               actions: (e.actions ?? []).map(x => ({ tool: x.tool, input: x.input, result: String(x.result ?? '').slice(0, 400), ...(x.rejected ? { rejected: true } : {}) })) });
+    if (log.length > 1000) log.shift();
+  }
   if (e.type === 'round') {
     // the keeper's liquidate signature for each collection / foreclosure, for the dashboard's bank feed
     for (const f of [...e.foreclosures, ...e.collected]) if (f.sig) sim.sigs.set(`${e.round}|${f.kind}|${f.name}`, f.sig);
@@ -57,46 +67,56 @@ function broadcast(e) {
       ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} idle ${acts.idle ?? 0}` +
       ` | hungry ${W.agents.filter(a => a.hunger > 0).length} cold ${W.agents.filter(a => a.cold >= 2).length}` +
       ` | real gdp ${coins(e.metrics.realGdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
-      (e.decide ? ` | waited ${(e.decide.slowest / 1000).toFixed(1)}s${e.decide.timeouts ? ` (${e.decide.timeouts} timed out)` : ''}` : '') +
+      (e.decide ? ` | decide p50 ${(e.decide.p50 ?? e.decide.median) / 1000 | 0}.${String(Math.round(((e.decide.p50 ?? e.decide.median) % 1000) / 100))}s` +
+        ` waited ${(e.decide.slowest / 1000).toFixed(1)}s${e.decide.timeouts ? ` (${e.decide.timeouts} timed out)` : ''}` +
+        `${e.decide.stragglers ? ` (${e.decide.stragglers} left behind)` : ''}` : '') +
       (e.collected.length ? ` | collected ${e.collected.map(f => f.name).join(', ')}` : '') +
       (e.foreclosures.length ? ` | FORECLOSED ${e.foreclosures.map(f => f.name).join(', ')}` : '') + ` | ${e.txs} tx ${e.ms}ms` +
-      (st.calls ? ` | llm ${st.calls} calls $${st.cost.toFixed(3)}` : ''));
+      // where the chain half of the round went, so a slow round can be read, not guessed
+      (e.phases ? ` [${Object.entries(e.phases).filter(([, v]) => v >= 20).map(([k, v]) => `${k} ${v}`).join(' ')}]` : '') +
+      (st.calls ? ` | llm ${st.calls} calls $${st.cost.toFixed(3)}${st.rateLimited ? ` ${st.rateLimited} 429s` : ''}` : ''));
   }
   if (e.type === 'error') console.error(`  ! ${e.message}`);
 }
 
 // How many villagers, from the dashboard or from .env. The ledger has room for MAX_AGENTS
-// and the program refuses more, so the dial stops where the chain does. Every villager
-// decides at once, so the concurrency gate rises with the village; it never falls below
-// what .env asked for.
+// and the program refuses more, so the dial stops where the chain does.
 function setAgents(n) {
   const want = Math.round(+n);
   if (!Number.isFinite(want) || want < 1) return CFG.AGENTS;
   CFG.AGENTS = Math.min(want, MAX_AGENTS);
-  CFG.LLM_CONCURRENCY = Math.max(CFG.LLM_CONCURRENCY, CFG.AGENTS);
   return CFG.AGENTS;
 }
 
-async function start(choice, agents) {
+// { brain, agents } from the dashboard; whatever is left out is what .env says, or the last run's.
+async function start({ brain: choice, agents } = {}) {
   if (sim) return 'already running';
   if (agents != null) setAgents(agents);
   const myGen = ++gen;
   const brain = await makeBrain(BRAINS.includes(choice) ? choice : CFG.BRAIN);
   const chain = await connectChain();
-  // The bank's terms, fixed on-chain for the life of the ledger. A minute is 60000 / SLOT_MS
-  // slots: interest is RATE_PER_MIN per minute held. Terms are chosen in rounds, whose length
-  // the chain can't know, so the chain accepts any whole number of slots (unit 1) and the sim
-  // sends each new loan's term as rounds × the measured slots per round (world.mjs termSlots).
+  // The bank's terms, fixed on-chain for the life of the ledger. Interest is
+  // BANK.RATE_PER_ROUND per ROUND held. Terms are chosen in rounds, whose length the chain
+  // can't know, so the chain accepts any whole number of slots (unit 1) and the sim sends
+  // each new loan's term as rounds × the measured slots per round (world.mjs termSlots).
   // No credit (CREDIT=0) is LTV 0, which the program enforces: every borrow fails.
   const B = CFG.BANK, money = CFG.AGENTS * CFG.START_CASH, bps = x => Math.round(x * 10_000);
-  const minute = Math.round(60_000 / CFG.SLOT_MS);
+  // Measure the cluster's slot length rather than assume it. The chain can only count
+  // slots, so a rate per round has to be sent as a rate per so many slots — and a validator
+  // run with shorter slots (backend/scripts/validator.sh TICKS_PER_SLOT) puts more slots in
+  // the same round. Measured once here and written back to CFG, which world.mjs reads live,
+  // so neither the slot length nor the round length changes the rate the dial names.
+  CFG.SLOT_MS = Math.round(await chain.measureSlotMs());
+  const roundSlots = Math.max(1, Math.round(CFG.ROUND_MS_EXPECTED / CFG.SLOT_MS));
+  console.log(`slot ${CFG.SLOT_MS}ms measured — a round of interest is ${roundSlots} slots ` +
+    `(${(CFG.ROUND_MS_EXPECTED / 1000).toFixed(1)}s), ${(B.RATE_PER_ROUND * 100).toFixed(2)}% a round`);
   await chain.initialize(CFG.AGENTS, CFG.START_CASH, CFG.START_FOOD, CFG.START_WOOD, CFG.START_PRICES,
     Math.round(B.SEED * money), {
       // The ledger's LTV is the run's hard ceiling, enforced by the program and unchangeable
       // once the ledger exists. The bank's policy today (CFG.BANK.LTV, which the control
       // panel moves) is applied inside it by world.mjs — so the panel can tighten credit
       // mid-run and can never loosen it past what the chain agreed to.
-      ltvBps: B.CREDIT ? bps(Math.max(B.LTV, B.LTV_CEILING)) : 0, rateBps: bps(B.RATE_PER_MIN), ratePeriodSlots: minute,
+      ltvBps: B.CREDIT ? bps(Math.max(B.LTV, B.LTV_CEILING)) : 0, rateBps: bps(B.RATE_PER_ROUND), ratePeriodSlots: roundSlots,
       // marginBps 10000 is the loosest lib.rs allows (ltv_bps <= margin_bps <= 10000); the
       // keeper never cites a margin call anyway, so the chain's margin path is dead.
       penaltyBps: bps(B.PENALTY), kappaBps: bps(B.KAPPA), marginBps: bps(B.MARGIN),
@@ -120,7 +140,7 @@ async function start(choice, agents) {
     config: { ...CFG, RPC: undefined },
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
-  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, sigs: new Map(),
+  sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, sigs: new Map(), agentLog: new Map(),
           paused: false, pausing: false, resumeClock: null,
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
@@ -128,11 +148,14 @@ async function start(choice, agents) {
   console.log(`SETTLERS  ${chain.mint.toBase58()}   (mint authority: itself — no key for it exists)`);
 
   const alive = () => sim && sim.gen === myGen && !sim.stopping;
-  // One agent's turn: its brain decides, and the round waits up to DECIDE_TIMEOUT_MS. A late
-  // answer is discarded: the call is aborted, and any tool it still tries is refused, so it can
-  // never touch a round that has already run. Without an answer the agent keeps its last job
-  // and has no orders this round.
-  async function decideOne(a) {
+  // One agent's turn: its brain decides, and the round waits up to DECIDE_TIMEOUT_MS — or
+  // until a quorum of the village has answered (CFG.DECIDE_QUORUM), whichever comes first.
+  // A late answer is discarded either way: the call is aborted, tools.close() refuses
+  // anything it still tries, and endDecision has already emptied its draft — so a straggler
+  // can neither touch the round that has run nor leak an order into the next one. Without an
+  // answer the agent keeps its last job and has no orders this round.
+  // `quorum` is the round's shared barrier: a promise that resolves once enough have answered.
+  async function decideOne(a, quorum) {
     const t0 = Date.now(), tools = makeTools(W, a), ac = new AbortController();
     tools.signal = ac.signal;
     W.beginDecision(a);
@@ -140,20 +163,43 @@ async function start(choice, agents) {
     const outcome = await Promise.race([
       Promise.resolve().then(() => brain.decide(a, tools)).then(() => 'ok', e => { W.emit('error', { agent: a.id, message: e.message }); return 'error'; }),
       new Promise(r => { timer = setTimeout(() => r('timeout'), CFG.DECIDE_TIMEOUT_MS); }),
+      quorum.reached.then(() => 'straggler'),
     ]);
     clearTimeout(timer);
     tools.close();
-    if (outcome === 'timeout') ac.abort();
+    const straggler = outcome === 'straggler';
+    if (outcome === 'timeout' || straggler) ac.abort();
     const ok = outcome === 'ok' && tools.answered();
     W.endDecision(a, ok);
     if (ok) a.decisions++;
     if (!a.activity) W.keepJob(a);
+    // Anyone whose own call came back counts toward the quorum, answer or not — a village
+    // where half the brains error out must still be able to close its round.
+    if (outcome === 'ok' || outcome === 'error') quorum.answered();
     const ms = Date.now() - t0;
-    W.emit('decision', { agent: a.id, name: a.name, round: W.round + 1, ms, outcome: ok ? 'ok' : outcome === 'ok' ? 'no answer' : outcome,
+    // Per agent, the moment that agent's own decision lands — not batched at the round
+    // barrier. `outcome` keeps its old vocabulary ('ok' | 'timeout' | 'error' | 'no answer')
+    // so nothing downstream has to learn a new word; a villager the quorum left behind is a
+    // 'timeout' carrying `straggler: true`.
+    W.emit('decision', { agent: a.id, name: a.name, round: W.round + 1, ms,
+                         outcome: ok ? 'ok' : outcome === 'ok' ? 'no answer' : straggler ? 'timeout' : outcome,
+                         ...(straggler ? { straggler: true } : {}),
                          kept: !!a.activity?.kept, thought: a.thought, activity: a.activity?.task,
+                         place: a.activity?.place ?? null,
                          orders: a.orders.map(o => ({ side: o.side, good: GOODS[o.good], qty: o.qty, limit: o.limit, seq: o.seq })),
                          saw: tools.log.saw, actions: tools.log.actions });
-    return { ms, timedOut: outcome === 'timeout', ok };
+    return { ms, timedOut: outcome === 'timeout', straggler, ok };
+  }
+  // The decision phase's barrier. `reached` resolves the moment `need` villagers have
+  // answered; every decision still in flight then sees it and gives up its turn.
+  function makeQuorum(n) {
+    const need = Math.max(1, Math.ceil(n * Math.min(1, Math.max(0, CFG.DECIDE_QUORUM))));
+    let done = 0, fire, at = null;
+    const reached = new Promise(r => { fire = r; });
+    return {
+      need, reached, closedAt: () => at,
+      answered() { if (++done >= need && at === null) { at = Date.now(); fire(); } },
+    };
   }
   // The clock: every round, all agents decide at once; the round waits for the slowest (up to
   // the timeout), then plays out — shifts, meals, fires, rot, the market — and settles on-chain.
@@ -174,11 +220,21 @@ async function start(choice, agents) {
       await waitIfPaused();
       if (!alive()) return;
       const t0 = Date.now();
-      const res = await Promise.all(W.agents.map(decideOne));
+      const quorum = makeQuorum(W.agents.length);
+      const res = await Promise.all(W.agents.map(a => decideOne(a, quorum)));
       if (!alive()) return;
       const ms = res.map(r => r.ms).sort((x, y) => x - y);
+      const at = p => ms.length ? ms[Math.min(ms.length - 1, Math.round((ms.length - 1) * p))] : 0;
       await W.playRound({ waitMs: Date.now() - t0, slowest: ms.at(-1), median: ms[ms.length >> 1],
-                          timeouts: res.filter(r => r.timedOut).length, noAnswer: res.filter(r => !r.ok && !r.timedOut).length });
+                          // the barrier's shape: the round waits for the slowest, so the gap
+                          // between p50 and max is exactly what waiting for it costs
+                          p50: at(0.5), p90: at(0.9), p95: at(0.95), max: ms.at(-1) ?? 0,
+                          timeouts: res.filter(r => r.timedOut).length, noAnswer: res.filter(r => !r.ok && !r.timedOut && !r.straggler).length,
+                          // the quorum close, added beside the old fields and never in place of them:
+                          // how many villagers the round needed, how many it left behind, and when it closed
+                          quorum: CFG.DECIDE_QUORUM, quorumNeed: quorum.need,
+                          quorumMs: quorum.closedAt() ? quorum.closedAt() - t0 : null,
+                          stragglers: res.filter(r => r.straggler).length });
       await waitIfPaused();
     }
   }
@@ -229,15 +285,19 @@ async function stop() {
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
   if (!sim) return { running: false, brains: BRAINS, maxAgents: MAX_AGENTS,
-                     config: { agents: CFG.AGENTS, brain: CFG.BRAIN, model: CFG.MODEL }, policy: [] };
+                     config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, brain: CFG.BRAIN, model: CFG.MODEL, decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
     running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name, brains: BRAINS,
+    config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, brain: CFG.BRAIN, model: CFG.MODEL, decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM },
     round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
+    // last round's wall-clock, phase by phase (ms): sim, settle, loans, read, keeper,
+    // auctions, purses, books, emit. Added, never renamed — the dashboard may ignore it.
+    phases: W.lastRound?.phases ?? null,
     seconds: Math.round((Date.now() - sim.startedAt) / 1000),
     prices: Object.fromEntries(GOODS.map((g, i) => [g, W.prices[i] / 100])),
     volumes: Object.fromEntries(GOODS.map((g, i) => [g, W.volumes[i]])),
@@ -302,12 +362,22 @@ function state() {
 }
 
 // ---- HTTP ----------------------------------------------------------------------
+// The island and the panel are one app now (web/, built by Vite). If it has been built,
+// `web/dist` is served with a single-page fallback so `/` and `/dashboard` are both the
+// app; if it hasn't, the old standalone pages are served exactly as before.
 const FRONTEND = path.join(ROOT, 'frontend');
 const ISLAND_PAGE = path.join(FRONTEND, 'Moku Island.dc.html');
 const DASHBOARD_PAGE = path.join(ROOT, 'backend/public/index.html');
+const DIST = path.join(ROOT, 'web/dist');
+const DIST_INDEX = path.join(DIST, 'index.html');
+const hasBuild = () => { try { return fs.statSync(DIST_INDEX).isFile(); } catch { return false; } };
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webp': 'image/webp',
+  '.woff': 'font/woff', '.woff2': 'font/woff2',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
 };
 const json = (res, body, code = 200) => {
   res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
@@ -337,17 +407,34 @@ function setTunables(body) {
   return { moved, ...tunableSnapshot() };
 }
 
-function serveFile(res, file) {
+function serveFile(res, file, { immutable = false } = {}) {
   try {
     if (!fs.statSync(file).isFile()) return json(res, { error: 'not found' }, 404);
   } catch {
     return json(res, { error: 'not found' }, 404);
   }
-  res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-store' });
+  res.writeHead(200, {
+    'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+    // the built bundles carry a content hash in their name; everything else must stay fresh
+    'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-store',
+  });
   res.end(fs.readFileSync(file));
 }
 
+// The built app: any real file under web/dist, and index.html for every other route, so
+// /dashboard and / are both the single page and the back button works.
+function serveBuilt(res, pathname) {
+  const file = path.resolve(DIST, decodeURIComponent(pathname.slice(1)));
+  if (file.startsWith(DIST + path.sep)) {
+    try {
+      if (fs.statSync(file).isFile()) return serveFile(res, file, { immutable: pathname.startsWith('/assets/') });
+    } catch { /* fall through to the page */ }
+  }
+  return serveFile(res, DIST_INDEX);
+}
+
 function serveFrontend(res, pathname) {
+  if (hasBuild()) return serveBuilt(res, pathname);
   if (pathname === '/') return serveFile(res, ISLAND_PAGE);
   if (pathname === '/dashboard' || pathname === '/dashboard/') return serveFile(res, DASHBOARD_PAGE);
   const file = path.resolve(FRONTEND, decodeURIComponent(pathname.slice(1)));
@@ -359,13 +446,18 @@ const server = http.createServer(async (req, res) => {
   try {
     const pathname = new URL(req.url, 'http://localhost').pathname;
     if (pathname === '/state') return json(res, state());
+    // one villager's whole run: every decision it made and every line it was told, oldest first
+    if (pathname === '/agent' && req.method === 'GET') {
+      const id = +new URL(req.url, 'http://localhost').searchParams.get('id');
+      const a = sim?.W.agents.find(x => x.id === id);
+      if (!a) return json(res, { error: 'no such agent' }, 404);
+      return json(res, { id: a.id, name: a.name, model: a.model ?? null, traits: a.traits,
+                         decisions: sim.agentLog.get(a.id) ?? [], journal: a.journal });
+    }
     if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
     if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
     // { brain: "baseten", agents: 30 } sets up the run; no body means what .env says
-    if (pathname === '/start'  && req.method === 'POST') {
-      const body = await readBody(req);
-      return json(res, { result: await start(body.brain, body.agents) });
-    }
+    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start(await readBody(req)) });
     if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
     if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
     if (pathname === '/resume' && req.method === 'POST') return json(res, { result: resume() });

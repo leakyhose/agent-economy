@@ -6,6 +6,24 @@ import OpenAI from 'openai';
 import { CFG } from '../config.mjs';
 import { systemPrompt } from './prompt.mjs';
 
+// The rate-limit headers the API sends with every reply, so a run can say why it was throttled.
+const head = (h, k) => (typeof h?.get === 'function' ? h.get(k) : h?.[k]) ?? null;
+function readLimits(h) {
+  const n = k => head(h, k);
+  return { requests: n('x-ratelimit-limit-requests'), requestsLeft: n('x-ratelimit-remaining-requests'),
+           tokens: n('x-ratelimit-limit-tokens'), tokensLeft: n('x-ratelimit-remaining-tokens'),
+           resetTokens: n('x-ratelimit-reset-tokens'), resetRequests: n('x-ratelimit-reset-requests') };
+}
+// "retry-after: 2" (seconds) or "retry-after-ms: 1300": wait as long as the API asks, not a
+// guess. A provider that doesn't say gets 0.3s, 0.6s, 1.2s, 2.4s. Clamped so one 429 can't
+// spend the whole round, and jittered so the whole village doesn't come back at the same instant.
+function retryAfterMs(h, attempt) {
+  const ms = Number(head(h, 'retry-after-ms'));
+  const sec = Number(head(h, 'retry-after'));
+  const asked = Number.isFinite(ms) && ms > 0 ? ms : Number.isFinite(sec) && sec > 0 ? sec * 1000 : 300 * 2 ** attempt;
+  return Math.min(2400, asked) + Math.random() * 300;
+}
+
 export function semaphore(n) {
   let active = 0; const q = [];
   return async fn => {
@@ -24,29 +42,36 @@ export function semaphore(n) {
 // params    (slug) => anything else the request needs.
 // maxTokens what one reply may spend. A reply cut off here reads as a villager who never
 //           answered, so it is a budget for the tool calls, not for thinking out loud.
+// cachedRate what an input token read from the provider's prompt cache costs, as a share of
+//           the input price. 1 (no discount) for a provider whose cache price we don't know.
 export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000,
-                            concurrency = () => 0 }) {
-  const limit = semaphore(CFG.LLM_CONCURRENCY);
-  // A second gate, per model: providers meter each model separately, and one model's ceiling
-  // is no reason to hold up a villager thinking with another. Zero means the global gate only.
+                            concurrency = () => 0, cachedRate = 1 }) {
+  // Every villager calls at once: there is no global gate. The only gate is per model:
+  // providers meter each model separately, and one model's ceiling is no reason to hold up
+  // a villager thinking with another. Zero means no gate at all.
   const gates = new Map();
   const run = (model, fn) => {
     if (!gates.has(model)) { const n = concurrency(model); gates.set(model, n > 0 ? semaphore(n) : null); }
     const gate = gates.get(model);
-    return limit(() => (gate ? gate(fn) : fn()));
+    return gate ? gate(fn) : fn();
   };
-  const s = { calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0 };
+  // apiMs: total time spent waiting on the API (a per-model gate's queue included).
+  // cachedTok: input tokens the provider served from its prompt cache (the system prompt and
+  // the tool schemas are ~78% of every request and never change, so this should be most of it).
+  // limits: the rate-limit headers the API last sent back — why the 429s happen, from the source.
+  const s = { calls: 0, inTok: 0, cachedTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0,
+              apiMs: 0, limits: null };
   // The same tallies again, per model, so a mixed village can be read model by model:
   // who thought with what, how often it answered, what it cost.
   const per = new Map();
   const track = slug => {
     let m = per.get(slug);
-    if (!m) per.set(slug, m = { agents: new Set(), calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0 });
+    if (!m) per.set(slug, m = { agents: new Set(), calls: 0, inTok: 0, cachedTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0, apiMs: 0 });
     return m;
   };
   const costOf = m => {
     const [pin, pout] = price(m.slug);
-    return m.inTok / 1e6 * pin + m.outTok / 1e6 * pout;
+    return (m.inTok - m.cachedTok) / 1e6 * pin + m.cachedTok / 1e6 * pin * cachedRate + m.outTok / 1e6 * pout;
   };
 
   return {
@@ -58,8 +83,8 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
       for (const [slug, m] of per) {
         const c = costOf({ ...m, slug });
         cost += c;
-        byModel[slug] = { agents: m.agents.size, calls: m.calls, inTok: m.inTok, outTok: m.outTok,
-                          errors: m.errors, rateLimited: m.rateLimited, timedOut: m.timedOut, cost: c };
+        byModel[slug] = { agents: m.agents.size, calls: m.calls, inTok: m.inTok, cachedTok: m.cachedTok, outTok: m.outTok,
+                          errors: m.errors, rateLimited: m.rateLimited, timedOut: m.timedOut, apiMs: m.apiMs, cost: c };
       }
       return { ...s, cost, byModel };
     },
@@ -84,17 +109,21 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         // asks again, backing off, until the round's own clock stops it.
         for (let attempt = 0; ; attempt++) {
           try {
-            r = await run(model, () => client.chat.completions.create({
+            const t1 = Date.now();
+            const out = await run(model, () => client.chat.completions.create({
               model, messages, tools, max_completion_tokens: maxTokens, ...params(model),
-            }, { signal: t.signal }));
+            }, { signal: t.signal }).withResponse());
+            r = out.data;
+            bump('apiMs', Date.now() - t1);
+            if (!s.limits || !(s.calls & 31)) s.limits = readLimits(out.response.headers);
             break;
           } catch (e) {
             if (t.signal?.aborted) { bump('timedOut'); return; }   // the round stopped waiting
 
             if (e instanceof OpenAI.RateLimitError && attempt < 4) {
               bump('rateLimited');
-              // 0.3s, 0.6s, 1.2s, 2.4s, jittered so thirty villagers don't retry in lockstep
-              await new Promise(r => setTimeout(r, 300 * 2 ** attempt + Math.random() * 200));
+              if (!s.limits) s.limits = readLimits(e.headers);
+              await new Promise(r => setTimeout(r, retryAfterMs(e.headers, attempt)));
               continue;
             }
             bump('errors');
@@ -104,7 +133,13 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         }
         bump('calls');
         bump('inTok', r.usage?.prompt_tokens ?? 0);
+        bump('cachedTok', r.usage?.prompt_tokens_details?.cached_tokens ?? 0);
         bump('outTok', r.usage?.completion_tokens ?? 0);
+        // The round closed while this call was in flight — it timed out, or the quorum went
+        // on without it. Its tokens were spent and are counted, but nothing it says may land:
+        // the tools already refuse every action, and `a.thought` is written here rather than
+        // through them, so it would otherwise turn up in the next round's villager.
+        if (t.signal?.aborted) { bump('timedOut'); return; }
 
         t.acted.answered = true;
         const msg = r.choices[0].message;

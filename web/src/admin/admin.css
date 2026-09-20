@@ -1,0 +1,146 @@
+/* The dashboard's stylesheet from backend/public/index.html, scoped to #admin-root (the page
+   is shared with the island now). The look is the original one: white paper, square borders,
+   one monospace face. Every id and class is the one the old page used.
+   What is new: the range toggle in the top bar, and two small helpers the charts use
+   (.legend and .waiting). */
+
+#admin-root {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font: 13px ui-monospace, Menlo, monospace;
+  background: #fff;
+  color: #111;
+  padding: 16px;
+  transition: margin-right .18s ease;
+}
+#admin-root * { box-sizing: border-box; }
+/* shown, the panel is the page: the document scrolls, and the camera inset scrolls with it */
+body.view-admin #admin-root { position: relative; inset: auto; min-height: 100vh; overflow: visible; }
+
+/* The camera inset sits in the top right corner. The header band keeps clear of it, both
+   sideways and down the page, so no control or readout is ever underneath it. */
+body.view-admin #admin-root .top { padding-right: calc(var(--cctv-w) + 26px); }
+body.view-admin #admin-root #headline {
+  padding-right: calc(var(--cctv-w) + 26px);
+  min-height: calc(var(--cctv-h) - 30px);
+}
+
+#admin-root h1 { font-size: 18px; margin: 0; display: inline; }
+#admin-root button { font: inherit; padding: 4px 14px; cursor: pointer; }
+#admin-root a { color: #2458a6; }
+#admin-root .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+#admin-root .top button { font-size: 15px; padding: 6px 20px; font-weight: bold; }
+#admin-root .top button#btn[disabled] { opacity: .6; cursor: wait; }
+#admin-root .top .agents { font-size: 13px; color: #666; }
+#admin-root .top .agents input { width: 58px; font-size: 15px; padding: 5px 6px; margin-left: 4px; }
+#admin-root #status { font-size: 14px; }
+#admin-root #headline { color: #444; margin: 4px 0 12px; line-height: 1.6; }
+#admin-root .box { border: 1px solid #ccc; padding: 8px 10px; margin: 10px 0; }
+#admin-root table { border-collapse: collapse; width: 100%; }
+#admin-root td, #admin-root th { padding: 2px 8px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
+#admin-root td.n, #admin-root th.n { text-align: right; }
+#admin-root td.t { white-space: normal; color: #555; }
+#admin-root .hungry { color: #b00; }
+#admin-root .muted { color: #666; }
+#admin-root .chart { border: 1px solid #ccc; padding: 6px 8px; width: 300px; }
+#admin-root .chart svg { display: block; width: 100%; height: auto; }
+#admin-root .chart .head { display: flex; justify-content: space-between; margin-bottom: 2px; }
+#admin-root .chart .head .muted { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#admin-root .up { color: #1a7f37; }
+#admin-root .down { color: #b00; }
+
+/* the charts' legend row and their placeholder before the first rounds */
+#admin-root .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; font-size: 11px; color: #666; margin-bottom: 2px; }
+#admin-root .legend b { font-weight: bold; color: inherit; }
+#admin-root .legend .sep { width: 1px; height: 9px; background: #ddd; margin: 0 7px; display: inline-block; }
+#admin-root .waiting { color: #888; padding: 30px 0; }
+
+/* the range toggle in the top bar: all rounds, or the last 50 */
+#admin-root .range { display: inline-flex; border: 1px solid #ccc; }
+#admin-root .range button { font-size: 12px; padding: 3px 10px; border: 0; background: #fff; color: #666; }
+#admin-root .range button + button { border-left: 1px solid #ccc; }
+#admin-root .range button.on { background: #2458a6; color: #fff; }
+
+/* the headline charts: two columns on a laptop, one on a narrow screen */
+#admin-root .big { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 12px; margin: 12px 0; }
+#admin-root .big .chart { width: auto; padding: 8px 12px; }
+#admin-root .big .chart .head b { font-size: 14px; }
+#admin-root .col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+#admin-root #cb-panel:empty { display: none; }   /* reserved: the central-bank controls go here */
+
+/* the small tiles: a number and a sparkline, click to open the full chart */
+#admin-root .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 8px; margin: 12px 0 0; }
+#admin-root .tile { border: 1px solid #ccc; padding: 6px 8px; cursor: pointer; user-select: none; }
+#admin-root .tile:hover { border-color: #888; }
+#admin-root .tile.on { border-color: #2458a6; box-shadow: inset 0 -2px 0 #2458a6; }
+#admin-root .tile .lab { color: #666; font-size: 11px; display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; overflow: hidden; }
+#admin-root .tile .lab span:last-child { overflow: hidden; text-overflow: ellipsis; color: #999; }
+#admin-root .tile .val { font-size: 18px; font-weight: bold; margin: 2px 0; }
+#admin-root .tile svg { display: block; width: 100%; height: 26px; }
+#admin-root #tile-open { margin-top: 8px; }
+#admin-root #tile-open .chart { width: auto; }
+
+#admin-root #wealth svg { display: block; width: 100%; height: auto; }
+#admin-root #bankfeed .feed { max-height: 420px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #eee; padding-top: 4px; }
+#admin-root #bankfeed .feed div { padding: 1px 0; }
+
+/* the control panel: a drawer on the right, so the charts keep running beside it.
+   On a wide screen the page makes room for it rather than hiding behind it. */
+#admin-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 404px; max-width: 94vw; overflow-y: auto;
+  font: 13px ui-monospace, Menlo, monospace; color: #111;
+  background: #fff; border-left: 1px solid #bbb; box-shadow: -6px 0 18px rgba(0,0,0,.07);
+  padding: 12px 14px 80px; z-index: 60; transform: translateX(101%); transition: transform .18s ease;
+}
+#admin-panel.open { transform: none; }
+@media (min-width: 1180px) { #admin-root.dials-open { margin-right: 412px; } }
+#admin-panel h2 { font-size: 14px; margin: 0; display: inline; }
+#admin-panel button { font: inherit; cursor: pointer; }
+#admin-panel .close { float: right; border: 1px solid #ccc; background: #fff; padding: 1px 8px; }
+#admin-panel .blurb { color: #666; margin: 6px 0 10px; line-height: 1.5; }
+#admin-panel .presets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+#admin-panel .presets button { font-size: 11px; padding: 3px 8px; border: 1px solid #ccc; background: #fafafa; }
+#admin-panel .presets button:hover { border-color: #c77700; background: #fff7ec; }
+#admin-panel .presets button.base { border-color: #aaa; background: #f0f0f0; }
+#admin-panel .grp { border-top: 1px solid #ddd; margin-top: 12px; padding-top: 8px; }
+#admin-panel .grp > .gh { font-weight: bold; }
+#admin-panel .grp > .gb { color: #888; font-size: 11px; margin-bottom: 6px; }
+#admin-panel .dial { margin: 0 0 9px; }
+#admin-panel .dial .dl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+#admin-panel .dial .dl span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#admin-panel .dial .dv { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#admin-panel .dial.moved .dv { color: #c77700; }
+#admin-panel .dial .rst { border: 0; background: none; color: #c77700; cursor: pointer; padding: 0 0 0 4px; font: inherit; }
+#admin-panel .dial input[type=range] { width: 100%; margin: 2px 0 0; accent-color: #2458a6; }
+#admin-panel .dial.moved input[type=range] { accent-color: #c77700; }
+#admin-panel .dial .dh { color: #888; font-size: 11px; line-height: 1.45; }
+#admin-panel .dial .next { color: #888; font-size: 10px; border: 1px solid #ddd; padding: 0 4px; margin-left: 4px; }
+#admin-panel .hungry { color: #b00; }
+#admin-panel .muted { color: #666; }
+#admin-panel #pfeed { margin-top: 12px; border-top: 1px solid #ddd; padding-top: 8px; line-height: 1.5; }
+#admin-panel #pfeed div { color: #c77700; }
+
+#admin-root details.more { border: 1px solid #ccc; padding: 6px 10px; margin: 12px 0; }
+#admin-root details.more > summary { cursor: pointer; font-weight: bold; padding: 2px 0; }
+#admin-root .small { display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0; }
+#admin-root .scroll { overflow-x: auto; }
+#admin-root h3 { font-size: 13px; margin: 14px 0 4px; }
+
+/* ---- agents: a row opens onto that villager's log ---- */
+#admin-root tr.agent { cursor: pointer; }
+#admin-root tr.agent:hover td { background: #f6f8fb; }
+#admin-root tr.agent.open td { background: #eef3fa; border-bottom-color: transparent; }
+#admin-root td.tw { width: 14px; padding-right: 0; color: #888; }
+#admin-root tr.agentlog td { white-space: normal; padding: 0 8px 10px; background: #fafbfd; }
+#admin-root .alog { max-height: 420px; overflow-y: auto; border: 1px solid #dde3ec; background: #fff; padding: 8px 12px; line-height: 1.45; }
+#admin-root .alog .ahead { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid #eee; }
+#admin-root .alog .turn { padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+#admin-root .alog .turn:last-child { border-bottom: 0; }
+#admin-root .alog .said { color: #333; margin: 2px 0 3px; }
+#admin-root .alog .act { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #2458a6; margin: 2px 0 2px 10px; }
+#admin-root .alog .act.hungry { color: #b00; }
+#admin-root .alog .act .res { color: #666; white-space: pre-wrap; margin-left: 12px; }
+#admin-root .alog .told { color: #555; margin-left: 10px; }
+#admin-root .alog .told::before { content: "· "; color: #aaa; }

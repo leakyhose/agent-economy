@@ -23,7 +23,7 @@ export const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'];
 export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
 export const CFG = {
-  AGENTS:      +env.AGENTS      || 10,
+  AGENTS:      +env.AGENTS      || 100,              // the dashboard can start a village of any size up to the ledger's 137
   BRAIN:        env.BRAIN        || 'stub',            // stub | openai | baseten
   // Empty under baseten: that brain draws a model per agent from its pool instead of running
   // the whole village on one. The openai brain runs the one model named here.
@@ -36,6 +36,13 @@ export const CFG = {
   // for the slowest, up to DECIDE_TIMEOUT_MS), then everyone works one shift, eats one
   // meal, fires burn, goods rot and the market clears on-chain.
   DECIDE_TIMEOUT_MS: +env.DECIDE_TIMEOUT_MS || 8000,   // an agent that hasn't answered by then keeps its last job and posts no orders
+  // The round no longer waits for the very last villager. Once this share of them has
+  // answered the decision phase closes and the round plays out; the stragglers are treated
+  // exactly as a timeout is — their call is aborted, anything it still tries is refused,
+  // they keep their last job and post no orders. 1.0 is the old behaviour (wait for all,
+  // up to DECIDE_TIMEOUT_MS). At 100 agents the slowest answer is the timeout itself while
+  // the median is ~2.3s, so the last tenth of the village was costing more than half the round.
+  DECIDE_QUORUM: (q => Number.isFinite(q) && q > 0 && q <= 1 ? q : 0.9)(+env.DECIDE_QUORUM),
   // cents. A house (~70 coins) can't be bought outright from this, so buying or
   // building one needs savings or a loan. Endowments are a few rounds of runway: enough
   // that nobody starves while the market finds its prices, not enough to live on.
@@ -47,7 +54,6 @@ export const CFG = {
   // no zero-catch shifts, no one-unit trade setting the price everything is valued at.
   MEAL: 5,                                            // food per lifestyle level per meal: lifestyle 2 eats 10
   FIRE_WOOD: 3,                                       // wood a fire burns each time it is fed
-  LLM_CONCURRENCY: +env.LLM_CONCURRENCY || 64,        // every agent decides at once each round: keep it >= AGENTS
   RUN_SECONDS: +env.RUN_SECONDS || 0,                 // 0 = run forever
   PORT:        +env.PORT        || 8787,
   RPC:          env.RPC          || 'http://127.0.0.1:8899',
@@ -188,7 +194,18 @@ export const CFG = {
     // (ltv_bps <= margin_bps <= 10_000) and world.mjs's keeper never cites it.
     MARGIN: 1.0,
     PENALTY: 0.10,         // added to the debt at foreclosure, to the bank's capital
-    RATE_PER_MIN: +env.BANK_RATE || 0.05,   // interest per minute of real time, charged pro-rata per slot for the time the loan is held
+    // Interest per ROUND, not per minute of real time. A round is the village's unit of
+    // time — one shift, one meal, one market — so the cost of credit has to be a cost per
+    // round, or making the simulation run faster quietly makes borrowing cheaper. (It did:
+    // the rate used to be RATE_PER_MIN = 5% a minute, and a round that went from 9.5s to 5s
+    // halved what a loan cost to hold for a round without anyone touching a dial.)
+    // 0.0079 is exactly what 5% a minute charged at the old 9.5s round on 400ms slots:
+    //   0.05 × (9500/400 slots a round) / (60000/400 slots a minute) = 0.05 × 23.75/150 = 0.79167%
+    // so the credit economy is unchanged, and now stays unchanged however fast rounds run.
+    // Over a 30-round loan that is ~23.8% of the principal.
+    // The chain can only count slots, so `initialize` sends this as rate_bps over
+    // ROUND_MS_EXPECTED / SLOT_MS slots — one round's worth (server.mjs).
+    RATE_PER_ROUND: +env.BANK_RATE_PER_ROUND || 0.0079,
     // Every loan runs the same term. The chain counts slots: a new loan is sent with
     // TERM_SLACK × term × the measured slots per round, so its on-chain deadline comes no
     // later than the promised round; the keeper collects at the promised round, not before.
@@ -206,8 +223,18 @@ export const CFG = {
     // the seed plus a 10% buffer.
     EQUITY_FLOOR: 0.11,
   },
-  SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
+  SLOT_MS: 400,            // assumed slot time, measured for real at startup (chain.measureSlotMs)
   ROUND_MS_GUESS: 1500,    // round length assumed before the first round is measured (short is safe: see TERM_SLACK)
+  // What a round is expected to take, in ms. The bank's interest is a rate per ROUND
+  // (BANK.RATE_PER_ROUND) and the chain can only count slots, so the on-chain interest
+  // period is set to this many ms of slots at the measured slot length: one round.
+  // 6.0s is what 100 LLM villagers measure at with the quorum close and 100ms slots
+  // (6.4s including the rounds where the provider was rate-limiting us). A run whose rounds
+  // are longer or shorter than this pays interest in that proportion — what the agents are
+  // shown (world.mjs ratePerRound, from the MEASURED round) is always the truth, so the
+  // number they act on is never the number they were promised in the abstract. A village of
+  // 30 runs at ~3.6s, so set this if you want its credit priced like the big one's.
+  ROUND_MS_EXPECTED: +env.ROUND_MS_EXPECTED || 6000,
   // cents: food, wood, nets, boats, houses. Boats open at 1 cent — the chain refuses a zero
   // start price — and nothing makes or shows them. Houses open near what one costs to make,
   // not at a token cent: a house nobody has bought yet is still the village's biggest asset,

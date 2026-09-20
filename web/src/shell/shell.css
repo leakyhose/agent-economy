@@ -1,0 +1,101 @@
+/* The shell: two views in one page. The island stage is always mounted and always
+   rendering — full screen in the island view, a security-camera inset in the admin view —
+   so switching never restarts the scene or the /events stream. */
+
+html, body { margin: 0; padding: 0; height: 100%; background: #0c0d0f; }
+body { overflow: hidden; }
+* { box-sizing: border-box; }
+
+/* the island's animations, from the old page */
+@keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-5px) } }
+@keyframes sway { 0%,100% { transform: rotate(-4deg) } 50% { transform: rotate(4deg) } }
+@keyframes pulse { 0%,100% { transform: scale(1); opacity: .55 } 50% { transform: scale(1.35); opacity: 0 } }
+@keyframes shimmer { 0%,100% { opacity: .25 } 50% { opacity: .6 } }
+/* the place card: the veil behind it and the card itself; in it, the lineup's villagers
+   drop into line, idle, and hop out */
+@keyframes veilin { from { opacity: 0 } to { opacity: 1 } }
+@keyframes veilout { from { opacity: 1 } to { opacity: 0 } }
+@keyframes cardin { from { opacity: 0; transform: translateY(10px) scale(.985) } to { opacity: 1; transform: none } }
+@keyframes cardout { from { opacity: 1; transform: none } to { opacity: 0; transform: translateY(6px) scale(.99) } }
+@keyframes blobin { 0% { opacity: 0; transform: translateY(-14px) scale(.7) } 60% { opacity: 1 } 100% { opacity: 1; transform: none } }
+@keyframes blobout { 0% { opacity: 1; transform: none } 40% { transform: translateY(-10px) scale(1.04) } 100% { opacity: 0; transform: translateY(6px) scale(.6) } }
+@keyframes blobidle { 0%,100% { transform: scale(1, 1) } 50% { transform: scale(1.04, .95) } }
+@keyframes risein { from { opacity: 0; transform: translateY(18px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes pulsedot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(.6); opacity: .45 } }
+/* a new feed row opens up from nothing, which is what pushes the older rows down */
+@keyframes feedpush { from { height: 0; margin-bottom: 0; opacity: 0 } to { height: 16px; margin-bottom: 2px; opacity: 1 } }
+@keyframes feedin { from { opacity: 0; transform: translateX(-10px) } to { opacity: 1; transform: none } }
+::-webkit-scrollbar { width: 8px; height: 8px }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 8px }
+
+.island-feed-row:hover { background: rgba(255,255,255,.13) !important; }
+
+/* ---- the stage ------------------------------------------------------------------ */
+:root { --cctv-s: .24; --cctv-x: 0px; --cctv-y: 0px; --cctv-w: 300px; --cctv-h: 190px; }
+
+#island-stage {
+  position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; clip-path: inset(0);
+  transform-origin: 0 0; z-index: 30; background: #0c0d0f;
+  transition: transform .52s cubic-bezier(.22,.68,.18,1), clip-path .52s ease, opacity .18s ease;
+  will-change: transform;
+}
+#island-root { width: 100%; height: 100%; }
+
+body.view-admin #island-stage {
+  transform: translate(var(--cctv-x), var(--cctv-y)) scale(var(--cctv-s));
+  pointer-events: none;                 /* the CCTV frame takes the clicks */
+}
+body.view-admin #island-stage * { cursor: default !important; }
+/* Landed as the inset. It is laid out in the document now, so the page's own scroll carries
+   it (main.jsx), and its position must not ease. */
+body.cctv-still #island-stage { transition: opacity .18s ease; }
+body.cctv-abs #island-stage { position: absolute; }
+/* In the admin view the DOCUMENT scrolls, not a box inside it: that is what lets the inset
+   be part of the page. (100vw is wider than the page once there is a scrollbar.) */
+body.view-admin { overflow-x: hidden; overflow-y: auto; height: auto; min-height: 100%; }
+
+/* in the inset the page furniture is gone, so the 3D scene fills the whole stage and the
+   inset is the whole picture at the window's own shape */
+body.view-admin #island-root header, body.view-admin #island-root footer { display: none !important; }
+/* with its neighbours gone the scene must still sit in the grid's stretchy middle row */
+body.view-admin #island-root main { grid-row: 2; }
+body.view-admin #island-root > div > button { display: none !important; }   /* Hide UI has no place in the inset */
+body.view-admin #island-root main island-3d ~ div { display: none !important; }   /* the legend too: only the picture */
+
+#admin-root { z-index: 10; }
+body.view-island #admin-root { visibility: hidden; pointer-events: none; }
+
+/* ---- the camera inset ------------------------------------------------------------ */
+/* No frame, no glass, no label: only the live picture of the island. */
+#cctv-frame {
+  position: absolute; z-index: 40;
+  width: var(--cctv-w); height: var(--cctv-h);
+  left: var(--cctv-x); top: var(--cctv-fy);
+  padding: 0; border: 0; background: none;
+  cursor: zoom-in;
+  transition: opacity .3s ease;
+}
+#cctv-frame[hidden] { display: none; }
+body.view-island #cctv-frame { opacity: 0; pointer-events: none; }
+body.view-admin #cctv-frame { opacity: 1; pointer-events: auto; }
+
+/* The dials drawer opens over the same corner, and the stage sits above it. On a wide screen
+   the page makes room for the drawer, so the inset moves with it; on a narrow one there is
+   nowhere to go and it steps out of sight until the drawer closes. */
+@media (min-width: 1180px) {
+  body.view-admin #admin-root.dials-open ~ #island-stage {
+    transform: translate(calc(var(--cctv-x) - 412px), var(--cctv-y)) scale(var(--cctv-s));
+  }
+  body.view-admin #admin-root.dials-open ~ #cctv-frame { left: calc(var(--cctv-x) - 412px); }
+}
+@media (max-width: 1179px) {
+  body.view-admin #admin-root.dials-open ~ #island-stage,
+  body.view-admin #admin-root.dials-open ~ #cctv-frame { opacity: 0; pointer-events: none; }
+}
+
+/* the stage is cut down to the 3D scene, in its own unscaled pixels (main.jsx layout()) */
+body.view-admin #island-stage { clip-path: inset(var(--cctv-clip, 0)); }
+
+@media (prefers-reduced-motion: reduce) {
+  #island-stage, #cctv-frame { transition: none; }
+}

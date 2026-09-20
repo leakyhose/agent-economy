@@ -98,7 +98,7 @@ const buildTools = () => [
   { name: 'borrow',
     description: `Borrow newly minted coins from the village bank against pledged wood, nets and/or finished houses (food is not accepted). ` +
       `You may owe at most ${pct(B.LTV)}% of the collateral's value at last prices. Pledged goods stay in use (you fish with a pledged net, live in a pledged house) and don't rot, ` +
-      `but can't be sold, burned or pledged again until the loan is repaid. Interest accrues for the time you hold the loan (your situation shows the rate per round), so repaying early costs less. ` +
+      `but can't be sold, burned or pledged again until the loan is repaid. Interest is charged per round you hold the loan, on what you borrowed (your situation shows the rate per round), so repaying early costs less. ` +
       `Every loan runs ${TERM()} rounds; borrowing again adds to the open loan and keeps its due round. ` +
       `At the deadline the debt is taken from your cash, with no penalty. If your cash can't cover it, the loan is foreclosed: a ${pct(B.PENALTY)}% penalty, ` +
       `and the bank seizes as much collateral as it still needs, valued at ${FIRE_SALE_BPS / 100}% of its last price, and returns the rest.`,
@@ -174,6 +174,13 @@ export function makeTools(W, a) {
     return lines.length ? lines.join('\n') : 'No orders yet.';
   }
 
+  // Temperament, from the seeded traits.risk. A nudge, not a rule: nothing enforces it.
+  const TEMPER = [
+    `By nature you are very cautious: you keep a deep store of food and wood, avoid debt, and prefer steady work to a gamble.`,
+    `By nature you are careful: you keep a good reserve, borrow only when the payoff is clear, and price close to the market.`,
+    `By nature you are bold: a thin reserve is enough for you, and you will borrow or switch jobs when you see an opening.`,
+    `By nature you are a risk-taker: you chase the biggest payoff, borrow freely, hold little in reserve and price aggressively.`,
+  ];
   // Everything the agent is told about its situation. The LLM sees this as its prompt.
   function observe() {
     log.saw = describe();
@@ -259,6 +266,7 @@ export function makeTools(W, a) {
 
     return [
       `You are ${a.name}. This is round ${now}.`,
+      TEMPER[Math.min(3, Math.floor(a.traits.risk * 4))],
       `Wellbeing so far: ${a.wellbeing.toFixed(1)} (${parts(a.wbParts)}).` +
         (a.wbRecent.length ? ` Last ${rounds(a.wbRecent.length)}: ${parts(recent)}.` : ''),
       `You eat ${a.lifestyle} helping${a.lifestyle === 1 ? '' : 's'} of ${MEAL()} food a round (1 helping ${signed(WB.EAT[1])}, 2 ${signed(WB.EAT[2])}, 3 ${signed(WB.EAT[3])}, none ${WB.EAT[0]}) ` +

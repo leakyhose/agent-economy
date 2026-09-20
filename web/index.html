@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settlers of Solana</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Grandstander:wght@700;800;900&family=Nunito:wght@400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- The island stage is never unmounted: it is the full view, and the CCTV inset, and the
+       thing that animates between them. The admin panel sits under it in its own layer. -->
+  <div id="admin-root"></div>
+  <div id="island-stage"><div id="island-root"></div></div>
+  <div id="cctv-frame" hidden title="Click to open the island"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>

@@ -221,7 +221,7 @@ pub mod chain {
         emit!(Borrowed { agent, amount, debt, accrued, due_slot });
         settle_money(
             &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
-            &ledger_key, ctx.bumps.mint, m0,
+            &ledger_key, ctx.bumps.mint, m0, None,
         )
     }
 
@@ -231,7 +231,7 @@ pub mod chain {
     /// principal is written off against the bank's equity (the unpaid interest was
     /// never income), and the whole remainder is counted in `forgiven`. Paid off, the
     /// collateral unlocks. With less than a coin owing, a repay of 0 closes the loan too.
-    pub fn repay(ctx: Context<WriteMint>, agent: u16, amount: u64) -> Result<()> {
+    pub fn repay<'i>(ctx: Context<'i, WriteMint<'i>>, agent: u16, amount: u64) -> Result<()> {
         let now = Clock::get()?.slot;
         let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.load_checked()?;
@@ -262,7 +262,7 @@ pub mod chain {
         emit!(Repaid { agent, paid, interest, principal, forgiven });
         settle_money(
             &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
-            &ledger_key, ctx.bumps.mint, m0,
+            &ledger_key, ctx.bumps.mint, m0, debtor_purse(&ctx.remaining_accounts, agent),
         )
     }
 
@@ -298,7 +298,7 @@ pub mod chain {
     ///     bank's cash at once (a loss bigger than its cash is `bad_debt`), and the
     ///     seized goods go on the bank's books at their fire-sale value (`bank_book`,
     ///     `seized_value`). Selling them at that value later is neither profit nor loss.
-    pub fn liquidate(ctx: Context<AnyoneMint>, agent: u16) -> Result<()> {
+    pub fn liquidate<'i>(ctx: Context<'i, AnyoneMint<'i>>, agent: u16) -> Result<()> {
         let now = Clock::get()?.slot;
         let ledger_key = ctx.accounts.ledger.key();
         let mut l = ctx.accounts.ledger.load_mut()?;
@@ -327,7 +327,7 @@ pub mod chain {
             emit!(AutoRepaid { agent, paid, interest, principal, by: ctx.accounts.caller.key() });
             return settle_money(
                 &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
-                &ledger_key, ctx.bumps.mint, m0,
+                &ledger_key, ctx.bumps.mint, m0, debtor_purse(&ctx.remaining_accounts, agent),
             );
         }
 
@@ -407,7 +407,7 @@ pub mod chain {
         });
         settle_money(
             &l, &ctx.accounts.mint, &ctx.accounts.vault, &ctx.accounts.token_program,
-            &ledger_key, ctx.bumps.mint, m0,
+            &ledger_key, ctx.bumps.mint, m0, debtor_purse(&ctx.remaining_accounts, agent),
         )
     }
 
@@ -696,7 +696,7 @@ pub mod chain {
         emit!(Cleared { good, price, volume, round: l.round });
         if let Some((mint, vault, token_program)) = coin.as_ref() {
             settle_money(&l, mint, vault, token_program,
-                         &ledger_key, mint_bump_for(&ledger_key), m0)?;
+                         &ledger_key, mint_bump_for(&ledger_key), m0, None)?;
         }
         Ok(())
     }
@@ -769,6 +769,13 @@ fn token_ix(tag: u8, args: &[u8], accounts: Vec<AccountMeta>) -> Instruction {
     Instruction { program_id: TOKEN_PROGRAM_ID, accounts, data }
 }
 
+/// The debtor's purse, if the caller handed one in. It rides as a remaining account, so
+/// nothing in the instruction's data or its `Accounts` changed and an older caller that
+/// sends none still works (see `fund_burn`).
+fn debtor_purse<'a, 'i>(rest: &'a [AccountInfo<'i>], agent: u16) -> Option<(&'a AccountInfo<'i>, u16)> {
+    rest.first().map(|purse| (purse, agent))
+}
+
 /// What the books say about money, before and after an instruction: coins ever created,
 /// and coins ever destroyed. The difference across an instruction is what the mint must
 /// do — so the token follows the economics instead of restating it.
@@ -799,6 +806,7 @@ fn settle_money<'i>(
     ledger_key: &Pubkey,
     bump: u8,
     before: (u64, u64),
+    source: Option<(&AccountInfo<'i>, u16)>,
 ) -> Result<()> {
     require_keys_eq!(*token_program.key, TOKEN_PROGRAM_ID, EconErr::BadMint);
     let (minted_now, destroyed_now) = money(l);
@@ -808,9 +816,61 @@ fn settle_money<'i>(
         mint_coins(mint, vault, token_program, ledger_key, bump, created)?;
     }
     if destroyed > 0 {
+        // The coins the burn destroys belong to `source`, so bring them home first.
+        let want = source.map_or(0, |(_, agent)| l.slots[agent as usize].cash);
+        fund_burn(source, want, vault, token_program, ledger_key, destroyed)?;
         burn_coins(mint, vault, token_program, ledger_key, bump, destroyed)?;
     }
     check_supply(l, mint)
+}
+
+/// Bring the coins a burn is about to destroy into the vault, out of the purse that
+/// actually holds them.
+///
+/// Burning takes coins out of the vault, but the vault's own balance is only ever the
+/// bank's cash: every other SETTLER in existence sits in an agent's purse (`settle_cash`).
+/// The coins a repayment or a foreclosure destroys are the DEBTOR's — they left that
+/// agent's `cash` a few lines above — so the burn was asking the bank to front them, and
+/// once the bank's cash had been eaten by write-offs the vault was empty and the SPL burn
+/// failed with "insufficient funds". Long runs reached that state and then every
+/// foreclosure reverted, so the keeper could never clear the overdue loan.
+///
+/// So: before burning, move what the vault is short out of the debtor's purse. Nothing
+/// about the economy changes — the debtor's `cash` has already been reduced by at least
+/// this much, and `settle_cash` would have moved exactly these coins at the end of the
+/// round anyway. This only moves them a few seconds earlier, from the account that holds
+/// them to the account the burn reads.
+///
+/// `source` is optional and the purse is a remaining account, so a caller that passes
+/// nothing behaves exactly as before. The purse is checked against its PDA, so no other
+/// account can be drained; the bump is derived here rather than taken on trust.
+fn fund_burn<'i>(
+    source: Option<(&AccountInfo<'i>, u16)>,
+    cash: u64,
+    vault: &AccountInfo<'i>,
+    token_program: &AccountInfo<'i>,
+    ledger_key: &Pubkey,
+    need: u64,
+) -> Result<()> {
+    let Some((purse, agent)) = source else { return Ok(()) };
+    let index = agent.to_le_bytes();
+    let (want, bump) =
+        Pubkey::find_program_address(&[PURSE_SEED, ledger_key.as_ref(), &index], &crate::ID);
+    require_keys_eq!(*purse.key, want, EconErr::BadPurse);
+    // A village whose purses were never created (the token-level tests) simply has
+    // nothing to draw on: then this does nothing and the burn behaves as it always did.
+    let held = token_amount(purse).unwrap_or(0);
+    // Two claims on this purse, and the larger wins.
+    //  - `surplus`: coins it is holding that the ledger no longer says are this agent's,
+    //    because the instruction just took them (the debt, the penalty, the interest). They
+    //    belong in the vault whether or not this burn needs them. Leaving them behind was
+    //    what made the vault drift below the bank's cash, so that the NEXT foreclosure in
+    //    the same round found it short even though its own debtor was good for it.
+    //  - `short`: what the burn is still missing after the vault's own balance.
+    let surplus = held.saturating_sub(cash);
+    let short = need.saturating_sub(token_amount(vault)?);
+    let take = surplus.max(short).min(held);
+    transfer_coins(purse, vault, token_program, ledger_key, agent, bump, take)
 }
 
 /// MintTo: mint (w), destination (w), authority (s) — the mint signs for itself.

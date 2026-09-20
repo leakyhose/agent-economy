@@ -117,7 +117,24 @@ hr('market quality: priority, price discovery');
     const w = dec.map(d => d.slowest).sort((a, b) => a - b), q = p => w[Math.min(w.length - 1, Math.floor(p * w.length))];
     console.log(`round wait (slowest agent): median ${(q(0.5) / 1000).toFixed(1)}s  p90 ${(q(0.9) / 1000).toFixed(1)}s  max ${(w.at(-1) / 1000).toFixed(1)}s   ` +
       `timed out ${dec.reduce((s, d) => s + d.timeouts, 0)} of ${dec.length * N} turns, no answer ${dec.reduce((s, d) => s + (d.noAnswer ?? 0), 0)}   ` +
+      // the quorum close: the round stops waiting once enough have answered, and the rest are
+      // left behind exactly as a timeout leaves them
+      (dec.some(d => d.quorum != null) ? `quorum ${Math.round(avg(dec.map(d => d.quorum)) * 100)}% (${dec.at(-1).quorumNeed} of ${N}), ` +
+        `left behind ${dec.reduce((s, d) => s + (d.stragglers ?? 0), 0)} (${pct(dec.reduce((s, d) => s + (d.stragglers ?? 0), 0), dec.length * N)})   ` : '') +
       `round length avg ${(avg(rounds.map(r => r.roundMs ?? 0)) / 1000).toFixed(1)}s`);
+    // the decide barrier: the round waits for the slowest, so p50 -> max is what that costs
+    const p = k => avg(dec.map(d => d[k]).filter(x => x != null));
+    if (dec.some(d => d.p50 != null))
+      console.log(`  deciding, per agent: p50 ${(p('p50') / 1000).toFixed(1)}s  p90 ${(p('p90') / 1000).toFixed(1)}s  p95 ${(p('p95') / 1000).toFixed(1)}s  ` +
+        `max ${(p('max') / 1000).toFixed(1)}s — waiting for the slowest instead of the median costs ${((p('max') - p('p50')) / 1000).toFixed(1)}s a round`);
+  }
+  // where the rest of the round went: the chain, phase by phase (world.mjs `phase`)
+  const withPhases = rounds.filter(r => r.phases);
+  if (withPhases.length) {
+    const keys = [...new Set(withPhases.flatMap(r => Object.keys(r.phases)))];
+    console.log(`round phases (ms, mean over ${withPhases.length} rounds): ` +
+      keys.map(k => `${k} ${avg(withPhases.map(r => r.phases[k] ?? 0)).toFixed(0)}`).join('  ') +
+      `  | chain total ${avg(withPhases.map(r => r.ms)).toFixed(0)}`);
   }
   if (mins) console.log(`calls per minute ${((final.llm.calls ?? 0) / mins).toFixed(0)}   decisions per minute ${(decisions.length / mins).toFixed(0)}   rounds per minute ${(rounds.length / mins).toFixed(1)}` +
     ` (was 511, 329, 16.5)`);
