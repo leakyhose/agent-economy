@@ -161,7 +161,85 @@
       }
       geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       geo.computeVertexNormals();
-      const land = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 }));
+      // The per-vertex palette above sets the broad bands; this shader adds the
+      // per-pixel detail they cannot carry — sand grain, grass clumping and rock
+      // strata — the same way the water surface is upscaled. No extra geometry.
+      const landMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
+      landMat.onBeforeCompile = (sh) => {
+        sh.vertexShader = sh.vertexShader
+          .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;\nvarying vec3 vWNrm;")
+          .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\n  vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\n  vWNrm = normalize(mat3(modelMatrix) * objectNormal);");
+        sh.fragmentShader = sh.fragmentShader
+          .replace("#include <common>", `#include <common>
+            varying vec3 vWPos;
+            varying vec3 vWNrm;
+            float vRough = 0.9;
+            float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            float vn(vec2 p){
+              vec2 i = floor(p), f = fract(p);
+              vec2 u = f * f * (3.0 - 2.0 * f);
+              return mix(mix(h21(i), h21(i + vec2(1,0)), u.x), mix(h21(i + vec2(0,1)), h21(i + vec2(1,1)), u.x), u.y);
+            }
+            float fb(vec2 p, int oct){
+              float s = 0.0, a = 0.5;
+              for (int i = 0; i < 6; i++) { if (i >= oct) break; s += a * vn(p); p *= 2.07; a *= 0.5; }
+              return s;
+            }
+            // worley-ish cell noise for grass clumps and rock facets
+            float cells(vec2 p){
+              vec2 ip = floor(p), fp = fract(p);
+              float d = 1.0;
+              for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+                vec2 g = vec2(float(x), float(y));
+                vec2 o = vec2(h21(ip + g), h21(ip + g + 7.3));
+                d = min(d, length(g + o - fp));
+              }
+              return d;
+            }`)
+          .replace("#include <color_fragment>", `#include <color_fragment>
+            {
+              vec3 wp = vWPos;
+              float alt = wp.y;
+              float slope = 1.0 - clamp(vWNrm.y, 0.0, 1.0);
+
+              // --- sand: fine grain + wind ripples parallel to the shore ---
+              float grain = fb(wp.xz * 9.0, 3);
+              float ripple = sin(wp.x * 1.1 + wp.z * 0.7 + fb(wp.xz * 0.35, 2) * 6.0) * 0.5 + 0.5;
+              float sandMask = 1.0 - smoothstep(0.8, 3.4, alt);
+              vec3 sandDetail = vec3(0.09, 0.075, 0.05) * (grain - 0.5) * 2.0
+                              + vec3(0.05, 0.045, 0.03) * (ripple - 0.5);
+
+              // --- grass: clumped cells + blade-scale speckle, dries out with altitude ---
+              float clump = 1.0 - cells(wp.xz * 0.55);
+              float blades = fb(wp.xz * 14.0, 3);
+              float grassMask = smoothstep(1.8, 4.0, alt) * (1.0 - smoothstep(13.0, 21.0, alt)) * (1.0 - smoothstep(0.42, 0.72, slope));
+              vec3 grassDetail = vec3(-0.07, 0.10, -0.05) * (clump - 0.45) * 1.25
+                               + vec3(0.045, 0.06, 0.03) * (blades - 0.5) * 0.9;
+
+              // --- rock: stratified bands + facet breakup on steep or high ground ---
+              float strata = fb(vec2(wp.x * 0.35 + wp.z * 0.12, alt * 1.45), 4);
+              float facet = 1.0 - cells(wp.xz * 1.25 + alt * 0.4);
+              float rockMask = clamp(smoothstep(0.38, 0.78, slope) + smoothstep(15.0, 27.0, alt), 0.0, 1.0);
+              vec3 rockDetail = vec3(0.13, 0.115, 0.10) * (strata - 0.5) * 1.5
+                              + vec3(0.08, 0.075, 0.07) * (facet - 0.5);
+
+              // --- damp sand right at the tideline ---
+              float wet = (1.0 - smoothstep(0.0, 1.7, alt)) * step(0.02, alt);
+              diffuseColor.rgb *= mix(1.0, 0.72, wet);
+
+              diffuseColor.rgb += sandDetail * sandMask
+                                + grassDetail * grassMask
+                                + rockDetail * rockMask;
+
+              // large-scale mottling so the whole island never reads flat
+              diffuseColor.rgb *= 0.9 + fb(wp.xz * 0.075, 4) * 0.22;
+              diffuseColor.rgb = clamp(diffuseColor.rgb, 0.0, 1.0);
+
+              vRough = clamp(0.62 + (1.0 - wet) * 0.3 + (strata - 0.5) * 0.25 * rockMask, 0.35, 1.0);
+            }`)
+          .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = vRough;");
+      };
+      const land = new THREE.Mesh(geo, landMat);
       land.castShadow = true;
       land.receiveShadow = true;
       scene.add(land);
@@ -208,9 +286,10 @@
       scene.add(trees);
       scene.add(trunks);
 
-      // ---- ground cover and mountain outcrops --------------------------------
-      // Both use instancing: hundreds of distinct tufts and rocks, one draw each.
-      // They add the small-scale detail that vertex colours alone cannot show.
+      // ---- ground cover ------------------------------------------------------
+      // Instanced tufts: over a thousand distinct blades in a single draw call.
+      // Rock on the upper slopes is left to the terrain shader rather than to
+      // scattered boulders, which read as floating on steep faces.
       const grassGeo = new THREE.ConeGeometry(0.42, 1.7, 4);
       grassGeo.translate(0, 0.84, 0);
       const grass = new THREE.InstancedMesh(grassGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), 1500);
@@ -236,34 +315,6 @@
       grass.instanceMatrix.needsUpdate = true;
       if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
       scene.add(grass);
-
-      const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-      rockGeo.translate(0, 0.7, 0);
-      const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true }), 180);
-      const rockCol = new THREE.Color();
-      let rockPlaced = 0;
-      for (let i = 0; i < 36000 && rockPlaced < 180; i++) {
-        const x = (hash2(i * 2.17, 57.3) - 0.5) * 155;
-        const z = (hash2(i * 3.41, 71.6) - 0.5) * 155;
-        const hgt = height(x, z);
-        const slope = Math.abs(hgt - height(x + 1.6, z)) + Math.abs(hgt - height(x, z + 1.6));
-        if (hgt < 15 || (slope < 1.45 && hgt < 27) || hash2(i * 4.7, 19.2) > 0.035) continue;
-        const s = 0.7 + hash2(i, 45) * 2.25;
-        tp.set(x, hgt - 0.45, z);
-        sc.set(s * (0.65 + hash2(i, 47) * 0.45), s * (0.5 + hash2(i, 49) * 0.7), s * (0.65 + hash2(i, 51) * 0.4));
-        q.setFromEuler(new THREE.Euler(hash2(i, 53) * 0.35, hash2(i, 55) * 6.28, hash2(i, 59) * 0.35));
-        m4.compose(tp, q, sc);
-        rocks.setMatrixAt(rockPlaced, m4);
-        rockCol.setHSL(0.07 + hash2(i, 61) * 0.05, 0.18 + hash2(i, 63) * 0.14, 0.25 + hash2(i, 65) * 0.17);
-        rocks.setColorAt(rockPlaced, rockCol);
-        rockPlaced++;
-      }
-      rocks.count = rockPlaced;
-      rocks.castShadow = true;
-      rocks.receiveShadow = true;
-      rocks.instanceMatrix.needsUpdate = true;
-      if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
-      scene.add(rocks);
 
       // ---- water: shader surface with waves, depth shading and shoreline foam ----
       const HMAP = 256;
