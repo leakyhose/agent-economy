@@ -93,14 +93,37 @@ export function modelFor(id, pool, n = CFG.AGENTS) {
   return deal(pool, n)[id] ?? pool[hash(id) % pool.length];
 }
 
+// What Baseten will run at once for a model, from the x-ratelimit-limit-requests header on
+// a throwaway call — one per model at the start of a run. The catalogue splits in two: most
+// models answer 120 at a time, a handful only 15, and the narrow ones turn requests away
+// under a village's load however politely it asks. Half the ceiling is the gate, so retries
+// and the odd slow reply have somewhere to go.
+export async function liveLimits(pool, key = process.env.BASETEN_API_KEY) {
+  const limits = {};
+  await Promise.all(pool.map(async model => {
+    try {
+      const r = await fetch(`${BASE_URL}/chat/completions`, { method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ model, max_completion_tokens: 5, messages: [{ role: 'user', content: 'ok' }] }) });
+      await r.text();
+      const n = +(r.headers.get('x-ratelimit-limit-requests') ?? 0);
+      if (n > 0) limits[model] = Math.max(2, Math.floor(n / 2));
+    } catch { /* no header, no gate: the global one still applies */ }
+  }));
+  return limits;
+}
+
 export async function basetenBrain() {
   const pool = basetenPool();
-  const price = await livePrices();
+  const [price, limits] = await Promise.all([livePrices(), liveLimits(pool)]);
+  const tight = Object.entries(limits).filter(([, n]) => n < 10);
+  if (tight.length) console.warn(`  baseten: ${tight.map(([m, n]) => `${m.split('/').pop()} allows ${n * 2} at once`).join(', ')} - villagers on it will queue`);
   return chatBrain({
     label: pool.length === 1 ? `baseten (${pool[0]})` : `baseten (${pool.length} models)`,
     client: new OpenAI({ baseURL: BASE_URL, apiKey: process.env.BASETEN_API_KEY }),
     pickModel: a => modelFor(a.id, pool, CFG.AGENTS),
     price: model => price[model] ?? FALLBACK_PRICE[model] ?? [0, 0],
+    concurrency: model => limits[model] ?? 0,
     // Every model here reasons by default, and a villager's decision is not worth reasoning
     // about at length: with it on, three agents in eight spent all 1,000 tokens thinking and
     // the answer was cut off before a single tool call — which the round reads as a villager

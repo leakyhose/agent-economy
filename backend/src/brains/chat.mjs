@@ -24,8 +24,17 @@ export function semaphore(n) {
 // params    (slug) => anything else the request needs.
 // maxTokens what one reply may spend. A reply cut off here reads as a villager who never
 //           answered, so it is a budget for the tool calls, not for thinking out loud.
-export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000 }) {
+export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000,
+                            concurrency = () => 0 }) {
   const limit = semaphore(CFG.LLM_CONCURRENCY);
+  // A second gate, per model: providers meter each model separately, and one model's ceiling
+  // is no reason to hold up a villager thinking with another. Zero means the global gate only.
+  const gates = new Map();
+  const run = (model, fn) => {
+    if (!gates.has(model)) { const n = concurrency(model); gates.set(model, n > 0 ? semaphore(n) : null); }
+    const gate = gates.get(model);
+    return limit(() => (gate ? gate(fn) : fn()));
+  };
   const s = { calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0 };
   // The same tallies again, per model, so a mixed village can be read model by model:
   // who thought with what, how often it answered, what it cost.
@@ -69,17 +78,29 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
 
       for (let turn = 0; turn < 3; turn++) {
         let r;
-        try {
-          r = await limit(() => client.chat.completions.create({
-            model, messages, tools, max_completion_tokens: maxTokens, ...params(model),
-          }, { signal: t.signal }));
-        } catch (e) {
-          if (t.signal?.aborted) { bump('timedOut'); return; }   // the round stopped waiting
+        // A 429 is the provider's queue, not the villager's turn. It used to spend one of the
+        // three turns a decision gets, so three of them in a row and the villager never spoke
+        // at all — it kept last round's job and posted no orders, silently. Now it waits and
+        // asks again, backing off, until the round's own clock stops it.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            r = await run(model, () => client.chat.completions.create({
+              model, messages, tools, max_completion_tokens: maxTokens, ...params(model),
+            }, { signal: t.signal }));
+            break;
+          } catch (e) {
+            if (t.signal?.aborted) { bump('timedOut'); return; }   // the round stopped waiting
 
-          if (e instanceof OpenAI.RateLimitError) { bump('rateLimited'); await new Promise(r => setTimeout(r, 2000)); continue; }
-          bump('errors');
-          if (s.errors <= 3) console.error(`[${label} ${model}] ${e.status ?? ''} ${e.message}`);
-          return;
+            if (e instanceof OpenAI.RateLimitError && attempt < 4) {
+              bump('rateLimited');
+              // 0.3s, 0.6s, 1.2s, 2.4s, jittered so thirty villagers don't retry in lockstep
+              await new Promise(r => setTimeout(r, 300 * 2 ** attempt + Math.random() * 200));
+              continue;
+            }
+            bump('errors');
+            if (s.errors <= 3) console.error(`[${label} ${model}] ${e.status ?? ''} ${e.message}`);
+            return;
+          }
         }
         bump('calls');
         bump('inTok', r.usage?.prompt_tokens ?? 0);
