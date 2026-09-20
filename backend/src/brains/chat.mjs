@@ -22,7 +22,9 @@ export function semaphore(n) {
 // price     (slug) => $ per 1M tokens [input, output]; [0, 0] for a model we have no price
 //           for, which then counts tokens and no cost.
 // params    (slug) => anything else the request needs.
-export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}) }) {
+// maxTokens what one reply may spend. A reply cut off here reads as a villager who never
+//           answered, so it is a budget for the tool calls, not for thinking out loud.
+export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000 }) {
   const limit = semaphore(CFG.LLM_CONCURRENCY);
   const s = { calls: 0, inTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0 };
   // The same tallies again, per model, so a mixed village can be read model by model:
@@ -69,7 +71,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         let r;
         try {
           r = await limit(() => client.chat.completions.create({
-            model, messages, tools, max_completion_tokens: 1000, ...params(model),
+            model, messages, tools, max_completion_tokens: maxTokens, ...params(model),
           }, { signal: t.signal }));
         } catch (e) {
           if (t.signal?.aborted) { bump('timedOut'); return; }   // the round stopped waiting

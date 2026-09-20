@@ -18,41 +18,37 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 // Four houses, none of them OpenAI's: the point of this brain is to put other people's
 // models beside gpt-5.6-luna, so an OpenAI model in the pool would only muddy the reading.
 //
-// A decision is input-heavy — about 2,000 tokens of observation in, 100 out — so the input
-// price is what a run really pays. Against luna's $0.0005 a decision: GLM 5.3 Flash and the
-// DeepSeek Flashes land at a third of that or less, and Inkling Small, the dearest here, at
-// about double. Kimi is priced out of this pool: K2.6 costs about four times luna a decision
-// and K3 twelve. Name one in BASETEN_MODELS if you want it anyway.
+// A decision is input-heavy — about 2,000 tokens of observation in, a few hundred out — so
+// the input price is what a run really pays. Of the seventeen models Baseten serves, only
+// GLM 5.3 Flash and DeepSeek V4 Flash undercut gpt-5.6-luna ($0.20 / $1.20) on both sides
+// without being an OpenAI model; V4.1 Flash is half again as dear on input and level on
+// output, which is close enough to belong. Everything else — Kimi, Nemotron, Inkling, the
+// Pros, the full GLMs — costs multiples of luna. Name one in BASETEN_MODELS if you want it.
 export const DEFAULT_POOL = [
   'zai-org/GLM-5.3-Flash',
   'deepseek-ai/DeepSeek-V4.1-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
-  'thinkingmachines/inkling-small',
 ];
 
 // $ per 1M tokens [input, output], from baseten.co/products/model-apis, checked 2026-09-19.
-// Its columns read "Input, Cache Input, Output", so output really is the cheaper side here —
-// these models are priced the other way round from OpenAI's. A model with no price counts
-// tokens and reports no cost. The pro, code and frontier models are listed only for anyone
-// who names one in BASETEN_MODELS; the pool above doesn't use them.
+// That table has three columns — Input, Cache Input, Output — and the middle one is easy to
+// read as the last: these were briefly priced at a tenth of the truth because of it.
+// A model with no price here still counts tokens; it just reports no cost.
 const PRICE = {
-  'zai-org/GLM-5.3-Flash': [0.15, 0.03],
-  'zai-org/GLM-5.3': [1.40, 0.14],
-  'zai-org/GLM-5.2': [1.40, 0.14],
-  'zai-org/GLM-5.2-Fast': [2.10, 0.21],
-  'deepseek-ai/DeepSeek-V4.1-Flash': [0.30, 0.03],
-  'deepseek-ai/DeepSeek-V4-Flash-0731': [0.13, 0.028],
-  'deepseek-ai/DeepSeek-V4-Pro': [1.74, 0.145],
-  'deepseek-ai/DeepSeek-V4-Pro-0813': [1.32, 0.132],
-  // Baseten doesn't publish a rate for K2.6; this is Moonshot's own, so its cost line is an
-  // estimate until a bill says otherwise.
-  'moonshotai/Kimi-K2.6': [0.95, 4.00],
-  'moonshotai/Kimi-K3': [3.00, 0.30],
-  'moonshotai/Kimi-K2.7-Code': [0.95, 0.16],
-  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B': [0.60, 0.12],
-  'thinkingmachines/inkling': [1.00, 0.17],
-  'thinkingmachines/inkling-small': [0.50, 0.10],
-  'openai/gpt-oss-120b': [0.10, 0.10],
+  'zai-org/GLM-5.3-Flash': [0.15, 0.50],
+  'zai-org/GLM-5.3': [1.40, 4.40],
+  'zai-org/GLM-5.2': [1.40, 4.40],
+  'zai-org/GLM-5.2-Fast': [2.10, 6.60],
+  'deepseek-ai/DeepSeek-V4.1-Flash': [0.30, 1.20],
+  'deepseek-ai/DeepSeek-V4-Flash-0731': [0.13, 0.26],
+  'deepseek-ai/DeepSeek-V4-Pro': [1.74, 3.48],
+  'deepseek-ai/DeepSeek-V4-Pro-0813': [1.32, 3.96],
+  'moonshotai/Kimi-K3': [3.00, 15.00],
+  'moonshotai/Kimi-K2.7-Code': [0.95, 4.00],
+  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B': [0.60, 2.40],
+  'thinkingmachines/inkling': [1.00, 4.05],
+  'thinkingmachines/inkling-small': [0.50, 1.20],
+  'openai/gpt-oss-120b': [0.10, 0.50],
 };
 
 // CFG.BASETEN_MODELS is the pool when it is set (and config.mjs folds a MODEL chosen for
@@ -98,5 +94,14 @@ export function basetenBrain() {
     client: new OpenAI({ baseURL: BASE_URL, apiKey: process.env.BASETEN_API_KEY }),
     pickModel: a => modelFor(a.id, pool, CFG.AGENTS),
     price: model => PRICE[model] ?? [0, 0],
+    // Every model here reasons by default, and a villager's decision is not worth reasoning
+    // about at length: with it on, three agents in eight spent all 1,000 tokens thinking and
+    // the answer was cut off before a single tool call — which the round reads as a villager
+    // who never spoke, so it keeps last round's job and posts no orders. Off, the same
+    // decisions come back in 18-50 tokens. A model that doesn't know the field ignores it.
+    params: () => ({ reasoning_effort: 'none' }),
+    // Headroom for one that ignores it anyway: better a few more output tokens than a
+    // decision truncated mid-thought.
+    maxTokens: 1500,
   });
 }
