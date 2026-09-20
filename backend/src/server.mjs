@@ -20,7 +20,7 @@ const coins = c => (c / 100).toFixed(2);
 
 // Which brains a run can be driven by. .env picks the default; the dashboard's dropdown
 // passes a choice to /start, so openai and baseten can be compared without a restart.
-export const BRAINS = ['stub', 'openai', 'claude', 'baseten'];
+export const BRAINS = ['stub', 'openai', 'baseten'];
 
 // A brain is built once per run: its agents are bound to their models and its token tallies
 // belong to that run, so the choice is made at /start and holds until the run stops. A brain
@@ -29,10 +29,6 @@ async function makeBrain(choice = CFG.BRAIN) {
   if (choice === 'openai') {
     if (process.env.OPENAI_API_KEY) return (await import('./brains/openai.mjs')).openaiBrain();
     console.warn('\n  brain=openai but no OPENAI_API_KEY in the repo-root .env. Using the stub.\n');
-  }
-  if (choice === 'claude') {
-    if (process.env.ANTHROPIC_API_KEY) return (await import('./brains/claude.mjs')).claudeBrain();
-    console.warn('\n  brain=claude but no ANTHROPIC_API_KEY in the repo-root .env. Using the stub.\n');
   }
   if (choice === 'baseten') {
     if (process.env.BASETEN_API_KEY) return await (await import('./brains/baseten.mjs')).basetenBrain();

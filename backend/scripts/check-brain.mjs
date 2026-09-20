@@ -14,7 +14,7 @@ const has = f => process.argv.includes(f);
 // --pool costs nothing, so it shows the whole village; a real decision costs a call each,
 // so that path is capped however big AGENTS is.
 const BRAIN = CFG.BRAIN, N = has('--pool') ? (+CFG.AGENTS || 10) : Math.min(+CFG.AGENTS || 6, 12);
-const KEYS = { openai: 'OPENAI_API_KEY', claude: 'ANTHROPIC_API_KEY', baseten: 'BASETEN_API_KEY' };
+const KEYS = { openai: 'OPENAI_API_KEY', baseten: 'BASETEN_API_KEY' };
 
 // The same names the village uses, so a run and a check talk about the same villagers.
 const S1 = ['Ada', 'Bo', 'Cy', 'Dee', 'Eli', 'Fen', 'Gus', 'Hana', 'Ivo', 'Jo', 'Kit', 'Lu', 'Mara', 'Nils', 'Ora', 'Pim'];
@@ -113,9 +113,8 @@ function fakeTools() {
 }
 
 const brain = BRAIN === 'openai' ? (await import('../src/brains/openai.mjs')).openaiBrain()
-  : BRAIN === 'claude' ? (await import('../src/brains/claude.mjs')).claudeBrain()
-    : BRAIN === 'baseten' ? await (await import('../src/brains/baseten.mjs')).basetenBrain()
-      : (await import('../src/brains/stub.mjs')).stubBrain();
+  : BRAIN === 'baseten' ? await (await import('../src/brains/baseten.mjs')).basetenBrain()
+    : (await import('../src/brains/stub.mjs')).stubBrain();
 
 console.log(`brain: ${brain.name}   ${N} villagers, one decision each\n`);
 const t0 = Date.now();

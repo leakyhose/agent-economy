@@ -1,6 +1,6 @@
-// OpenAI brain. Same tools, same prompt, same interface as the Claude brain. The loop it
-// runs is chat.mjs, which the Baseten brain shares; what is OpenAI's alone is the client,
-// the price list, and one quirk of the gpt-5 family.
+// OpenAI brain. Same tools, same prompt, same interface as the stub. The loop it runs is
+// chat.mjs, which the Baseten brain shares; what is OpenAI's alone is the client, the price
+// list, and one quirk of the gpt-5 family.
 import OpenAI from 'openai';
 import { CFG } from '../config.mjs';
 import { chatBrain } from './chat.mjs';

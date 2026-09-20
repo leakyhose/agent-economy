@@ -1,4 +1,4 @@
-// The tools an agent can call. Both brains — the free stub and Claude — act ONLY
+// The tools an agent can call. Every brain — the free stub, OpenAI, Baseten — acts ONLY
 // through these, so swapping brains changes nothing else in the system.
 import { CFG, GOODS, FOOD, WOOD, NETS, BOATS, HOUSES } from './config.mjs';
 import { FIRE_SALE_BPS } from './chain.mjs';

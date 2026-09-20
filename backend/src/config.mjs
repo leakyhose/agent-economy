@@ -24,10 +24,10 @@ export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
 export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
-  BRAIN:        env.BRAIN        || 'stub',            // stub | openai | claude | baseten
+  BRAIN:        env.BRAIN        || 'stub',            // stub | openai | baseten
   // Empty under baseten: that brain draws a model per agent from its pool instead of running
-  // the whole village on one. The other brains each have one model, named here.
-  MODEL:        env.MODEL        || (env.BRAIN === 'claude' ? 'claude-haiku-4-5' : env.BRAIN === 'baseten' ? '' : 'gpt-5.6-luna'),
+  // the whole village on one. The openai brain runs the one model named here.
+  MODEL:        env.MODEL        || (env.BRAIN === 'baseten' ? '' : 'gpt-5.6-luna'),
   // The pool the baseten brain draws from, comma-separated slugs; empty means its own
   // default (brains/baseten.mjs DEFAULT_POOL). Naming a MODEL with BRAIN=baseten puts every
   // villager on that one model, which is how a single model is A/B'd against the mixture.

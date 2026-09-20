@@ -1,5 +1,5 @@
 // PLACEHOLDER BRAIN. Free, instant, no API key. It acts through exactly the same
-// tools the Claude brain uses, so the rest of the system can't tell them apart.
+// tools the model brains use, so the rest of the system can't tell them apart.
 // It is deliberately simple — it exists to exercise the economy, not to be smart.
 // What it does know is the one thing the economy is built on: work at whatever a shift
 // of yours is worth most in coins, sell what you make, buy what you need.
