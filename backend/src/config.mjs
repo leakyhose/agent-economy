@@ -17,12 +17,10 @@ try {
 const env = process.env;
 
 // Order is fixed: it is the on-chain layout (lib.rs N_GOODS = 5). Houses are built
-// (build_house). Index 3 (once "boats", never used) is LABOUR: one unit is one shift of
-// work. Every villager holds their own next shift and may sell it in the same on-chain
-// auction as everything else; whoever buys it has an extra pair of hands next round. The
-// program neither knows nor cares what slot 3 is called, so this took no on-chain change.
-export const GOODS = ['food', 'wood', 'nets', 'labour', 'houses'];
-export const FOOD = 0, WOOD = 1, NETS = 2, LABOUR = 3, HOUSES = 4;
+// (build_house); boats are a dead on-chain slot — nothing makes them and agents are never
+// shown them, but index 3 has to stay so the JS arrays line up with the ledger.
+export const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'];
+export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
 
 export const CFG = {
   AGENTS:      +env.AGENTS      || 10,
@@ -53,8 +51,15 @@ export const CFG = {
   TASKS: {
     // Calibrated so the village runs near capacity, as economies do: a talented fisher with a
     // net feeds about three people well, a talented woodcutter keeps about four fires and
-    // houses going — so needs take most of the village's labour, and what is left builds.
-    gather_food: { yield: 9, netYield: 18, place: 'docks' },
+    // houses going — so needs take most of the village's shifts, and what is left builds.
+    // Food is 12, not 9: at 9 the village could not feed itself at the lifestyle agents
+    // actually choose. A 121-round LLM run made 34,050 food against 37,980 wanted and lost
+    // 7,713 more to rot, so the ask side was empty in half the rounds, and an unmet market
+    // prints +4.9% a round against -1.9% in a glut — food went 1.00 -> 11.48 and fishing came
+    // to pay ten times any other job, so every villager fished whatever their talent.
+    // At 12, ~16 fishers feed 30 at two helpings and the other 14 shifts are free for wood,
+    // nets and houses. A net still doubles a catch.
+    gather_food: { yield: 12, netYield: 24, place: 'docks' },
     gather_wood: { yield: 12,             place: 'forest' },
     craft_net:   { wood: 20,                place: 'workshop' },
     // A house: `wood` is the same for everyone (see W.houseWood) and is paid for as the house
@@ -69,7 +74,6 @@ export const CFG = {
     // villagers who hold the wood (the woodcutters, poor crafters) several times what it
     // quoted the crafters who hold none.
     build_house: { wood: 60, shifts: 3,    place: 'building site' },
-    hired:       {                        place: 'an employer\'s side' },   // never chosen: the shift was sold last round
     idle:        {                        place: 'square' },
   },
   // Every villager draws a talent per job at birth: strong at one, middling at another,
@@ -77,9 +81,9 @@ export const CFG = {
   // net costs and sets how fast a house goes up. Everybody is several times better at one job than at another:
   // that is what makes doing everything yourself a bad idea, and it is the reason a market
   // exists at all. Nothing assigns a job — agents see their skills and choose, and the
-  // middling talent is there so labour can move when prices say so.
+  // middling talent is there so a villager can change trade when prices say so.
   TALENT: { strong: [1.6, 2.4], mid: [0.6, 1.0], weak: [0.25, 0.5] },
-  // Learning by doing, on top of talent: labour is fixed at one shift each, so real output
+  // Learning by doing, on top of talent: everyone works one shift a round, so real output
   // per head can only rise if people get better at what they do. Every shift worked multiplies
   // that job's skill by (1 + LEARN), up to LEARN_CAP times the skill the agent was born with.
   // 0.3% a shift is ~+35% over 100 rounds for someone who sticks to one job — which also
@@ -107,7 +111,12 @@ export const CFG = {
   // less than the first, a third less again. Calibrated so the choices are close at opening
   // prices: one extra food (5.00) buys +0.6 then +0.4.
   WELLBEING: {
-    EAT: [-2, 1.0, 1.6, 2.0],   // per meal, by food eaten: none (a missed meal), 1, 2, 3
+    // Per meal, by helpings eaten: none (a missed meal), 1, 2, 3. The 2nd helping adds +0.4 and
+    // the 3rd +0.2, not +0.6 and +0.4: at +0.6 a second helping was the cheapest wellbeing in
+    // the village at opening prices, so agents settled at 2.2 helpings and asked the village for
+    // 330 food a round it could not make. Eating well is still worth doing; eating three times
+    // over is now a luxury, and the coins go to nets and houses instead.
+    EAT: [-2, 1.0, 1.4, 1.6],
     WARM: 0.5,                  // per meal period while the fire is lit
     COLD: -1,                   // per meal period while it is out
     // per meal period, for the 1st, 2nd, 3rd… finished house you own and keep up (pledged
@@ -115,28 +124,40 @@ export const CFG = {
     // always something more worth buying, so the rich keep spending and demand never dies.
     HOUSE: [1.5, 0.9, 0.5, 0.3, 0.2],
   },
-  HOUSE_UPKEEP: 2,              // wood each finished house uses up every round; a house not kept up gives nothing that round
+  // Wood each finished house uses every round; a house not kept up gives nothing that round.
+  // 1, not 2: houses are the thing agents keep buying, and at 2 the 97 houses a 121-round run
+  // ended with wanted 194 wood a round beside 90 for the fires, against ~216 cut. Upkeep ate
+  // the wood the village needed for nets and building, and 4.9 villagers a round went cold.
+  HOUSE_UPKEEP: 1,
 
   // The market stall everyone starts with (agents change theirs with set_sale): what is held
   // above `keep` is offered every round at `min` × the start price or better. Food, wood and
-  // nets only; nobody's house or labour is for sale until they say so.
+  // nets only; nobody's house is for sale until they say so.
   // The stall asks the going price to begin with and reprices itself (REPRICE); `min` is its floor.
-  STALL: [{ keep: 20, min: 0.3 }, { keep: 25, min: 0.3 }, { keep: 1, min: 0.4 }, null, null],
+  // The reserves are what does NOT go to market, so they set how much of the village's output
+  // ever trades. 10 food is two rounds' eating and 12 wood four fires: enough that a bad round
+  // doesn't starve anyone, small enough that a specialist's whole surplus is on sale every
+  // round. At 20 and 25 a villager holding exactly their reserve neither sold nor bought, and
+  // only 23% of output went through the market.
+  STALL: [{ keep: 10, min: 0.3 }, { keep: 12, min: 0.3 }, { keep: 1, min: 0.4 }, null, null],
   // Prices move when markets don't clear: a stall that sold nothing asks `down` less next round,
   // one that sold out asks `up` more; a shopping list that got nothing bids `down` more.
-  REPRICE: { down: 0.07, up: 0.05 },
+  // `band` is the leash: a stall may ask at most this much more than the last price the good
+  // actually traded at, and a shopping list may bid at most this much less. Without it a stall
+  // that sells out marks up 5% a round off ITS OWN last sticker, so in a shortage every stall
+  // compounds away from the market together — 65 rounds of that took food from 1.00 to 11.48.
+  // Priced off the going rate instead, the market can still rise fast when goods are short
+  // (the band is per round, and the clearing price rises with it) but cannot run away.
+  REPRICE: { down: 0.07, up: 0.05, band: 1.35 },
 
   // The shopping list everyone starts with (agents change theirs with set_buy): every round,
   // bid for whatever is held short of `target`, at up to `max` × the start price.
-  SHOP: [{ target: 20, max: 2.5 }, { target: 15, max: 2.5 }, null, null, null],
+  // The stock each villager keeps topped up. Targets sit just above the stall's reserve, so a
+  // villager who runs short buys rather than switching jobs to make it themselves — that is
+  // what a market is for. Nets are on the list too (target 1): a net doubles a catch and pays
+  // for itself many times over, so standing demand for one is what makes crafting a trade.
+  SHOP: [{ target: 14, max: 2.5 }, { target: 16, max: 2.5 }, { target: 1, max: 2.5 }, null, null],
 
-  // The labour market. A villager may sell their NEXT shift (one unit of labour) in the
-  // round's auction; the buyer has a hired hand next round, working in whatever job the
-  // buyer does then, at the buyer's skill times HAND_EFFICIENCY. A hired fisher needs one
-  // of the employer's spare nets to get the net catch — capital is what makes hiring pay.
-  // Labour is fungible, so nobody has to be matched with anybody: the auction does it.
-  HAND_EFFICIENCY: 0.75,
-  MAX_HANDS: 3,                 // the most hands one villager can hire for a round
   LIFESTYLE_START: 1,           // food per meal (1–3) until an agent sets its own
 
   // Fishing conditions: a plain multiplier on what a fishing shift catches. There is no
@@ -176,11 +197,12 @@ export const CFG = {
   },
   SLOT_MS: 400,            // assumed slot time: a minute of interest is 60000 / SLOT_MS slots
   ROUND_MS_GUESS: 1500,    // round length assumed before the first round is measured (short is safe: see TERM_SLACK)
-  // cents: food, wood, nets, labour (one shift's wage), houses. Houses open near what one costs
-  // to make, not at a token cent: a house nobody has bought yet is still the village's biggest
-  // asset, and at 1 cent it backed no loan and no net worth (the bank once auctioned a seized
-  // house for a penny). These are also the fixed prices real GDP is valued at (world.mjs).
-  START_PRICES: [100, 100, 3000, 1500, 12000],
+  // cents: food, wood, nets, boats, houses. Boats open at 1 cent — the chain refuses a zero
+  // start price — and nothing makes or shows them. Houses open near what one costs to make,
+  // not at a token cent: a house nobody has bought yet is still the village's biggest asset,
+  // and at 1 cent it backed no loan and no net worth (the bank once auctioned a seized house
+  // for a penny). These are also the fixed prices real GDP is valued at (world.mjs).
+  START_PRICES: [100, 100, 3000, 1, 12000],
   // The price index: a fixed basket (15 meals at lifestyle 1, some firewood, a little of the
   // durables), unchanged since rounds became turns so runs stay comparable. Index 1.00 = this
   // basket at START_PRICES. Inflation is its change over the last INFLATION_ROUNDS.

@@ -8,7 +8,7 @@ import { CFG } from '../config.mjs';
 export function stubBrain() {
   let seed = 999;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  const MEAL = CFG.MEAL, EFF = CFG.HAND_EFFICIENCY, F = CFG.TASKS.gather_food;
+  const MEAL = CFG.MEAL, F = CFG.TASKS.gather_food;
 
   return {
     name: 'stub',
@@ -45,20 +45,14 @@ export function stubBrain() {
       if (v.food < keepFood / 2) order('buy', 'food', Math.min(keepFood - v.food, cash() * 0.5 / (p.food * 1.1)), p.food * 1.1 * jitter);
       if (!plans && v.wood < keepWood) order('buy', 'wood', Math.min(keepWood - v.wood, cash() * 0.4 / (p.wood * 1.1)), p.wood * 1.1 * jitter);
 
-      // capital: a fisher wants a net, and more nets once hiring pays; a crafter sells the nets it makes
+      // capital: a fisher wants a net; a crafter sells the nets it makes
       const fisher = fish >= cut && !crafter;
       if (crafter && v.nets > 0) order('sell', 'net', v.nets, p.nets * jitter);
-      else if (fisher && v.netsUsable < 1 + CFG.MAX_HANDS && cash() > p.nets * 1.5 && (!v.netsUsable || rnd() < 0.3)) order('buy', 'net', 1, p.nets * 1.05 * jitter);
+      else if (fisher && !v.netsUsable && cash() > p.nets * 1.5) order('buy', 'net', 1, p.nets * 1.05 * jitter);
 
       // houses: builders sell what they build beyond their own; the rest buy when they can afford one
       if (crafter && v.houses > 1) order('sell', 'house', v.houses - 1, Math.max(p.houses, v.houseWood * p.wood * 1.3) * jitter);
       else if (!crafter && v.nextHouseWb >= 0.5 && cash() > p.houses * 1.2) order('buy', 'house', 1, p.houses * 1.05 * jitter);
-
-      // labour: hire when a hand makes more than the wage and there is capital for it; otherwise offer my own shift
-      const spare = Math.max(0, v.netsUsable - 1);
-      const hand = Math.max(v.yields.food * (spare ? F.netYield / F.yield : 1) * EFF * p.food, v.yields.wood * EFF * p.wood);
-      if (hand > p.labour * 1.15 && cash() > p.labour * 2) order('buy', 'labour', Math.min(CFG.MAX_HANDS, fisher ? Math.max(1, spare) : 1, Math.floor(cash() * 0.3 / p.labour)), Math.min(hand * 0.85, p.labour * 1.15) * jitter);
-      else if (v.canSellLabour && !v.hands) order('sell', 'labour', 1, Math.max(best * 1.05, p.labour * 0.9) * jitter);
 
       // the bank: borrow against goods to buy capital or wood for a build; repay when cash allows
       const f = t.view();
@@ -69,8 +63,6 @@ export function stubBrain() {
         const amount = Math.floor(Math.min(f.maxLoan / 100, value * 0.5) * 100) / 100;
         if (amount >= 5) t.exec('borrow', { amount, ...pledge, reason: 'to invest' });
       }
-
-      if (v.hired) return;                                                           // this shift is sold
 
       // the shift: whatever is worth most, unless something is about to run out
       const g = t.view();
