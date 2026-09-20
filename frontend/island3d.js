@@ -1,4 +1,4 @@
-// <island-3d> — orbitable volcanic island, one blob per agent. Each round plays as a day:
+// <island-3d>: an orbitable volcanic island, one blob per agent. Each round plays as a day:
 // when a round settles everyone walks to the market (dusk), then back out to the area where
 // their next shift happens. Blobs walk the coast road at a steady pace, on the ground.
 // Drag to orbit, scroll to zoom, click a place to open it (dispatches "moku:location").
@@ -6,10 +6,10 @@
   const SEA = 0;
   // Where each task happens. An agent that is deciding (no task yet this round) stays put.
   const AREAS = [
-    { id: "docks",    name: "Docks — fishing",          color: "#1f9fb5", x: -70, z: 38,  tasks: ["gather_food"] },
-    { id: "forest",   name: "Forest — chopping wood",   color: "#3f9450", x: 40,  z: -48, tasks: ["gather_wood"] },
-    { id: "workshop", name: "Workshop — crafting",      color: "#d98c2b", x: 60,  z: 8,   tasks: ["craft_net"] },
-    { id: "site",     name: "Building site — houses",   color: "#cf6046", x: -16, z: -50, tasks: ["build_house"] },
+    { id: "docks",    name: "Docks: fishing",           color: "#1f9fb5", x: -70, z: 38,  tasks: ["gather_food"] },
+    { id: "forest",   name: "Forest: chopping wood",    color: "#3f9450", x: 40,  z: -48, tasks: ["gather_wood"] },
+    { id: "workshop", name: "Workshop: crafting",       color: "#d98c2b", x: 60,  z: 8,   tasks: ["craft_net"] },
+    { id: "site",     name: "Building site: houses",    color: "#cf6046", x: -16, z: -50, tasks: ["build_house"] },
     { id: "market",   name: "Market",                   color: "#8a8f98", x: 18,  z: 56,  tasks: ["idle"] },
   ];
   const MARKET = AREAS.at(-1);
@@ -58,7 +58,7 @@
 
   // The coast road: a loop of waypoints just above the beach. Blobs walk area -> road -> along
   // it -> area, so nobody climbs the mountain or swims. ROAD_HALF_W is the ribbon's half-width
-  // (see the "sandy ribbon" mesh below) — every lane offset below is clamped inside it, so a
+  // (see the "sandy ribbon" mesh below). Every lane offset below is clamped inside it, so a
   // blob's path and its standing spot both always stay on the road, never spilling into the grass.
   const ROAD_HALF_W = 3.2;
   const ROAD = Array.from({ length: 36 }, (_, i) => {
@@ -70,7 +70,7 @@
   const nearestRoad = (x, z) => ROAD.reduce((best, p, i) =>
     Math.hypot(p[0] - x, p[1] - z) < Math.hypot(ROAD[best][0] - x, ROAD[best][1] - z) ? i : best, 0);
   // shortest distance from (x,z) to the road as a polyline (not just to the nearest waypoint,
-  // which under-measures on the straight stretch between two of them) — used to keep trees,
+  // which under-measures on the straight stretch between two of them), used to keep trees,
   // grass and rocks from clipping through the ribbon.
   function distToRoad(x, z) {
     let best = Infinity;
@@ -109,10 +109,10 @@
     return path;
   }
   const rand = (id, salt) => { const v = Math.sin((id + 1) * (12.9898 + salt * 17.31)) * 43758.5453; return v - Math.floor(v); };
-  // a blob's own lane across the road — stable per agent, always inside the ribbon
+  // a blob's own lane across the road, stable per agent, always inside the ribbon
   const laneFor = id => (rand(id, 3) * 2 - 1) * (ROAD_HALF_W - 0.6);
   // an agent's own standing spot for an area: the point on the road nearest that area, nudged
-  // along the road (so a crowd queues rather than stacking) and across it into its own lane —
+  // along the road (so a crowd queues rather than stacking) and across it into its own lane,
   // always on the road itself, never out on the grass around the area.
   function spot(id, area) {
     const f = roadFrame(nearestRoad(area.x, area.z));
@@ -243,8 +243,8 @@
       geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
       geo.computeVertexNormals();
       // The per-vertex palette above sets the broad bands; this shader adds the
-      // per-pixel detail they cannot carry — sand grain, grass clumping and rock
-      // strata — the same way the water surface is upscaled. No extra geometry.
+      // per-pixel detail they cannot carry (sand grain, grass clumping and rock
+      // strata), the same way the water surface is upscaled. No extra geometry.
       const landMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
       landMat.onBeforeCompile = (sh) => {
         sh.vertexShader = sh.vertexShader
@@ -649,7 +649,7 @@
           scene.add(bench);
         }
 
-        // building site: just a frame going up — beams and a stack of spare boards, no walls yet
+        // building site: just a frame going up, beams and a stack of spare boards, no walls yet
         {
           const [x, z, y] = flatSpot(-16, -50);
           const wx = 3, dz = 2.4, wallH = 3.2, ridgeH = 4.7;
@@ -680,7 +680,7 @@
           }
         }
 
-        // market: an open-sided stall — posts and a canopy, no walls, a table underneath
+        // market: an open-sided stall, posts and a canopy, no walls, a table underneath
         {
           const [x, z, y] = flatSpot(18, 56, 7);
           const w = 5.4, d = 4.4, postH = 2.6;
@@ -714,7 +714,7 @@
       this.resize();
       this.loop();
       // the road: a sandy ribbon laid on the ground along the waypoints. Each slice samples
-      // several points across the width, not just the two edges — on a slope the terrain
+      // several points across the width, not just the two edges. On a slope the terrain
       // between two edge samples can bulge up above the straight line joining them, which is
       // what pokes the mountain through a wide, coarsely-sliced ribbon.
       {

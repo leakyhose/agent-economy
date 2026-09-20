@@ -22,7 +22,6 @@
   @keyframes pulse { 0%,100% { transform: scale(1); opacity: .55 } 50% { transform: scale(1.35); opacity: 0 } }
   @keyframes shimmer { 0%,100% { opacity: .25 } 50% { opacity: .6 } }
   @keyframes risein { from { opacity: 0; transform: translateY(18px) } to { opacity: 1; transform: translateY(0) } }
-  @keyframes crawl { from { transform: translateX(0) } to { transform: translateX(-50%) } }
   @keyframes pulsedot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(.6); opacity: .45 } }
   @keyframes feedin { from { opacity: 0; transform: translateX(-10px) } to { opacity: 1; transform: none } }
   ::-webkit-scrollbar { width: 8px; height: 8px }
@@ -32,7 +31,7 @@
 
 <div style="font-family: Nunito, system-ui, sans-serif; position: relative; height: 100vh; min-height: 420px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); overflow: hidden; background: radial-gradient(120% 90% at 50% 0%, #1b6f93 0%, #0d4863 55%, #072f44 100%); color: #06303f; overflow: hidden;">
 
-  <header style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 18px 8px; color: #eaf7fb;">
+  <header style="{{ headerStyle }}">
     <div style="display: flex; align-items: baseline; gap: 10px;">
       <div style="font-family: Grandstander, 'Baloo 2', cursive; font-size: 30px; font-weight: 900; letter-spacing: .2px; line-height: 1; color: #ffcf4a; white-space: nowrap; text-shadow: 0 3px 0 #6b4a2a, 0 4px 0 rgba(43,28,15,.45);">Settlers of Solana</div>
       <div style="font-size: 12.5px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .72;">AI village economy</div>
@@ -49,10 +48,10 @@
     </div>
   </header>
 
-  <main style="position: relative; overflow: hidden;">
+  <main style="grid-row: 2; position: relative; overflow: hidden;">
     <div style="position: absolute; inset: 0; z-index: 0;">
       <x-import component-from-global-scope="island-3d" from="./island3d.js" hint-size="100%,100%" style="position: absolute; inset: 0;"></x-import>
-      <div style="position: absolute; right: 18px; top: 4px; display: flex; flex-direction: column; gap: 3px; background: rgba(7,40,56,.6); border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 7px 9px; color: #dff2f7; z-index: 5;">
+      <div style="{{ legendStyle }}">
         <div style="font-size: 9.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; opacity: .65;">Doing now</div>
         <sc-for list="{{ legend }}" as="l" hint-placeholder-count="7">
           <div style="display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;">
@@ -62,76 +61,74 @@
           </div>
         </sc-for>
       </div>
+      <button onClick="{{ toggleUi }}" style="{{ hideUiBtnStyle }}">{{ hideUiLabel }}</button>
     </div>
 
   </main>
 
-  <footer style="display: flex; flex-direction: column; gap: 6px; padding: 6px 18px 10px; min-width: 0;">
+  <footer style="{{ footerStyle }}">
 
     <div style="display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%;">
-      <div style="display: flex; align-items: center; gap: 7px; background: #f6e3b0; color: #6b4a16; border-radius: 8px; padding: 4px 9px; font-size: 10px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; white-space: nowrap;">
-        <span style="width: 7px; height: 7px; border-radius: 50%; background: #c9782c; animation: pulsedot 1.6s ease-in-out infinite;"></span>Market wire
+      <div style="display: flex; align-items: center; gap: 14px; padding-right: 4px;">
+        <button onClick="{{ toggleRun }}" style="{{ runBtnStyle }}">{{ runLabel }}</button>
+        <button onClick="{{ togglePause }}" style="{{ pauseBtnStyle }}">{{ pauseLabel }}</button>
       </div>
       <div style="flex: 1; min-width: 0; overflow: hidden; background: rgba(6,32,45,.5); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 3px 0; mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);">
-        <div style="display: flex; width: max-content; animation: crawl 46s linear infinite; font-family: 'Baloo 2', cursive; font-size: 17px; font-weight: 600; color: #eaf7fb; white-space: nowrap;">
+        <div data-crawl="wire" style="display: flex; width: max-content; will-change: transform; font-family: 'Baloo 2', cursive; font-size: 17px; font-weight: 600; color: #eaf7fb; white-space: nowrap;">
           <span style="padding-right: 46px;">{{ wireText }}</span>
+          <span style="padding-right: 46px;" aria-hidden="true">{{ wireText }}</span>
           <span style="padding-right: 46px;" aria-hidden="true">{{ wireText }}</span>
         </div>
       </div>
       <button onClick="{{ toggleDock }}" style="{{ dockBtnStyle }}">{{ dockLabel }}<span style="{{ chevronStyle }}"></span></button>
     </div>
 
+    <div style="width: 100%; min-width: 0; overflow: hidden; background: rgba(4,24,36,.62); border: 1px solid rgba(255,255,255,.1); border-radius: 8px; padding: 2px 0; mask-image: linear-gradient(90deg, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);">
+      <div data-crawl="tape" style="display: flex; width: max-content; will-change: transform;">
+        <div style="display: flex; flex: none;">
+          <sc-for list="{{ tape }}" as="t" hint-placeholder-count="7">
+            <span style="display: inline-flex; align-items: baseline; gap: 7px; padding-right: 40px; white-space: nowrap;">
+              <span style="font-size: 11.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #94b9c8;">{{ t.name }}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #eaf7fb;">{{ t.price }}</span>
+              <span style="{{ t.deltaStyle }}">{{ t.delta }}</span>
+              <span style="{{ t.noteStyle }}">{{ t.note }}</span>
+            </span>
+          </sc-for>
+        </div>
+        <div style="display: flex; flex: none;">
+          <sc-for list="{{ tape }}" as="t" hint-placeholder-count="7">
+            <span aria-hidden="true" style="display: inline-flex; align-items: baseline; gap: 7px; padding-right: 40px; white-space: nowrap;">
+              <span style="font-size: 11.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #94b9c8;">{{ t.name }}</span>
+              <span style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #eaf7fb;">{{ t.price }}</span>
+              <span style="{{ t.deltaStyle }}">{{ t.delta }}</span>
+              <span style="{{ t.noteStyle }}">{{ t.note }}</span>
+            </span>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+
     <div style="{{ dockWrapStyle }}">
 
-    <div style="background: rgba(255,255,255,.94); border-radius: 16px; padding: 9px 12px; display: flex; flex-direction: column; gap: 7px; box-shadow: 0 10px 24px rgba(4,26,38,.3); min-width: 0;">
-      <div style="font-size: 10.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; color: #6d8c95;">Simulation</div>
-      <div style="display: flex; gap: 8px;">
-        <button onClick="{{ toggleRun }}" style="{{ runBtnStyle }}">{{ runLabel }}</button>
-        <button onClick="{{ togglePause }}" style="{{ pauseBtnStyle }}">{{ pauseLabel }}</button>
-      </div>
-      <div style="display: flex; gap: 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #2a5866;">
-        <span>agents {{ agentCount }}</span><span>tick {{ tick }}</span>
-      </div>
-      <div style="height: 1px; background: #e3ecee;"></div>
-      <div style="display: flex; align-items: baseline; gap: 8px;">
-        <div style="font-size: 11px; font-weight: 800; color: #6d8c95;">GDP</div>
-        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 18px; color: #0d4a5e;">{{ gdp }}</div>
-        <div style="{{ gdpDeltaStyle }}">{{ gdpDelta }}</div>
-      </div>
-    </div>
-
-    <div style="background: rgba(255,255,255,.94); border-radius: 16px; padding: 9px 12px; box-shadow: 0 10px 24px rgba(4,26,38,.3); display: flex; flex-direction: column; gap: 7px; min-width: 0;">
-      <div style="display: flex; gap: 10px; align-items: baseline;">
-        <div style="font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #6d8c95;">Market</div>
-        <div style="font-size: 10.5px; font-weight: 700; color: #9db0b6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">one clearing price per good, per round</div>
-      </div>
-      <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px;">
-        <sc-for list="{{ prices }}" as="p" hint-placeholder-count="5">
-          <div style="background: #f4f8f8; border-radius: 9px; padding: 4px 6px; min-width: 0;">
-            <div style="font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: #7e969d; overflow: hidden; text-overflow: ellipsis;">{{ p.name }}</div>
-            <div style="display: flex; align-items: baseline; gap: 3px;">
-              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13.5px; color: #0d4a5e;">{{ p.price }}</div>
-              <div style="{{ p.deltaStyle }}">{{ p.delta }}</div>
-            </div>
-            <div style="font-size: 9px; font-weight: 700; color: #9db0b6;">vol {{ p.vol }}</div>
+    <div style="background: linear-gradient(140deg, #1b1230 0%, #23143f 55%, #12253f 100%); border-radius: 16px; padding: 9px 12px; box-shadow: 0 10px 24px rgba(4,26,38,.35); color: #e9e2ff; display: grid; grid-template-columns: 148px 130px minmax(0, 1fr); gap: 0 14px; min-width: 0; overflow: hidden;">
+      <div style="min-width: 0; display: flex; flex-direction: column; gap: 5px; padding-right: 14px; border-right: 1px solid rgba(255,255,255,.1);">
+        <div style="display: flex; align-items: center; gap: 7px;">
+          <span style="width: 9px; height: 9px; border-radius: 2px; background: linear-gradient(135deg, #ffcf4a, #d98c2b);"></span>
+          <span style="font-size: 10.5px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; color: #b6a8e6;">Village</span>
+        </div>
+        <div>
+          <div style="display: flex; align-items: baseline; gap: 7px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 22px; line-height: 1.05; color: #ffcf4a;">{{ gdp }}</div>
+            <div style="{{ gdpDeltaStyle }}">{{ gdpDelta }}</div>
           </div>
-        </sc-for>
-      </div>
-      <div>
-        <div style="display: flex; align-items: baseline; gap: 8px; font-size: 10px; font-weight: 800; color: #6d8c95; margin-bottom: 3px; white-space: nowrap;">
-          <span style="font-family: 'IBM Plex Mono', monospace;">{{ supply }}c</span>
-          <span style="color: #2f9e6b;">+{{ minted }}</span>
-          <span style="color: #c0603f;">−{{ burned }}</span>
-          <span style="overflow: hidden; text-overflow: ellipsis;">debt {{ debt }}c</span>
+          <div style="font-size: 10.5px; font-weight: 700; color: #a99ddb;">GDP this round</div>
         </div>
-        <div style="height: 9px; border-radius: 999px; background: #e7eef0; overflow: hidden; display: flex;">
-          <div style="{{ mintBarStyle }}"></div>
-          <div style="{{ burnBarStyle }}"></div>
+        <div style="font-size: 10px; line-height: 1.45; font-family: 'IBM Plex Mono', monospace; color: #9d92cc;">
+          <div>agents&nbsp; {{ agentCount }}</div>
+          <div>tick&nbsp;&nbsp;&nbsp; {{ tick }}</div>
         </div>
+        <div style="font-size: 11px; font-weight: 800; color: #8d82bd;">{{ statusLabel }}</div>
       </div>
-    </div>
-
-    <div style="background: linear-gradient(140deg, #1b1230 0%, #23143f 55%, #12253f 100%); border-radius: 16px; padding: 9px 12px; box-shadow: 0 10px 24px rgba(4,26,38,.35); color: #e9e2ff; display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 0 12px; min-width: 0; overflow: hidden;">
       <div style="min-width: 0; display: flex; flex-direction: column; gap: 5px;">
         <div style="display: flex; align-items: center; gap: 7px;">
           <span style="width: 9px; height: 9px; border-radius: 2px; background: linear-gradient(135deg, #14f195, #9945ff);"></span>
@@ -228,7 +225,7 @@
               </sc-for>
             </div>
             <sc-if value="{{ sceneEmpty }}" hint-placeholder-val="{{ false }}">
-              <div style="margin-top: 40px; text-align: center; font-size: 15px; font-weight: 700; color: #2c6b57; opacity: .8;">Nobody here this round — agents will wander in.</div>
+              <div style="margin-top: 40px; text-align: center; font-size: 15px; font-weight: 700; color: #2c6b57; opacity: .8;">Nobody here this round. Agents will wander in.</div>
             </sc-if>
           </div>
         </div>
@@ -239,27 +236,27 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;agentCount&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:34,&quot;min&quot;:8,&quot;max&quot;:100,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;showThoughts&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simulation&quot;},&quot;pollEndpoint&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;/state&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Simulation&quot;}}">
 // These match the real backend: five places (frontend/island3d.js AREAS), plus trading,
-// banking and resting all show up at the market — nobody has a task of their own there.
+// banking and resting all show up at the market, since nobody has a task of their own there.
 const LOCS = [
-  { id: "docks", x: -70, z: 38, name: "Docks — fishing", act: "gather_food", color: "#1f9fb5", glyph: "wave",
+  { id: "docks", x: -70, z: 38, name: "Docks: fishing", act: "gather_food", color: "#1f9fb5", glyph: "wave",
     blurb: "The fishing wharf on the west shore. Every catch is a goods-account write on Solana.", ground: "linear-gradient(180deg,#f3e2b4 0%,#e8d29a 100%)", sky: "linear-gradient(180deg,#bdeaf7 0%,#e8f6e3 62%,#e8f6e3 100%)" },
-  { id: "forest", x: 40, z: -48, name: "Forest — chopping wood", act: "gather_wood", color: "#3f9450", glyph: "tree",
+  { id: "forest", x: 40, z: -48, name: "Forest: chopping wood", act: "gather_wood", color: "#3f9450", glyph: "tree",
     blurb: "Hardwood ridge above the bay. Wood keeps villagers warm and nets cheap.", ground: "linear-gradient(180deg,#8fd06f 0%,#68b35c 100%)", sky: "linear-gradient(180deg,#cdeeff 0%,#eaf8e0 62%,#eaf8e0 100%)" },
-  { id: "workshop", x: 60, z: 8, name: "Workshop — crafting", act: "craft_net", color: "#d98c2b", glyph: "grid",
+  { id: "workshop", x: 60, z: 8, name: "Workshop: crafting", act: "craft_net", color: "#d98c2b", glyph: "grid",
     blurb: "Where wood becomes nets and nets become boats. Crafting burns inputs on-chain.", ground: "linear-gradient(180deg,#e9d8ae 0%,#d6bf8c 100%)", sky: "linear-gradient(180deg,#ffe6c0 0%,#fdf3dd 62%,#fdf3dd 100%)" },
-  { id: "site", x: -16, z: -50, name: "Building site — houses", act: "build_house", color: "#cf6046", glyph: "house",
+  { id: "site", x: -16, z: -50, name: "Building site: houses", act: "build_house", color: "#cf6046", glyph: "house",
     blurb: "Where houses go up beam by beam. A half-built frame can be pledged to the bank as collateral.", ground: "linear-gradient(180deg,#e6d6ad 0%,#cdb98b 100%)", sky: "linear-gradient(180deg,#ffd9c2 0%,#fdeede 62%,#fdeede 100%)" },
   { id: "market", x: 18, z: 56, name: "Market", act: "trade", color: "#8a8f98", glyph: "diamond",
-    blurb: "One sealed auction per good, per round — plus the bank counter and the porch where villagers rest. The program finds the fair price; nobody can fake it.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" }
+    blurb: "One sealed auction per good, per round, plus the bank counter and the porch where villagers rest. The program finds the fair price; nobody can fake it.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" }
 ];
 // Any activity without its own place (trade, bank, rest) buckets into the market.
 const bucketOf = act => LOCS.find(l => l.act === act) || LOCS.find(l => l.id === "market");
 
-const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", trade: "Trading", build_house: "Building", bank: "At the bank", rest: "Resting" };
+const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", trade: "At the market", build_house: "Building", bank: "At the bank", rest: "Resting" };
 const THOUGHTS = {
-  gather_food: ["Hunger is climbing — a few fish now beats coins later.", "Lake stock looks thin, I'll take one more haul then stop.", "Food price is up; I can sell the surplus this round.", "My net is good, fishing pays better than wood today.",
+  gather_food: ["Hunger is climbing, so a few fish now beats coins later.", "Lake stock looks thin, I'll take one more haul then stop.", "Food price is up; I can sell the surplus this round.", "My net is good, fishing pays better than wood today.",
     "Boats are out; I'll take the east shoal before the tide turns.",
-    "Everyone is fishing today — the lake will not hold.",
+    "Everyone is fishing today, so the lake will not hold.",
     "Selling half this catch, salting the rest.",
     "Cold water, slow fish, but coins are coins."],
   gather_wood: ["I'll cut wood first to stay warm and build a net cheaply.", "Wood is scarce, so chopping is the best coin per tick.", "Stocking fuel before the cold catches me.", "Two loads of wood covers the frame of my house.",
@@ -267,25 +264,25 @@ const THOUGHTS = {
     "Hauling this load straight to the workshop.",
     "Wood at this price barely covers the walk.",
     "One more cord and I stop for the round."],
-  craft_net: ["A net pays for itself in three rounds of fishing.", "Wood is cheap right now — good time to craft.", "Crafting a spare net to sell at market.", "Better tools beat more hours.",
-    "Twine is short — I'll make one good net, not two poor ones.",
+  craft_net: ["A net pays for itself in three rounds of fishing.", "Wood is cheap right now, good time to craft.", "Crafting a spare net to sell at market.", "Better tools beat more hours.",
+    "Twine is short, so I'll make one good net, not two poor ones.",
     "Nets sell better than wood, so I craft.",
     "This mesh is tight enough for the deep shoal.",
     "Building toward a boat, one net at a time."],
-  trade: ["Selling wood high, buying food low.", "Bidding just under the last clearing price.", "I need food more than coins this round.", "Posting my surplus nets — demand looks strong.",
+  trade: ["Selling wood high, buying food low.", "Bidding just under the last clearing price.", "I need food more than coins this round.", "Posting my surplus nets while demand looks strong.",
     "Undercutting the ask by a hair to clear my stock.",
     "Holding my wood back until prices recover.",
     "The auction is thin; I bid low and wait.",
-    "Coins now, food later — I can time this."],
-  build_house: ["The house is my biggest wellbeing jump, keep going.", "Half-built already — I can pledge it for a loan.", "Two more rounds of work and I have a roof.", "Building now while wood is cheap.",
+    "Coins now, food later. I can time this."],
+  build_house: ["The house is my biggest wellbeing jump, keep going.", "Half-built already, so I can pledge it for a loan.", "Two more rounds of work and I have a roof.", "Building now while wood is cheap.",
     "Roof beams next, if wood stays this cheap.",
     "Every round without shelter costs me warmth.",
     "The frame is up; the bank will lend against it.",
     "Slow work, but a house outlives a pile of coins."],
-  bank: ["Borrowing against the frame to buy food today.", "Repaying early so the interest stops biting.", "Loan is due in a minute — clearing it now.", "Credit lets me build before I'm rich.",
+  bank: ["Borrowing against the frame to buy food today.", "Repaying early so the interest stops biting.", "Loan is due in a minute, clearing it now.", "Credit lets me build before I'm rich.",
     "Rolling the loan before the penalty hits.",
     "Pledging my half-built house for one more round.",
-    "Dividends came in — paying down the principal.",
+    "Dividends came in, paying down the principal.",
     "Interest is climbing faster than my catch."],
   rest: ["Resting so tomorrow's work isn't wasted.", "Warm, fed, and off the clock.", "Wellbeing beats a bigger pile of coins.", "Recovering before the next haul.",
     "Fed, warm, and doing nothing on purpose.",
@@ -308,16 +305,17 @@ const EMPTY_SIM = {
   vols: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
   books: {}, feed: [], round: 0, tick: 0, seconds: 0, gdp: 0, gdpPrev: 0,
   supply: 0, debt: 0, minted: 0, burned: 0, txTotal: 0, lastRoundTxs: 0,
-  roundMs: 0, agentTarget: 0, brain: "Loading…", program: "—", ledger: "—", explorer: "#"
+  roundMs: 0, agentTarget: 0, brain: "Loading…", program: "-", ledger: "-", explorer: "#"
 };
 
 class Component extends DCLogic {
-  state = { sim: EMPTY_SIM, running: false, paused: false, pausing: false, selected: null, live: false, tickN: 0, dockOpen: true, busy: false, error: "" };
+  state = { sim: EMPTY_SIM, running: false, paused: false, pausing: false, selected: null, live: false, tickN: 0, dockOpen: true, uiHidden: false, busy: false, error: "" };
 
   componentDidMount() {
     this.onPin = (e) => this.setState({ selected: e.detail });
     window.addEventListener("moku:location", this.onPin);
     this.refresh();
+    this.startCrawls();
     this.timer = setInterval(() => this.refresh(), 3000);
     this.events = new EventSource("/events");
     this.events.onmessage = event => {
@@ -328,15 +326,63 @@ class Component extends DCLogic {
     };
   }
   componentWillUnmount() {
+    this.stopCrawls();
     clearInterval(this.timer);
     this.events?.close();
     window.removeEventListener("moku:location", this.onPin);
   }
 
+  // Both footer crawls scroll from here rather than from a CSS keyframe. The poll and
+  // the round events rewrite their text, and translateX(-50%) is a share of the track's
+  // own width, so every width change used to remap the same animation progress onto a
+  // different pixel offset and the row lurched. An offset kept in pixels does not move
+  // when the content does; the content repeats, so subtracting exactly one copy width
+  // to wrap around is invisible.
+  startCrawls() {
+    this.stopCrawls();
+    const SPEED = 52; // px per second, shared so the two rows never look like they race
+    const tracks = [
+      { sel: '[data-crawl="wire"]', offset: 0, el: null },
+      { sel: '[data-crawl="tape"]', offset: 0, el: null }
+    ];
+    let last = 0;
+    const step = now => {
+      this.crawlRaf = requestAnimationFrame(step);
+      // A hidden tab stops firing frames; bank nothing so returning does not jump.
+      if (document.visibilityState === "hidden") { last = 0; return; }
+      const delta = last ? Math.min(now - last, 100) : 0;
+      last = now;
+      for (const track of tracks) {
+        if (!track.el || !track.el.isConnected) track.el = document.querySelector(track.sel);
+        const el = track.el;
+        const copy = el && el.firstElementChild;
+        const width = copy ? copy.offsetWidth : 0;
+        // Hide UI puts display:none on the footer, so every width reads 0: hold and wait.
+        if (width <= 0) continue;
+        track.offset += SPEED * delta / 1000;
+        if (track.offset >= width) track.offset -= Math.floor(track.offset / width) * width;
+        el.style.transform = "translate3d(" + (-track.offset).toFixed(2) + "px,0,0)";
+      }
+    };
+    this.onCrawlVisibility = () => { last = 0; };
+    document.addEventListener("visibilitychange", this.onCrawlVisibility);
+    this.crawlRaf = requestAnimationFrame(step);
+  }
+
+  stopCrawls() {
+    if (this.crawlRaf) cancelAnimationFrame(this.crawlRaf);
+    this.crawlRaf = 0;
+    if (this.onCrawlVisibility) document.removeEventListener("visibilitychange", this.onCrawlVisibility);
+    this.onCrawlVisibility = null;
+  }
+
   activityFor(a) {
+    this.lastAct = this.lastAct || {};
+    if (LOCS.some(l => l.act === a.activity)) return (this.lastAct[a.id] = a.activity);
+    if (a.activity === "idle") return (this.lastAct[a.id] = "trade");
+    if (this.lastAct[a.id]) return this.lastAct[a.id];
     if (a.orders?.length) return "trade";
     if (a.debt > 0 && a.dueIn != null && a.dueIn <= 2) return "bank";
-    if (LOCS.some(l => l.act === a.activity)) return a.activity;
     return "rest";
   }
 
@@ -390,7 +436,7 @@ class Component extends DCLogic {
       roundMs: snapshot.roundMs || 0,
       agentTarget: snapshot.config?.agents || agents.length,
       brain: snapshot.brain || [snapshot.config?.brain, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
-      program: snapshot.chain?.program || "—", ledger: snapshot.chain?.ledger || "—",
+      program: snapshot.chain?.program || "-", ledger: snapshot.chain?.ledger || "-",
       explorer: snapshot.chain?.explorer || "#"
     };
   }
@@ -442,14 +488,32 @@ class Component extends DCLogic {
       swatch: { width: "10px", height: "10px", borderRadius: "50%", background: l.color, boxShadow: "0 0 0 2px rgba(255,255,255,.55)" }
     }));
 
-    const prices = Object.keys(s.prices).map(k => {
+    const tapeStyle = tone => ({ fontSize: "13px", fontWeight: 800, color: tone > 0 ? "#3fe0a0" : tone < 0 ? "#ff7d63" : "#7f9daa", whiteSpace: "nowrap" });
+    const noteStyle = note => ({ display: note ? "inline" : "none", fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#6f93a3" });
+    const tape = Object.keys(s.prices).map(k => {
       const change = s.prices[k] - (s.pricePrev[k] ?? s.prices[k]);
-      const up = change > 0;
+      const tone = change > 0 ? 1 : change < 0 ? -1 : 0;
       return {
-        name: k, price: this.state.running ? fmt(s.prices[k], 2) : "—", vol: s.vols[k], delta: change ? (up ? "▲" : "▼") : "•",
-        deltaStyle: { fontSize: "11px", fontWeight: 800, color: change ? (up ? "#2f9e6b" : "#c0603f") : "#9db0b6" }
+        name: k, price: this.state.running ? fmt(s.prices[k], 2) : "-",
+        delta: !this.state.running ? "" : tone ? (tone > 0 ? "▲ +" : "▼ −") + fmt(Math.abs(change), 2) : "• 0.00",
+        deltaStyle: tapeStyle(tone), note: "vol " + s.vols[k], noteStyle: noteStyle("vol")
       };
     });
+
+    const gdpTone = s.gdp === s.gdpPrev ? 0 : s.gdp > s.gdpPrev ? 1 : -1;
+    const gdpPct = fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "%";
+    const supplyTone = s.minted > s.burned ? 1 : s.burned > s.minted ? -1 : 0;
+    tape.push(
+      { name: "GDP", price: this.state.running ? fmt(s.gdp, 0) : "-",
+        delta: !this.state.running ? "" : (gdpTone > 0 ? "▲ +" : gdpTone < 0 ? "▼ −" : "• ") + gdpPct,
+        deltaStyle: tapeStyle(gdpTone), note: "round " + s.round, noteStyle: noteStyle("round") },
+      { name: "coin supply", price: fmt(s.supply, 0) + "c",
+        delta: !this.state.running ? "" : supplyTone > 0 ? "▲ +" + s.minted : supplyTone < 0 ? "▼ −" + s.burned : "• 0",
+        deltaStyle: tapeStyle(supplyTone), note: "minted " + s.minted + " / burned " + s.burned, noteStyle: noteStyle("minted") },
+      { name: "village debt", price: fmt(s.debt, 0) + "c", delta: "", deltaStyle: tapeStyle(0), note: "", noteStyle: noteStyle("") },
+      { name: "solana tx", price: String(s.txTotal), delta: "", deltaStyle: tapeStyle(0),
+        note: s.lastRoundTxs + " this round", noteStyle: noteStyle("tx") }
+    );
 
     const feed = s.feed.map(f => ({
       kind: f.kind, short: SHORT[f.kind] || f.kind, sig: f.sig, note: f.note, url: f.url,
@@ -525,20 +589,19 @@ class Component extends DCLogic {
     const busiest = LOCS.reduce((a, l) => (counts[l.id] || 0) > (counts[a.id] || 0) ? l : a, LOCS[0]);
     const dearest = Object.keys(s.prices).reduce((a, k) => s.prices[k] > s.prices[a] ? k : a, "food");
     const headlines = this.state.running ? [
-      "Food clears at " + fmt(s.prices.food, 2) + "c — " + countFor("gather_food") + " settlers working the lake",
+      "Food clears at " + fmt(s.prices.food, 2) + "c with " + countFor("gather_food") + " settlers working the lake",
       "Wood settles at " + fmt(s.prices.wood, 2) + "c with " + s.vols.wood + " units traded",
       s.minted > 0 ? "Bank mints " + s.minted + "c of fresh credit; village debt now " + fmt(s.debt, 0) + "c"
-        : "No new credit issued this round — debt holds at " + fmt(s.debt, 0) + "c",
+        : "No new credit issued this round, so debt holds at " + fmt(s.debt, 0) + "c",
       s.burned > 0 ? "Repayments burn " + s.burned + "c out of circulation" : "Nothing repaid this round; supply steady at " + fmt(s.supply, 0) + "c",
       "Round " + s.round + " settled on-chain in " + s.lastRoundTxs + " transactions",
-      busiest.name + " is the busiest place on the island — " + (counts[busiest.id] || 0) + " settlers there",
+      busiest.name + " is the busiest place on the island with " + (counts[busiest.id] || 0) + " settlers there",
       "Nets hold at " + fmt(s.prices.nets, 2) + "c as crafters stock up on wood",
-      "Houses asking " + fmt(s.prices.houses, 0) + "c — " + countFor("build_house") + " frames going up at the building site",
+      "Houses asking " + fmt(s.prices.houses, 0) + "c with " + countFor("build_house") + " frames going up at the building site",
       "GDP prints " + fmt(s.gdp, 0) + ", " + (s.gdp >= s.gdpPrev ? "up" : "down") + " " + fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "% on the round",
       dearest.charAt(0).toUpperCase() + dearest.slice(1) + " is the priciest good on the island right now",
       s.txTotal + " transactions written to Solana since the sun came up"
-    ] : ["The village is ready — press Start to initialize the on-chain economy", this.state.error || "Waiting for the first settlers"];
-    const supplyTotal = Math.max(1, s.minted + s.burned);
+    ] : ["The village is ready. Press Start to initialize the on-chain economy", this.state.error || "Waiting for the first settlers"];
     const short = value => value && value.length > 12 ? value.slice(0, 4) + "…" + value.slice(-4) : value;
     const busyLabel = this.state.running ? "Stopping…" : "Starting…";
     return {
@@ -549,14 +612,11 @@ class Component extends DCLogic {
       clock: Math.floor(s.seconds / 60) + ":" + String(s.seconds % 60).padStart(2, "0"),
       agentCount: s.agents.length || s.agentTarget,
       gdp: fmt(s.gdp, 0), gdpDelta: (s.gdp >= s.gdpPrev ? "▲ " : "▼ ") + fmt(Math.abs(s.gdp - s.gdpPrev) / Math.max(1, s.gdpPrev) * 100, 1) + "%",
-      gdpDeltaStyle: { fontSize: "12px", fontWeight: 800, color: s.gdp >= s.gdpPrev ? "#2f9e6b" : "#c0603f" },
-      supply: fmt(s.supply, 0), debt: fmt(s.debt, 0), minted: s.minted, burned: s.burned,
-      mintBarStyle: { width: (s.minted / supplyTotal * 100) + "%", background: "linear-gradient(90deg,#3fd39a,#14b87a)", transition: "width .6s ease" },
-      burnBarStyle: { width: (s.burned / supplyTotal * 100) + "%", background: "linear-gradient(90deg,#e8916c,#c85f3d)", transition: "width .6s ease" },
+      gdpDeltaStyle: { fontSize: "13px", fontWeight: 800, color: s.gdp >= s.gdpPrev ? "#3fe0a0" : "#ff7d63" },
       txTotal: s.txTotal, lastRoundTxs: s.lastRoundTxs, txRate: s.roundMs ? Math.round(s.lastRoundTxs * 60000 / s.roundMs) : 0,
       program: short(s.program), ledger: short(s.ledger),
       explorer: s.explorer,
-      prices, feed, legend,
+      tape: [...tape, ...tape], feed, legend,
       selected: sel ? { name: sel.name, blurb: sel.blurb, stats: [
         { label: "Here now", value: here.length },
         { label: "Price", value: sel.act === "gather_food" ? fmt(s.prices.food, 2) : sel.act === "gather_wood" ? fmt(s.prices.wood, 2) : sel.act === "craft_net" ? fmt(s.prices.nets, 2) : sel.act === "build_house" ? fmt(s.prices.houses, 0) : fmt(s.prices.boats, 1) },
@@ -571,7 +631,7 @@ class Component extends DCLogic {
       dockBtnStyle: { all: "unset", cursor: "pointer", display: "flex", alignItems: "center", gap: "7px", background: "rgba(255,255,255,.12)", border: "1px solid rgba(255,255,255,.2)", color: "#eaf7fb", fontSize: "11.5px", fontWeight: 800, padding: "5px 12px", borderRadius: "999px", whiteSpace: "nowrap" },
       chevronStyle: { width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: this.state.dockOpen ? "6px solid #eaf7fb" : "0", borderBottom: this.state.dockOpen ? "0" : "6px solid #eaf7fb" },
       dockWrapStyle: {
-        display: "grid", gridTemplateColumns: "170px minmax(0, 1.05fr) minmax(0, 1.5fr)", gap: "8px", alignItems: "stretch",
+        display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "8px", alignItems: "stretch",
         maxHeight: this.state.dockOpen ? "172px" : "0px", opacity: this.state.dockOpen ? 1 : 0,
         overflow: "hidden", transition: "max-height .34s cubic-bezier(.4,0,.2,1), opacity .24s ease"
       },
@@ -580,10 +640,16 @@ class Component extends DCLogic {
         ? window.confirm("Stop this simulation and save the current run?") && this.request("/stop")
         : this.request("/start"),
       togglePause: () => this.state.running && this.request(this.state.paused || this.state.pausing ? "/resume" : "/pause"),
-      runLabel: this.state.busy ? busyLabel : this.state.running ? "Running / stop" : "Start",
+      runLabel: this.state.busy ? busyLabel : this.state.running ? "Stop" : "Start",
       pauseLabel: this.state.pausing ? "Cancel pause" : this.state.paused ? "Resume" : "Pause",
-      runBtnStyle: { all: "unset", cursor: this.state.busy ? "wait" : "pointer", opacity: this.state.busy ? .65 : 1, flex: 1, textAlign: "center", padding: "9px 0", borderRadius: "12px", fontWeight: 800, fontSize: "13px", color: "#fff", background: this.state.running ? "#d9634a" : "#159e74", boxShadow: "0 3px 0 rgba(6,48,63,.25)" },
-      pauseBtnStyle: { all: "unset", cursor: this.state.running && !this.state.busy ? "pointer" : "not-allowed", opacity: this.state.running && !this.state.busy ? 1 : .45, flex: 1, textAlign: "center", padding: "9px 0", borderRadius: "12px", fontWeight: 800, fontSize: "13px", color: "#0d4a5e", background: "#e7eef0", boxShadow: "0 3px 0 rgba(6,48,63,.16)" }
+      runBtnStyle: { all: "unset", cursor: this.state.busy ? "wait" : "pointer", opacity: this.state.busy ? .65 : 1, fontFamily: "Nunito, system-ui, sans-serif", fontSize: "15px", fontWeight: 900, letterSpacing: ".14em", textTransform: "uppercase", color: this.state.running ? "#ff9d7a" : "#4ff0b0", textShadow: "0 2px 6px rgba(4,26,38,.9)" },
+      pauseBtnStyle: { all: "unset", cursor: this.state.running && !this.state.busy ? "pointer" : "not-allowed", opacity: this.state.running && !this.state.busy ? 1 : .4, fontFamily: "Nunito, system-ui, sans-serif", fontSize: "15px", fontWeight: 900, letterSpacing: ".14em", textTransform: "uppercase", color: "#eaf7fb", textShadow: "0 2px 6px rgba(4,26,38,.9)" },
+      toggleUi: () => this.setState({ uiHidden: !this.state.uiHidden }),
+      hideUiLabel: this.state.uiHidden ? "Show UI" : "Hide UI",
+      hideUiBtnStyle: { all: "unset", position: "absolute", right: "18px", bottom: "12px", zIndex: 5, cursor: "pointer", fontFamily: "Nunito, system-ui, sans-serif", fontSize: "12.5px", fontWeight: 900, letterSpacing: ".14em", textTransform: "uppercase", color: "#eaf7fb", textShadow: "0 2px 6px rgba(4,26,38,.9)" },
+      legendStyle: { display: this.state.uiHidden ? "none" : "flex", position: "absolute", right: "18px", top: "4px", flexDirection: "column", gap: "3px", background: "rgba(7,40,56,.6)", border: "1px solid rgba(255,255,255,.14)", borderRadius: "12px", padding: "7px 9px", color: "#dff2f7", zIndex: 5 },
+      headerStyle: { gridRow: "1", display: this.state.uiHidden ? "none" : "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 18px", padding: "10px 18px 8px", color: "#eaf7fb" },
+      footerStyle: { gridRow: "3", display: this.state.uiHidden ? "none" : "flex", flexDirection: "column", gap: "6px", padding: "6px 18px 10px", minWidth: 0 }
     };
   }
 }
