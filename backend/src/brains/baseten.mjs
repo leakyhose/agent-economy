@@ -20,15 +20,14 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 //
 // A decision is input-heavy — about 2,000 tokens of observation in, 100 out — so the input
 // price is what a run really pays. Against luna's $0.0005 a decision: GLM 5.3 Flash and the
-// DeepSeek Flashes land at a third of that or less, Inkling Small at about double, and Kimi
-// K2.6 at about four times, which makes it the one to drop first if the bill bites
-// (BASETEN_MODELS, or MODEL to put the whole village on one model).
+// DeepSeek Flashes land at a third of that or less, and Inkling Small, the dearest here, at
+// about double. Kimi is priced out of this pool: K2.6 costs about four times luna a decision
+// and K3 twelve. Name one in BASETEN_MODELS if you want it anyway.
 export const DEFAULT_POOL = [
   'zai-org/GLM-5.3-Flash',
   'deepseek-ai/DeepSeek-V4.1-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
   'thinkingmachines/inkling-small',
-  'moonshotai/Kimi-K2.6',
 ];
 
 // $ per 1M tokens [input, output], from baseten.co/products/model-apis, checked 2026-09-19.
