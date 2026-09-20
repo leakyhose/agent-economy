@@ -18,15 +18,17 @@ export const BASE_URL = 'https://inference.baseten.co/v1';
 // Four houses, none of them OpenAI's: the point of this brain is to put other people's
 // models beside gpt-5.6-luna, so an OpenAI model in the pool would only muddy the reading.
 //
-// A decision is input-heavy — about 2,000 tokens of observation in, a few hundred out — so
-// the input price is what a run really pays. Of the seventeen models Baseten serves, only
-// GLM 5.3 Flash and DeepSeek V4 Flash undercut gpt-5.6-luna ($0.20 / $1.20) on both sides
-// without being an OpenAI model; V4.1 Flash is half again as dear on input and level on
-// output, which is close enough to belong. Everything else — Kimi, Nemotron, Inkling, the
-// Pros, the full GLMs — costs multiples of luna. Name one in BASETEN_MODELS if you want it.
+// Everything in this pool costs less than gpt-5.6-luna, the model the OpenAI brain runs, so
+// a village of these is unambiguously the cheaper village. Of the seventeen models Baseten
+// serves, exactly three are (check-brain --list ranks them): these two, at 0.45x and 0.60x
+// luna a decision, and OpenAI's own gpt-oss-120b, which has no business in a pool meant to
+// stand against OpenAI. Everything else is dearer — V4.1 Flash by 1.27x, Inkling Small 1.8x,
+// Kimi K2.6 4.1x, Kimi K3 nearly fourteen. Name one in BASETEN_MODELS if you want it anyway.
+//
+// A decision is input-heavy — about 1,400 tokens of observation in, 200 out — so the input
+// price is most of what a run pays, and a model dear on input is dear.
 export const DEFAULT_POOL = [
   'zai-org/GLM-5.3-Flash',
-  'deepseek-ai/DeepSeek-V4.1-Flash',
   'deepseek-ai/DeepSeek-V4-Flash-0731',
 ];
 
@@ -36,7 +38,6 @@ export const DEFAULT_POOL = [
 // catalogue call fails — the pool's three models, at the prices read on 2026-09-19.
 const FALLBACK_PRICE = {
   'zai-org/GLM-5.3-Flash': [0.15, 0.50],
-  'deepseek-ai/DeepSeek-V4.1-Flash': [0.30, 1.20],
   'deepseek-ai/DeepSeek-V4-Flash-0731': [0.13, 0.26],
 };
 
