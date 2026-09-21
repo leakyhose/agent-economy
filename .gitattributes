@@ -1,5 +1,5 @@
 # LF everywhere, on every platform. A contributor whose git has core.autocrlf=true will
-# otherwise commit CRLF blobs (CONTEXT.md, chain.mjs, stub.mjs and .env.example each landed
+# otherwise commit CRLF blobs (chain.mjs, stub.mjs and .env.example each landed
 # that way once), which makes every line of those files conflict on the next merge. Scripts
 # under backend/scripts/ additionally fail to run at all: bash reads the \r as part of the
 # last token on the line, so `set -euo pipefail` becomes an unknown option.

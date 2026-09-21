@@ -10,7 +10,7 @@
 // spoilage at 0.4, a cold snap IS a fire that burns three times the wood. Pull the dial
 // and watch the market answer.
 //
-// The ground rule from CONTEXT.md §9 holds: change the economics or fix the information,
+// The ground rule holds: change the economics or fix the information,
 // never steer the result. So every change is announced to the villagers as a plain fact
 // ("the fishing has changed: ..."), never as advice, and every number they are shown —
 // what a shift yields, what a house costs, what interest costs a round — is read live from

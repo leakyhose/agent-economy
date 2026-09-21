@@ -2,6 +2,8 @@
 
 A village of 100 LLM agents running a free-market economy, settled on a real Solana program.
 
+Written up on [Devpost](https://devpost.com/software/_solanasim).
+
 Every villager is a language model. Each round they all choose at once whether to fish, cut
 wood, craft a net, build a house or rest — nobody has a job, nobody has a wage, and nothing
 has a price until they argue about one. They post limit orders, a batch auction clears
@@ -213,10 +215,6 @@ frontend/         the older standalone island page (fallback)
 tools/thumbnail/  renders a framed island shot in headless Chrome
 runs/             every run, saved automatically (gitignored)
 ```
-
-Further reading: **CONTEXT.md** is the full technical account of what is built, **DEVPOST.md**
-is the submission write-up, **FIX_PLAN.md** / **FUTURE_PLAN.md** are the work in progress and
-what was cut.
 
 ---
 

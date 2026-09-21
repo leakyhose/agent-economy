@@ -45,7 +45,7 @@ for (const g of SHOWN) {
   if (p.length) console.log(`       price ${coins(p[0])} -> ${coins(p.at(-1))}   range ${coins(Math.min(...p))}–${coins(Math.max(...p))}`);
 }
 
-// ---- market quality (FIX_PLAN step D). Newer runs log every order sent to each auction
+// ---- market quality. Newer runs log every order sent to each auction
 // with its arrival seq and fill; for older runs the books are rebuilt from
 // the order events between rounds, and fills from the round's trades (approximate).
 hr('market quality: priority, price discovery');
