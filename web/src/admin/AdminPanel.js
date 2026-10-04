@@ -526,7 +526,7 @@ const agentLogs = new Map();           // id -> the last /agent reply
 const logScroll = new Map();           // id -> scrollTop of that log, kept across redraws
 let logsAt = 0;
 function toggleAgent(id) {
-  if (openAgents.has(id)) { openAgents.delete(id); logScroll.delete(id); }
+  if (openAgents.has(id)) { openAgents.delete(id); logScroll.delete(id); logView.delete(id); }
   else { openAgents.add(id); logsAt = 0; }
   agentTable();
 }
@@ -551,34 +551,110 @@ async function refreshOpenLogs() {
       agentLogs.set(id, log);
     } catch { /* the next poll tries again */ }
   }));
-  if (changed) for (const id of openAgents) { const el = $('alog-' + id); if (el) el.innerHTML = agentLogHtml(id); }
+  if (changed) for (const id of openAgents) redrawLog(id);
 }
 const showInput = input => Object.entries(input ?? {}).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ');
+
+// The log reads as a column of turns, newest first. Each turn says, in this order: the shift it
+// worked and why (its own words), what every job was worth to it that turn, what else it did
+// (orders, loans, meals — a refusal with the reason it was given), and what the round then did
+// to it. The colour down the left is the job, the same colours as the swarm, so a change of
+// trade shows as a change of colour before a word is read.
+const LOGJOB = { gather_food: ['fishing', '#1f9fb5'], gather_wood: ['cutting wood', '#3f9450'], craft_net: ['making a net', '#d98c2b'],
+                 smoke_fish: ['smoking fish', '#8a5fb0'], build_house: ['building', '#cf6046'], idle: ['idle', '#8a8f98'] };
+const jobName = t => LOGJOB[t]?.[0] ?? (t ? String(t).replace(/_/g, ' ') : 'no shift'), jobInk = t => LOGJOB[t]?.[1] ?? '#8a8f98';
+const TEMPER = ['very cautious', 'careful', 'bold', 'a risk-taker'];        // tools.mjs, from traits.risk
+const plural = (n, w) => `${n} ${w}${Number(n) === 1 ? '' : 's'}`;
+const FILTERS = [['all', 'every turn'], ['moved', 'changed job'], ['orders', 'placed orders'], ['bank', 'bank'], ['refused', 'refused'], ['silent', 'did not answer']];
+// What the reader has set on each open log. The table is rebuilt every poll, so this lives here.
+const logView = new Map();             // id -> { filter, shown, thinking: Set(round) }
+const viewOf = id => { if (!logView.has(id)) logView.set(id, { filter: 'all', shown: 40, thinking: new Set() }); return logView.get(id); };
+const redrawLog = id => { const el = $('alog-' + id); if (el) el.innerHTML = agentLogHtml(id); };
+
+// One tool call as a sentence. The arguments are all there; the raw call is the hover text.
+function sayAction(x) {
+  const i = x.input ?? {}, n = v => Number(v).toFixed(2);
+  if (LOGJOB[x.tool]) return `Chose ${jobName(x.tool)}`;
+  if (x.tool === 'place_order') return `${i.side === 'buy' ? 'Bid for' : 'Offered'} ${i.quantity} ${String(i.good ?? '').replace(/_/g, ' ')} at ${n(i.price)}`;
+  if (x.tool === 'set_lifestyle') return `Set meals to ${plural(i.level, 'helping')}`;
+  if (x.tool === 'borrow') {
+    const pledge = [['wood', i.wood], ['nets', i.nets], ['houses', i.houses]].filter(([, q]) => q > 0).map(([g, q]) => `${q} ${g}`).join(', ');
+    return `Asked the bank for ${n(i.amount)}${pledge ? `, pledging ${pledge}` : ''}`;
+  }
+  if (x.tool === 'repay') return `Repaid ${n(i.amount)}`;
+  if (x.tool === 'check_market') return 'Looked at the market';
+  return `${x.tool} ${showInput(i)}`;
+}
+// What a line the villager was told is about: it picks the marker in front of it.
+const toldKind = l => /FORECLOSED|hungry|went cold|refused|tore|no wood for|is gone|could not|couldn't/i.test(l) ? 'bad'
+  : /^Market:/.test(l) ? 'trade' : /bank|loan|dividend/i.test(l) ? 'bank' : 'work';
+
 function agentLogHtml(id) {
   const log = agentLogs.get(id);
   if (!log) return '<span class="muted">loading…</span>';
-  if (!log.decisions.length && !log.journal.length) return '<span class="muted">nothing yet: the log fills as the rounds run</span>';
-  // A journal line belongs to the turn it followed: it is what that round did to them.
+  if (!log.decisions.length && !log.journal.length) return '<span class="muted">Nothing yet. The log fills as the rounds run.</span>';
+  const view = viewOf(id);
+  // A journal line belongs to the turn it followed: it is what that round did to them. A
+  // "Rejected:" line repeats a refusal already shown against the call that caused it.
   const turns = log.decisions.map(d => ({ ...d, told: [] }));
   const before = [];
   for (const j of log.journal) {
+    if (/^Rejected:/.test(j.line)) continue;
     let k = -1;
     for (let i = turns.length - 1; i >= 0; i--) if (turns[i].t <= j.t) { k = i; break; }
     (k < 0 ? before : turns[k].told).push(j.line);
   }
-  const head = `<div class="ahead"><b>${esc(log.name)}</b>` +
-    (log.model ? ` · <span class="muted">${esc(log.model)}</span>` : '') +
-    (log.traits ? ` · <span class="muted">patience ${log.traits.patience} · risk ${log.traits.risk}</span>` : '') +
-    ` · <span class="muted">${turns.length} turns</span></div>`;
-  const told = lines => lines.map(l => `<div class="told">${esc(l)}</div>`).join('');
-  return head + [...turns].reverse().map(d =>
-    `<div class="turn"><div class="th"><b>round ${d.round}</b> <span class="${d.outcome === 'ok' ? 'muted' : 'hungry'}">${esc(d.outcome)}${d.kept ? ', kept last job' : ''}</span>` +
-    ` <span class="muted">· ${esc(d.activity ?? 'no shift')} · ${(d.ms / 1000).toFixed(1)}s</span></div>` +
-    (d.thought ? `<div class="said">${esc(d.thought)}</div>` : '') +
-    d.actions.map(x => `<div class="act ${x.rejected ? 'hungry' : ''}"><b>${esc(x.tool)}</b>(${esc(showInput(x.input))})` +
-      `<div class="res">${esc(x.result)}</div></div>`).join('') +
-    told(d.told) + `</div>`).join('') +
-    (before.length ? `<div class="turn"><div class="th"><b>before the first turn</b></div>${told(before)}</div>` : '');
+  turns.forEach((d, i) => {
+    const prev = turns[i - 1]?.activity;
+    d.moved = i > 0 && d.activity && prev && d.activity !== prev ? prev : null;
+    d.is = { all: true, moved: !!d.moved, orders: d.actions.some(x => x.tool === 'place_order'),
+             bank: d.actions.some(x => x.tool === 'borrow' || x.tool === 'repay') || d.told.some(l => toldKind(l) === 'bank' || /FORECLOSED/.test(l)),
+             refused: d.actions.some(x => x.rejected), silent: d.outcome !== 'ok' };
+  });
+
+  // the head: who this is, and how the run's shifts were spent
+  const spent = {}; for (const d of turns) if (d.activity) spent[d.activity] = (spent[d.activity] ?? 0) + 1;
+  const jobs = Object.entries(spent).sort((x, y) => y[1] - x[1]), total = jobs.reduce((s, [, n]) => s + n, 0);
+  const answered = turns.filter(d => d.outcome === 'ok').length;
+  const head = `<div class="ahead"><div class="who"><b>${esc(log.name)}</b>` +
+    (log.traits ? `<span class="muted">${TEMPER[Math.min(3, Math.floor(log.traits.risk * 4))]} by nature</span>` : '') +
+    (log.model ? `<span class="muted">${esc(log.model)}</span>` : '') +
+    `<span class="muted">answered ${answered} of ${plural(turns.length, 'turn')}</span></div>` +
+    (total ? `<div class="spent" title="shifts worked, by job">${jobs.map(([t, n]) => `<i style="flex:${n};background:${jobInk(t)}"></i>`).join('')}</div>` +
+      `<div class="key">${jobs.map(([t, n]) => `<span><i style="background:${jobInk(t)}"></i>${jobName(t)} ${n}</span>`).join('')}</div>` : '') +
+    `<div class="filters">${FILTERS.map(([k, label]) => { const n = turns.filter(d => d.is[k]).length;
+      return `<button class="${view.filter === k ? 'on' : ''}" ${n ? '' : 'disabled'} onclick="dash.logFilter(${id}, '${k}')">${label} <span>${n}</span></button>`; }).join('')}</div></div>`;
+
+  const picked = turns.filter(d => d.is[view.filter]).reverse();
+  const told = lines => lines.length ? `<ul class="then">${lines.map(l => `<li class="${toldKind(l)}">${esc(l.replace(/^Market: you /, 'Market: '))}</li>`).join('')}</ul>` : '';
+  const turnHtml = d => {
+    const shift = d.actions.find(x => LOGJOB[x.tool] && !x.rejected), why = shift?.input?.reason ?? d.thought;
+    const status = d.outcome !== 'ok' ? `<span class="flag bad">${d.straggler ? 'left behind by the round' : esc(d.outcome)}${d.kept ? ': kept its trade' : ''}</span>`
+      : d.kept ? '<span class="flag">chose no shift: kept its trade</span>' : '';
+    const opts = (d.jobs ?? []).length ? `<div class="opts"><span class="lab">a shift was worth</span>` +
+      [...d.jobs].sort((x, y) => y.sure - x.sure).map(j => `<span class="${j.task === d.activity ? 'took' : ''} ${j.sure < 0 ? 'neg' : ''} ${j.can ? '' : 'cant'}"` +
+        `${j.can ? '' : ' title="short of the materials for it"'}>${jobName(j.task)} ${(j.sure / 100).toFixed(2)}</span>`).join('') + '</div>' : '';
+    // a second call for the shift already chosen says nothing new
+    const did = d.actions.filter(x => x !== shift && !(LOGJOB[x.tool] && /^You already chose/.test(x.result ?? ''))).map(x => {
+      // a shift it asked for and did not get (short of wood), or a second one it tried to add
+      const note = x.rejected ? `Refused: ${x.result}` : LOGJOB[x.tool] ? x.result : '', r = x.input?.reason;
+      return `<li class="${x.rejected ? 'rej' : ''}" title="${esc(`${x.tool}(${showInput(x.input)})`)}">${esc(sayAction(x))}` +
+        (r ? `<span class="why">${esc(r)}</span>` : '') + (note ? `<div class="note">${esc(note)}</div>` : '') + '</li>';
+    }).join('');
+    const asked = shift && d.activity && shift.tool !== d.activity ? `<div class="note">Asked for ${jobName(shift.tool)}: ${esc(shift.result)}</div>` : '';
+    const think = d.reasoning ? (view.thinking.has(d.round)
+      ? `<div class="thinking">${esc(d.reasoning)}</div><button class="link" onclick="dash.logThinking(${id}, ${d.round})">hide the model's thinking</button>`
+      : `<button class="link" onclick="dash.logThinking(${id}, ${d.round})">show the model's thinking</button>`) : '';
+    return `<div class="turn" style="--job:${jobInk(d.activity)}"><div class="rd"><span>round</span>${d.round}</div><div class="tb">` +
+      `<div class="th"><b class="job">${jobName(d.activity)}</b>${d.moved ? `<span class="flag move">was ${jobName(d.moved)}</span>` : ''}${status}` +
+      `<span class="ms">${(d.ms / 1000).toFixed(1)}s</span></div>` +
+      (why ? `<div class="said">${esc(why)}</div>` : '') + asked + opts +
+      (did ? `<ul class="did">${did}</ul>` : '') + told(d.told) + think + '</div></div>';
+  };
+  const empty = `<div class="muted none">No turns of that kind yet. <button class="link" onclick="dash.logFilter(${id}, 'all')">Show every turn</button></div>`;
+  return head + (picked.length ? picked.slice(0, view.shown).map(turnHtml).join('') : empty) +
+    (picked.length > view.shown ? `<button class="more" onclick="dash.logMore(${id})">Show ${Math.min(40, picked.length - view.shown)} older turns (${picked.length - view.shown} more)</button>` : '') +
+    (before.length && view.filter === 'all' && picked.length <= view.shown ? `<div class="turn" style="--job:#ccd"><div class="rd"><span>before</span>1</div><div class="tb">${told(before)}</div></div>` : '');
 }
 
 // everything inside "details": drawn only while it's open
@@ -803,7 +879,10 @@ export function mountAdmin(el) {
   root.querySelectorAll('#range button').forEach(b => b.addEventListener('click', () => setRange(b.dataset.r)));
   setRange(range === 'window' ? 'window' : 'all');
   window.dash = { toggle, togglePause, toggleDials, post, slide, loadDials, toggleAll: () => { showAll = !showAll; agentTable(); },
-                  toggleAgent, logScrolled: (id, el) => logScroll.set(id, el.scrollTop) };
+                  toggleAgent, logScrolled: (id, el) => logScroll.set(id, el.scrollTop),
+                  logFilter: (id, k) => { Object.assign(viewOf(id), { filter: k, shown: 40 }); logScroll.set(id, 0); redrawLog(id); const el = $('alog-' + id); if (el) el.scrollTop = 0; },
+                  logMore: id => { viewOf(id).shown += 40; redrawLog(id); },
+                  logThinking: (id, round) => { const t = viewOf(id).thinking; t.has(round) ? t.delete(round) : t.add(round); redrawLog(id); } };
   subscribe(render);
   loadDials();
   // the swarm simulates and draws only while its section is open and the panel is on screen

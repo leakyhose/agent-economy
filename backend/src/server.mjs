@@ -64,7 +64,11 @@ function broadcast(e) {
     const log = sim.agentLog.get(e.agent) ?? [];
     if (!log.length) sim.agentLog.set(e.agent, log);
     log.push({ t: e.t, round: e.round, outcome: e.outcome, ms: e.ms, kept: e.kept, thought: e.thought, activity: e.activity,
-               orders: e.orders,
+               orders: e.orders, ...(e.straggler ? { straggler: true } : {}),
+               // what each job was worth to it that turn (cents it could count on), and the model's own
+               // thinking where the provider returns it: the panel sets the choice beside its options
+               jobs: (e.jobValues ?? []).map(j => ({ task: j.task, sure: Math.round(j.sure), can: !!j.can })),
+               ...(e.reasoning?.length ? { reasoning: [].concat(e.reasoning).join('\n').slice(0, 2000) } : {}),
                actions: (e.actions ?? []).map(x => ({ tool: x.tool, input: x.input, result: String(x.result ?? '').slice(0, 400), ...(x.rejected ? { rejected: true } : {}) })) });
     if (log.length > 1000) log.shift();
   }

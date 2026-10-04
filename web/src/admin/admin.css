@@ -143,16 +143,62 @@ body.view-admin #admin-root #headline {
 #admin-root tr.agent.open td { background: #eef3fa; border-bottom-color: transparent; }
 #admin-root td.tw { width: 14px; padding-right: 0; color: #888; }
 #admin-root tr.agentlog td { white-space: normal; padding: 0 8px 10px; background: #fafbfd; }
-#admin-root .alog { max-height: 420px; overflow-y: auto; border: 1px solid #dde3ec; background: #fff; padding: 8px 12px; line-height: 1.45; }
-#admin-root .alog .ahead { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid #eee; }
-#admin-root .alog .turn { padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+#admin-root .alog { max-height: min(640px, 72vh); overflow-y: auto; border: 1px solid #dde3ec; background: #fff; line-height: 1.45; max-width: 980px; }
+/* the head stays put while the turns scroll under it */
+#admin-root .alog .ahead { position: sticky; top: 0; z-index: 1; background: #fff; padding: 10px 14px 8px; border-bottom: 1px solid #dde3ec; }
+#admin-root .alog .who { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+#admin-root .alog .who b { font-size: 14px; }
+#admin-root .alog .spent { display: flex; height: 6px; margin: 8px 0 4px; gap: 1px; }
+#admin-root .alog .spent i { min-width: 2px; }
+#admin-root .alog .key { display: flex; flex-wrap: wrap; gap: 2px 14px; color: #555; font-size: 11.5px; }
+#admin-root .alog .key i { display: inline-block; width: 8px; height: 8px; margin-right: 5px; }
+#admin-root .alog .filters { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+#admin-root .alog button { font: inherit; cursor: pointer; }
+#admin-root .alog .filters button { border: 1px solid #ccd3de; background: #fff; color: #333; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; }
+#admin-root .alog .filters button span { color: #888; margin-left: 2px; }
+#admin-root .alog .filters button.on { background: #1d2a3a; border-color: #1d2a3a; color: #fff; }
+#admin-root .alog .filters button.on span { color: #b9c4d3; }
+#admin-root .alog .filters button:disabled { color: #aaa; border-color: #e6e9ee; cursor: default; }
+#admin-root .alog button:focus-visible { outline: 2px solid #2458a6; outline-offset: 1px; }
+/* a turn: the round on the left, the job's colour as a rule, then what it did and why */
+#admin-root .alog .turn { display: grid; grid-template-columns: 54px 1fr; border-bottom: 1px solid #eef0f4; }
 #admin-root .alog .turn:last-child { border-bottom: 0; }
-#admin-root .alog .said { color: #333; margin: 2px 0 3px; }
-#admin-root .alog .act { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #2458a6; margin: 2px 0 2px 10px; }
-#admin-root .alog .act.hungry { color: #b00; }
-#admin-root .alog .act .res { color: #666; white-space: pre-wrap; margin-left: 12px; }
-#admin-root .alog .told { color: #555; margin-left: 10px; }
-#admin-root .alog .told::before { content: "· "; color: #aaa; }
+#admin-root .alog .rd { padding: 9px 8px 0 0; text-align: right; font-size: 15px; font-weight: 600; color: #222; font-variant-numeric: tabular-nums; line-height: 1.1; }
+#admin-root .alog .rd span { display: block; font-size: 10px; font-weight: 400; color: #999; }
+#admin-root .alog .tb { border-left: 3px solid var(--job); padding: 8px 14px 9px 12px; min-width: 0; }
+#admin-root .alog .th { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+#admin-root .alog .job { color: var(--job); }
+#admin-root .alog .ms { margin-left: auto; color: #aaa; font-size: 11px; }
+#admin-root .alog .flag { font-size: 11.5px; color: #666; }
+#admin-root .alog .flag.move { color: #7a5200; background: #fdf3d7; padding: 0 5px; }
+#admin-root .alog .flag.bad { color: #b00; }
+#admin-root .alog .said { color: #111; font-size: 13px; margin: 2px 0 4px; max-width: 76ch; }
+#admin-root .alog .opts { display: flex; flex-wrap: wrap; gap: 1px 12px; color: #777; font-size: 11.5px; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+#admin-root .alog .opts .lab { color: #999; }
+#admin-root .alog .opts .took { color: #111; font-weight: 600; box-shadow: inset 0 -2px 0 var(--job); }
+#admin-root .alog .opts .neg { color: #b00; }
+#admin-root .alog .opts .cant { text-decoration: line-through; text-decoration-color: #bbb; }
+#admin-root .alog ul { list-style: none; margin: 3px 0 0; padding: 0; }
+#admin-root .alog .did li { color: #1d3f77; padding-left: 14px; position: relative; max-width: 86ch; }
+#admin-root .alog .did li::before { content: "→"; position: absolute; left: 0; color: #9db0cc; }
+#admin-root .alog .did li.rej { color: #b00; }
+#admin-root .alog .did li.rej::before { content: "✕"; color: #b00; font-size: 10px; top: 2px; }
+#admin-root .alog .why { color: #555; margin-left: 8px; }
+#admin-root .alog .why::before { content: "“"; }
+#admin-root .alog .why::after { content: "”"; }
+#admin-root .alog .note { color: #7a5200; font-size: 11.5px; max-width: 86ch; }
+#admin-root .alog .rej .note { color: #b00; }
+#admin-root .alog .then { margin-top: 5px; padding-top: 4px; border-top: 1px dotted #e2e5ea; color: #555; font-size: 11.5px; columns: 2 300px; column-gap: 22px; }
+#admin-root .alog .then li { padding-left: 12px; position: relative; break-inside: avoid; }
+#admin-root .alog .then li::before { content: ""; position: absolute; left: 0; top: 6px; width: 5px; height: 5px; border-radius: 50%; background: #c5cbd4; }
+#admin-root .alog .then li.trade::before { background: #2458a6; }
+#admin-root .alog .then li.bank::before { background: #c9962b; }
+#admin-root .alog .then li.bad { color: #b00; }
+#admin-root .alog .then li.bad::before { background: #b00; }
+#admin-root .alog .link { border: 0; background: none; padding: 0; color: #2458a6; font-size: 11.5px; text-decoration: underline; }
+#admin-root .alog .thinking { margin: 6px 0 2px; padding: 6px 9px; background: #f6f7f9; color: #333; white-space: pre-wrap; font-size: 11.5px; max-width: 86ch; }
+#admin-root .alog .more { display: block; width: 100%; border: 0; border-top: 1px solid #eef0f4; background: #fafbfd; color: #2458a6; padding: 7px; }
+#admin-root .alog .none { padding: 14px; }
 
 /* ---- the agent swarm: a plain white stage at the foot of the page ---- */
 #admin-root details.swarmbox { padding-bottom: 10px; }
