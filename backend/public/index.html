@@ -10,11 +10,11 @@
   .top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
   .top button { font-size: 15px; padding: 6px 20px; font-weight: bold; }
   #status { font-size: 14px; }
-  #brainpick select, #agentpick input { font: inherit; padding: 3px 4px; }
+  #providerpick select, #agentpick input { font: inherit; padding: 3px 4px; }
   #agentpick input { width: 4.5em; }
-  #brainpick[hidden], #agentpick[hidden] { display: none; }
+  #providerpick[hidden], #agentpick[hidden] { display: none; }
   td.model, th.model { color: #555; font-size: 11px; }
-  table.nomodels .model { display: none; }      /* one brain, one model: the column says nothing */
+  table.nomodels .model { display: none; }      /* one model: the column says nothing */
   #models { color: #444; margin: 0 0 10px; line-height: 1.6; font-size: 12px; }
   #models b { color: #111; }
   #headline { color: #444; margin: 4px 0 12px; line-height: 1.6; }
@@ -94,7 +94,7 @@
   <h1>agent-economy</h1>
   <a href="/">← Island view</a>
   <button id="btn" onclick="toggle()">…</button>
-  <label id="brainpick" class="muted">brain <select id="brainsel"></select></label>
+  <label id="providerpick" class="muted">provider <select id="providersel"></select></label>
   <label id="agentpick" class="muted">villagers <input id="agentsel" type="number" min="1" step="1"></label>
   <button id="dialsbtn" onclick="toggleDials()">dials ⚙</button>
   <span id="status"></span>
@@ -138,7 +138,7 @@
       <div class="chart" id="k-held"></div><div class="chart" id="k-slack"></div>
     </div>
     <div class="small">
-      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c4"></div>
+      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
     </div>
     <h3>round log</h3>
     <div class="box" id="events" style="margin-top:0"></div>
@@ -157,9 +157,9 @@
 <script>
 const $ = id => document.getElementById(id);
 const btn = $("btn"), statusEl = $("status"), world = $("world"), events = $("events"), rows = $("rows");
-const GN = ['food', 'wood', 'nets', 'boats', 'houses'];  // good index -> name, same order as the chain
-const GC = ['#2f7fc1', '#8a5a2b', '#7b4fb0', '#333', '#c77700'];   // one colour per good, used everywhere
-const SHOWN = [0, 1, 2, 4];          // goods with a chart of their own; boats (3) are a dead slot nothing makes
+const GN = ['food', 'wood', 'nets', 'smoked fish', 'houses'];  // good index -> name, same order as the chain
+const GC = ['#2f7fc1', '#8a5a2b', '#7b4fb0', '#b0504a', '#c77700'];   // one colour per good, used everywhere
+const SHOWN = [0, 1, 2, 3, 4];       // goods with a chart of their own
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 let running = false;
@@ -662,15 +662,15 @@ function modelFeed(llm) {
     (m.errors ? ` · <span class="hungry">${m.errors} errors</span>` : '')).join(' &nbsp;|&nbsp; ');
 }
 
-// Pick the brain for the next run: .env's choice is the default, and the picker is only
-// shown between runs — a running village is bound to the brain (and models) it started with.
-function brainPicker(s) {
-  const pick = $('brainsel'), box = $('brainpick'), n = $('agentsel'), nbox = $('agentpick');
+// Pick the provider for the next run: .env's choice is the default, and the picker is only
+// shown between runs — a running village is bound to the provider (and model) it started with.
+function providerPicker(s) {
+  const pick = $('providersel'), box = $('providerpick'), n = $('agentsel'), nbox = $('agentpick');
   box.hidden = nbox.hidden = s.running;
-  if (s.running || !s.brains) return;
-  if (pick.options.length !== s.brains.length) {
-    pick.innerHTML = s.brains.map(b => `<option value="${b}">${b}</option>`).join('');
-    pick.value = s.config.brain;
+  if (s.running || !s.providers) return;
+  if (pick.options.length !== s.providers.length) {
+    pick.innerHTML = s.providers.map(b => `<option value="${b}">${b}</option>`).join('');
+    pick.value = s.config.provider;
   }
   // .env's number to begin with, then whatever was typed — refreshing every few seconds
   // must not snatch the field back while it is being edited.
@@ -681,10 +681,10 @@ function brainPicker(s) {
 async function toggle() {
   btn.disabled = true;
   statusEl.textContent = running ? 'stopping…' : 'starting (creating ledger on Solana)…';
-  // the brain is chosen for the run that is starting; a run already going keeps its own
+  // the provider is chosen for the run that is starting; a run already going keeps its own
   await fetch(running ? '/stop' : '/start', running ? { method: 'POST' }
     : { method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ brain: $('brainsel').value, agents: +$('agentsel').value || undefined }) });
+        body: JSON.stringify({ provider: $('providersel').value, agents: +$('agentsel').value || undefined }) });
   btn.disabled = false;
   refresh();
 }
@@ -693,14 +693,14 @@ async function refresh() {
   const s = await (await fetch('/state')).json();
   running = s.running;
   btn.textContent = running ? 'Stop' : 'Start simulation';
-  brainPicker(s);
+  providerPicker(s);
   if (!running) {
-    statusEl.textContent = `${s.config.agents} agents, brain: ${s.config.brain}`;
+    statusEl.textContent = `${s.config.agents} agents, provider: ${s.config.provider}`;
     $('headline').innerHTML = 'not running'; $('dash').style.display = 'none';
     return;
   }
   last = s; $('dash').style.display = '';
-  statusEl.innerHTML = `<b>round ${s.round}</b> · running ${s.seconds}s · brain: ${s.brain} · ${s.agents.length} agents`;
+  statusEl.innerHTML = `<b>round ${s.round}</b> · running ${s.seconds}s · ${s.provider} · ${s.agents.length} agents`;
   $('headline').innerHTML =
     `a round takes ≈${(s.roundMs / 1000).toFixed(1)}s` +
     (s.decide?.timeouts ? ` · <span class="hungry">${s.decide.timeouts} timed out last round</span>` : '') +

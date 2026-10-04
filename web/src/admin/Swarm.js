@@ -26,13 +26,14 @@ const JOBS = [
   { key: 'gather_food', label: 'fishing', color: '#1f9fb5' },
   { key: 'gather_wood', label: 'chopping wood', color: '#3f9450' },
   { key: 'craft_net', label: 'crafting nets', color: '#d98c2b' },
+  { key: 'smoke_fish', label: 'smoking fish', color: '#8a5fb0' },
   { key: 'build_house', label: 'building', color: '#cf6046' },
   { key: 'idle', label: 'at the market', color: '#8a8f98' },
 ];
 const JOB_AT = new Map(JOBS.map((j, i) => [j.key, i]));
 const BANK = -1, GOLD = '#ffcf4a';
 // a link takes the colour of the good that last crossed it
-const GOOD_COLOR = { food: '#1f9fb5', wood: '#3f9450', nets: '#d98c2b', houses: '#cf6046', boats: '#8a8f98' };
+const GOOD_COLOR = { food: '#1f9fb5', wood: '#3f9450', nets: '#d98c2b', houses: '#cf6046', 'smoked fish': '#8a5fb0' };
 const MAX_LINKS = 260;
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(',');
 

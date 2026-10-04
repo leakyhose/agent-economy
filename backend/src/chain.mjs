@@ -14,10 +14,10 @@ const DISC = Object.fromEntries(idl.instructions.map(i => [i.name, Buffer.from(i
 export const PROGRAM_ID = new PublicKey(idl.address);
 
 // Must match lib.rs. The layout is decoded by hand in fetch() below.
-export const N_GOODS = 5;              // food, wood, nets, boats, houses
-export const FOOD = 0, WOOD = 1, NETS = 2, BOATS = 3, HOUSES = 4;
+export const N_GOODS = 5;              // food, wood, nets, smoked fish, houses
+export const FOOD = 0, WOOD = 1, NETS = 2, SMOKED = 3, HOUSES = 4;
 export const MAX_AGENTS = 137;
-export const PLEDGEABLE = [false, true, true, false, true];  // food rots and can't be collateral; slot 3 is dead
+export const PLEDGEABLE = [false, true, true, false, true];  // food rots and can't be collateral; smoked fish is eaten, not pledged
 export const FIRE_SALE_BPS = 8000;     // foreclosure values seized goods at 80% of the last price
 export const FORGIVE_BELOW = 100;      // a repay that leaves less than one coin owing closes the loan
 export const DIVIDEND_SHARE_BPS = 5000; // pay_dividend pays half the surplus above the capital required

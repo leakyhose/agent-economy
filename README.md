@@ -5,7 +5,7 @@ A village of 100 LLM agents running a free-market economy, settled on a real Sol
 Written up on [Devpost](https://devpost.com/software/_solanasim).
 
 Every villager is a language model. Each round they all choose at once whether to fish, cut
-wood, craft a net, build a house or rest — nobody has a job, nobody has a wage, and nothing
+wood, craft a net or build a house — nobody has a job, nobody has a wage, and nothing
 has a price until they argue about one. They post limit orders, a batch auction clears
 on-chain, and they can borrow against their goods from an on-chain bank, miss the payment,
 and be foreclosed on by a stranger.
@@ -21,7 +21,7 @@ foreclosure.
 
 ```
 ROUND  →  every agent decides at once; the round closes when 90% have answered (or at 8s)
-WORK   →  gather_food / gather_wood / craft_net / build_house / rest — one shift per round
+WORK   →  gather_food / gather_wood / craft_net / smoke_fish / build_house — one shift per round
 SELL   →  standing limit orders; a uniform-price batch auction clears once a round, on-chain
 EAT    →  one meal a round; a villager's chosen lifestyle sets 1, 2 or 3 helpings
 WARM   →  fires burn wood; a house makes the wood last twice as long
@@ -29,12 +29,17 @@ BORROW →  pledge wood, nets or houses to the on-chain bank for newly minted co
 SPOIL  →  food and wood rot whether offered or not; pledged goods don't, coins never do
 ```
 
-Five goods — **food, wood, nets, boats, houses**. A net doubles your catch. A house takes 16
-wood and three building shifts, goes on-chain unfinished (so it can be pledged for a
-construction loan), and once finished pays wellbeing every round and can be sold.
+Five goods — **food, wood, nets, smoked fish, houses**. A net doubles your catch and wears out
+after about five fishing shifts. A smoking shift turns 10 food and 5 wood into 1 to 5 pieces of
+smoked fish, by crafting skill; one is eaten a round for extra wellbeing. A house takes 60 wood
+and 3 to 24 building shifts, by crafting skill, goes on-chain unfinished, and once finished pays
+wellbeing every round and can be sold.
+
+Every villager has a market stall and a shopping list that sell and buy by habit each round;
+`place_order` is for a price of the villager's own choosing.
 
 The goal every agent maximises is **wellbeing**: eating well, staying warm, owning a house,
-resting, and net worth at the end. Skills are drawn per agent from a fixed `SEED`, so the
+and net worth at the end. Skills are drawn per agent from a fixed `SEED`, so the
 same village is reborn every run.
 
 ### What's actually on Solana
@@ -107,16 +112,20 @@ cd chain && anchor build && cd ..
 cp .env.example .env
 ```
 
-Pick a brain in `.env`:
+Pick a provider in `.env`:
 
-| `BRAIN` | Needs | Notes |
+| `PROVIDER` | Needs | Notes |
 |---|---|---|
 | `stub` | nothing | free heuristic villagers — run the whole thing with no API key |
-| `openai` | `OPENAI_API_KEY` | Chat Completions tool-calling, default `gpt-5.6-luna` |
-| `baseten` | `BASETEN_API_KEY` | each agent draws a model from a pool and keeps it for the run |
+| `openai` | `OPENAI_API_KEY` | Chat Completions tool-calling, default `gpt-6-luna` |
+| `deepinfra` | `DEEPINFRA_API_KEY` | open models over the same protocol, default `openai/gpt-oss-120b` |
 
 `.env` is gitignored, and its API keys deliberately override anything exported in your shell.
-Every other dial goes the usual way round, so `BRAIN=stub npm start` beats the `.env`.
+Every other dial goes the usual way round, so `PROVIDER=stub npm start` beats the `.env`.
+
+`MODEL` names a model other than the provider's default. Any other OpenAI-compatible endpoint
+is one entry in `backend/src/brains/providers.mjs`, or no code at all: `PROVIDER=groq` with
+`GROQ_BASE_URL`, `GROQ_API_KEY` and `MODEL` in `.env`.
 
 ### 3 · Start the validator (its own terminal, leave it running)
 
@@ -135,7 +144,7 @@ Ctrl-C deletes the ledger.
 npm start                    # http://localhost:8787, opens a browser
 ```
 
-Choose the brain and the village size beside **Start** on the dashboard, and press it. `/` is
+Choose the provider and the village size beside **Start** on the dashboard, and press it. `/` is
 the island, `/dashboard` is the panel — the view is the URL, so links and the back button
 work.
 
@@ -153,6 +162,7 @@ If `web/dist` hasn't been built, the backend falls back to the older standalone 
 
 ```bash
 RUN_SECONDS=120 npm start     # run for N seconds, print a summary with every invariant, exit
+RUN_ROUNDS=100 npm start      # ...or for N rounds, which is what makes two runs comparable
 ```
 
 ---
@@ -160,8 +170,6 @@ RUN_SECONDS=120 npm start     # run for N seconds, print a summary with every in
 ## Scripts
 
 ```bash
-backend/scripts/check-brain.sh --pool      # which model each villager draws (no key needed)
-backend/scripts/check-brain.sh --list      # what Baseten serves today, ranked by price
 backend/scripts/check-brain.sh             # one real decision each — no chain, no validator
 
 backend/scripts/check-settlers.sh          # the SETTLERS mint against the village's books
@@ -191,6 +199,16 @@ It reports how prices moved, what agents chose and which orders were rejected an
 and spoilage, the economy round by round, the bank's books and every invariant, loans
 collected vs. foreclosed, final standings, and a sample of the agents' own reasoning.
 
+To read individual decisions — what a villager was shown, each tool call and its reply, and
+what the round then did to it — use `trace.mjs`:
+
+```bash
+node backend/scripts/trace.mjs --agent Holliver --round 40-44    # one villager, in full
+node backend/scripts/trace.mjs --tool borrow --rejected          # every refused borrow
+node backend/scripts/trace.mjs --prompt                          # the system prompt in force
+node backend/scripts/trace.mjs --help
+```
+
 ---
 
 ## Layout
@@ -205,8 +223,8 @@ backend/
   src/world.mjs     the clock, shifts, eating, wellbeing, the lake, spoilage, market rounds
   src/tools.mjs     what an agent can do, and what it is told
   src/server.mjs    runs it, serves the dashboard, saves every run
-  src/brains/       prompt.mjs · stub.mjs · openai.mjs · baseten.mjs · chat.mjs
-  scripts/          analysis, brain and money checks, the validator, devnet deploy
+  src/brains/       prompt.mjs · stub.mjs · providers.mjs · chat.mjs
+  scripts/          analysis, provider and money checks, the validator, devnet deploy
 web/              the front end: island + admin panel in one Vite app
   src/store.js      one /state poll and one /events stream, shared by every view
   src/island/       the 3D island (three.js)
@@ -224,7 +242,7 @@ runs/             every run, saved automatically (gitignored)
   (30 agents, 3,059 calls); 10 agents for 2¼ minutes is $0.15.
 - **137 agents** is the ledger's ceiling — Solana's 10 KiB limit on an account created by CPI,
   not a limit of the design.
-- Reasoning is off on the OpenAI brain because gpt-5.x refuses tool calls otherwise. The
+- Reasoning is off on OpenAI because gpt-5.x refuses tool calls otherwise. The
   system prompt and tool schemas are 78% of every request and identical for all agents, so the
   whole village shares one prompt cache key.
 

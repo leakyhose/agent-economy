@@ -8,7 +8,7 @@ import { subscribe, refresh as refreshState } from '../store.js';
 import { mountSwarm } from './Swarm.js';
 
 const $ = id => document.getElementById(id);
-const GN = ['food', 'wood', 'nets', 'boats', 'houses'];  // good index -> name, same order as the chain
+const GN = ['food', 'wood', 'nets', 'smoked fish', 'houses'];  // good index -> name, same order as the chain
 
 // One palette for every chart, so a colour means the same thing wherever it appears.
 const C = {
@@ -16,8 +16,8 @@ const C = {
   red: '#b0504a', purple: '#7a63b8', brown: '#93785c', grey: '#aab4bf',
   axis: '#96a1ac', rule: '#e9edf2', ink: '#3a444e',
 };
-const GC = [C.blue, C.brown, C.purple, C.grey, C.amber];   // one colour per good
-const SHOWN = [0, 1, 2, 4];          // goods with a chart of their own; boats (3) are a dead slot nothing makes
+const GC = [C.blue, C.brown, C.purple, C.red, C.amber];   // one colour per good
+const SHOWN = [0, 1, 2, 3, 4];       // goods with a chart of their own
 const goodsList = q => q.map((n, g) => n ? `${n} ${GN[g]}` : '').filter(Boolean).join(', ');
 const pct = v => `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
 
@@ -91,7 +91,7 @@ const txUrl = sig => last.chain.explorer.replace(/\/address\/[^?]+/, '/tx/' + si
 const MARKUP = `
 <div class="top">
   <h1>agent-economy</h1>
-  <label class="pick" id="brainpick" hidden>brain <select id="brainsel"></select></label>
+  <label class="pick" id="providerpick" hidden>provider <select id="providersel"></select></label>
   <label class="agents">agents <input id="agents" type="number" min="2" max="137" step="1" value="100"></label>
   <button id="btn" onclick="dash.toggle()">Start</button>
   <button id="pausebtn" onclick="dash.togglePause()" disabled>Pause</button>
@@ -137,7 +137,7 @@ const MARKUP = `
       <div class="chart" id="k-held"></div><div class="chart" id="k-slack"></div>
     </div>
     <div class="small">
-      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c4"></div>
+      <div class="chart" id="c0"></div><div class="chart" id="c1"></div><div class="chart" id="c2"></div><div class="chart" id="c3"></div><div class="chart" id="c4"></div>
     </div>
     <div class="chart" id="txfeed" style="width:auto; margin:10px 0"></div>
     <h3>Round log</h3>
@@ -147,7 +147,7 @@ const MARKUP = `
     <div class="scroll"><table>
       <thead><tr>
         <th></th><th>agent</th><th>skills f/w/n</th><th>doing</th><th class="n">cash</th><th class="n">food</th>
-        <th class="n">wood</th><th class="n">nets</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
+        <th class="n">wood</th><th class="n">nets</th><th class="n">smoked</th><th>house</th><th class="n">hunger</th><th class="n">cold</th>
         <th class="n">wellbeing</th><th class="n">net worth</th><th class="n">debt</th><th class="n">due</th><th class="model">model</th><th>standing orders</th><th>last thought</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -394,6 +394,7 @@ function bigCharts() {
     { name: 'fish', color: C.blue, get: x => x.doing.gather_food },
     { name: 'wood', color: C.brown, get: x => x.doing.gather_wood },
     { name: 'craft', color: C.purple, get: x => x.doing.craft_net },
+    { name: 'smoke', color: C.red, get: x => x.doing.smoke_fish ?? 0 },
     { name: 'build', color: C.amber, get: x => x.doing.build_house ?? 0 },
     { name: 'idle', color: C.grey, get: x => x.doing.idle },
   ], { ...BIG, stacked: true, note: 'agents on each job, per round' });
@@ -495,7 +496,7 @@ function agentTable() {
     const open = openAgents.has(a.id);
     return `<tr id="agent-row-${a.id}" class="agent ${open ? 'open' : ''}" onclick="dash.toggleAgent(${a.id})"><td class="tw">${open ? '▾' : '▸'}</td><td>${esc(a.name)}</td>` +
     `<td>${a.skills.gather_food} / ${a.skills.gather_wood} / ${a.skills.craft_net}</td><td>${a.activity}</td><td class="n">${a.cash.toFixed(2)}</td>` +
-    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td>` +
+    `<td class="n">${a.food}</td><td class="n">${a.wood}</td><td class="n">${a.nets}</td><td class="n">${a.smoked ?? 0}</td>` +
     `<td>${a.house ? 'home' + (a.houses > 1 ? ` +${a.houses - 1}` : '') : ''}${a.building != null ? `${a.house ? ', ' : ''}building ${a.building}/${a.buildShifts ?? 0}` : ''}${!a.house && a.building == null && a.houses ? a.houses : ''}</td>` +
     `<td class="n ${a.hunger ? 'hungry' : ''}">${a.hunger || ''}</td>` +
     `<td class="n ${a.cold >= 2 ? 'hungry' : ''}">${a.cold || ''}</td>` +
@@ -519,7 +520,7 @@ function agentTable() {
 
 // ---- one villager's whole run (GET /agent): every decision it made, with the tools it
 //      called and what they answered, and every line it was told in between. Newest first.
-const AGENT_COLS = 18;
+const AGENT_COLS = 19;
 const openAgents = new Set();          // agent ids whose log is open
 const agentLogs = new Map();           // id -> the last /agent reply
 const logScroll = new Map();           // id -> scrollTop of that log, kept across redraws
@@ -592,7 +593,7 @@ function details() {
       (s.decide.timeouts ? `, <span class="hungry">${s.decide.timeouts} timed out</span>` : '') + '<br>' : '') +
     `prices: ${prices}<br>` +
     `doing: ${doing}<br>` +
-    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · ` +
+    `totals: money ${s.totals.money.toFixed(2)} · food ${s.totals.food} · wood ${s.totals.wood} · nets ${s.totals.nets} · smoked fish ${s.totals.smoked ?? 0} · ` +
     `houses ${s.totals.houses} owned by ${s.totals.homeowners}, ${s.totals.building} being built (${s.totals.housesBuilt} built) · ` +
     `<span class="hungry">hungry ${s.totals.hungry} · cold ${s.totals.cold}</span><br>` +
     `bank: income: interest ${s.bank.books.interestIncome.toFixed(2)} · penalties ${s.bank.books.penalties.toFixed(2)} · sales ${s.bank.books.recovered.toFixed(2)} · ` +
@@ -714,26 +715,26 @@ async function toggle() {
   btn.disabled = true;
   statusEl.textContent = running ? 'stopping' : 'starting, creating the ledger on Solana';
   const n = Math.round(+$('agents').value);
-  // the brain is chosen for the run that is starting; a run already going keeps its own.
+  // the provider is chosen for the run that is starting; a run already going keeps its own.
   // JSON.stringify drops the undefined keys, so a stop still posts {} and an untouched
   // field still means "whatever .env says".
-  const body = running ? {} : { brain: $('brainsel').value || undefined, agents: n > 0 ? n : undefined };
+  const body = running ? {} : { provider: $('providersel').value || undefined, agents: n > 0 ? n : undefined };
   await fetch(running ? '/stop' : '/start', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body) });
   btn.disabled = false;
   refreshState();
 }
 
-// Pick the brain for the next run: .env's choice is the default, and the picker is only
-// shown between runs — a running village is bound to the brain (and the models) it started
+// Pick the provider for the next run: .env's choice is the default, and the picker is only
+// shown between runs — a running village is bound to the provider (and the model) it started
 // with, so there is nothing to choose until it stops.
-function brainPicker(s) {
-  const box = $('brainpick'), pick = $('brainsel');
-  box.hidden = s.running || !s.brains?.length;
+function providerPicker(s) {
+  const box = $('providerpick'), pick = $('providersel');
+  box.hidden = s.running || !s.providers?.length;
   if (box.hidden) return;
-  if (pick.options.length !== s.brains.length) {
-    pick.innerHTML = s.brains.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
-    pick.value = s.config.brain;
+  if (pick.options.length !== s.providers.length) {
+    pick.innerHTML = s.providers.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join('');
+    pick.value = s.config.provider;
   }
 }
 
@@ -758,20 +759,22 @@ function render(s, error) {
   agentsEl.disabled = running;
   if (cfg.maxAgents) agentsEl.max = cfg.maxAgents;
   if (cfg.agents && (running || !agentsTouched)) agentsEl.value = cfg.agents;
-  brainPicker(s);
+  providerPicker(s);
   const tuning = cfg.decideTimeoutMs
     ? ` · <span class="muted">timeout ${(cfg.decideTimeoutMs / 1000).toFixed(1)}s</span>` : '';
   if (!running) {
-    // the brain is named by the picker beside this line, so it is not repeated here — but
-    // a backend that offered no brains to pick from leaves the picker hidden, and then it is
-    statusEl.innerHTML = `${cfg.agents} agents${$('brainpick').hidden ? ` · ${cfg.brain}` : ''}` +
-      `${cfg.model ? ` · ${cfg.model}` : ''}${tuning}`;
+    // the provider is named by the picker beside this line, so it is not repeated here — but
+    // a backend that offered none to pick from leaves the picker hidden, and then it is.
+    // cfg.model is .env's provider's model: picking another runs that one's own default.
+    const picked = $('providerpick').hidden ? cfg.provider : $('providersel').value;
+    statusEl.innerHTML = `${cfg.agents} agents${$('providerpick').hidden ? ` · ${cfg.provider}` : ''}` +
+      `${cfg.model && picked === cfg.provider ? ` · ${cfg.model}` : ''}${tuning}`;
     $('headline').innerHTML = '<span class="muted">not running</span>'; $('dash').style.display = 'none';
     modelFeed(null);
     return;
   }
   $('dash').style.display = '';
-  statusEl.innerHTML = `<b>round ${s.round}</b> · ${s.seconds}s · ${s.brain} · ${s.agents.length} agents`;
+  statusEl.innerHTML = `<b>round ${s.round}</b> · ${s.seconds}s · ${s.provider} · ${s.agents.length} agents`;
   modelFeed(s.llm);
   $('headline').innerHTML =
     `round ${(s.roundMs / 1000).toFixed(1)}s` +

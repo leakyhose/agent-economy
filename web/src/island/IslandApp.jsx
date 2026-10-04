@@ -13,7 +13,7 @@ import './island3d.js';   // defines <island-3d>
 import { bodyOf, moodOf, drawBlob } from './blob.js';
 import { paintBlob } from './blob3d.js';
 
-const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'];
+const GOODS = ['food', 'wood', 'nets', 'smoked fish', 'houses'];
 const clip = (s, n) => { s = String(s ?? '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 const coins = c => (Number(c) / 100).toFixed(2);
 
@@ -349,7 +349,7 @@ export default class IslandApp extends React.Component {
     // every settler at the market. The shift the backend reports wins, and the last known
     // one carries through the deciding phase, as the 3D scene already does.
     this.lastAct = this.lastAct || {};
-    if (LOCS.some(l => l.act === a.activity)) return (this.lastAct[a.id] = a.activity);
+    if (a.activity === "smoke_fish" || LOCS.some(l => l.act === a.activity)) return (this.lastAct[a.id] = a.activity);
     if (a.activity === "idle") return (this.lastAct[a.id] = "trade");
     if (this.lastAct[a.id]) return this.lastAct[a.id];
     if (a.orders?.length) return "trade";
@@ -430,7 +430,7 @@ export default class IslandApp extends React.Component {
       roundMs: (fresh ? fresh.roundMs : 0) || snapshot.roundMs || 0,
       live: this.wire.slice(0, 6),
       agentTarget: snapshot.config?.agents || agents.length,
-      brain: snapshot.brain || [snapshot.config?.brain, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
+      brain: snapshot.provider || [snapshot.config?.provider, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
       program: snapshot.chain?.program || "-", ledger: snapshot.chain?.ledger || "-",
       explorer: snapshot.chain?.explorer || "#"
     };
@@ -487,7 +487,7 @@ export default class IslandApp extends React.Component {
 
     const tapeStyle = tone => ({ fontSize: "12px", fontWeight: 800, color: tone > 0 ? "#3fe0a0" : tone < 0 ? "#ff7d63" : "#8b9095", whiteSpace: "nowrap" });
     const noteStyle = note => ({ display: note ? "inline" : "none", fontFamily: "'IBM Plex Mono', monospace", fontSize: "11px", color: "#7d8287" });
-    const tape = Object.keys(s.prices).filter(k => k !== "boats").map(k => {
+    const tape = Object.keys(s.prices).map(k => {
       const change = s.prices[k] - (s.pricePrev[k] ?? s.prices[k]);
       const tone = change > 0 ? 1 : change < 0 ? -1 : 0;
       return {

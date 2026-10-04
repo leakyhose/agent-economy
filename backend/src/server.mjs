@@ -11,29 +11,41 @@ import { spawn } from 'node:child_process';
 import { CFG, GOODS, ROOT, HOUSES } from './config.mjs';
 import { connectChain, explorer, PROGRAM_ID, lockedValue, MAX_AGENTS } from './chain.mjs';
 import { createWorld } from './world.mjs';
-import { makeTools } from './tools.mjs';
+import { makeTools, toolDefs } from './tools.mjs';
 import { stubBrain } from './brains/stub.mjs';
-import { snapshot as tunableSnapshot, apply as applyTunables, preset as presetChanges } from './tunables.mjs';
+import { providerNames, providerBrain, modelFor, missing } from './brains/providers.mjs';
+import { systemPrompt } from './brains/prompt.mjs';
+import { snapshot as tunableSnapshot, apply as applyTunables, preset as presetChanges, REV } from './tunables.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Dials from the environment, for headless A/B runs — the same dials the panel pulls
+// (tunables.mjs), by the same keys:
+//   DIALS='TASKS.gather_wood.yield=24,BANK.RATE_PER_ROUND=0.002'   set before the village is born
+//   SCHEDULE='50:CATCH=0.5;80:CATCH=1'                             pulled as that round is decided
+const parseDials = s => Object.fromEntries(s.split(',').map(kv => kv.split('=').map(x => x.trim())).filter(kv => kv.length === 2)
+  .map(([k, v]) => [k, v === 'true' ? true : v === 'false' ? false : +v]));
+const BIRTH_DIALS = parseDials(process.env.DIALS ?? '');
+if (Object.keys(BIRTH_DIALS).length) {
+  const moved = applyTunables(BIRTH_DIALS);
+  const unknown = Object.keys(BIRTH_DIALS).filter(k => !moved.some(m => m.key === k));
+  console.log(`dials: ${moved.map(m => `${m.label} ${m.fromShown} → ${m.toShown}`).join('; ')}${unknown.length ? `   (unchanged or unknown: ${unknown.join(', ')})` : ''}`);
+}
+const SCHEDULE = (process.env.SCHEDULE ?? '').split(';').map(x => x.trim()).filter(Boolean)
+  .map(x => ({ round: +x.slice(0, x.indexOf(':')), changes: parseDials(x.slice(x.indexOf(':') + 1)) })).sort((a, b) => a.round - b.round);
 const coins = c => (c / 100).toFixed(2);
 
-// Which brains a run can be driven by. .env picks the default; the dashboard's dropdown
-// passes a choice to /start, so openai and baseten can be compared without a restart.
-export const BRAINS = ['stub', 'openai', 'baseten'];
-
-// A brain is built once per run: its agents are bound to their models and its token tallies
-// belong to that run, so the choice is made at /start and holds until the run stops. A brain
-// asked for without its key falls back to the stub rather than killing the run.
-async function makeBrain(choice = CFG.BRAIN) {
-  if (choice === 'openai') {
-    if (process.env.OPENAI_API_KEY) return (await import('./brains/openai.mjs')).openaiBrain();
-    console.warn('\n  brain=openai but no OPENAI_API_KEY in the repo-root .env. Using the stub.\n');
-  }
-  if (choice === 'baseten') {
-    if (process.env.BASETEN_API_KEY) return await (await import('./brains/baseten.mjs')).basetenBrain();
-    console.warn('\n  brain=baseten but no BASETEN_API_KEY in the repo-root .env. Using the stub.\n');
-  }
+// Which providers a run can think with (brains/providers.mjs). .env picks the default; the
+// dashboard's dropdown passes a choice to /start, so two can be compared without a restart.
+//
+// The brain is built once per run: its token tallies belong to that run, so the choice is
+// made at /start and holds until the run stops. A provider that can't run — no key, no
+// model — falls back to the stub rather than killing the run.
+function makeBrain(choice = CFG.PROVIDER, model) {
+  if (choice === 'stub') return stubBrain();
+  const why = missing(choice, model);
+  if (!why) return providerBrain(choice, model);
+  console.warn(`\n  provider=${choice}: ${why}. Using the stub.\n`);
   return stubBrain();
 }
 
@@ -64,7 +76,7 @@ function broadcast(e) {
     const st = sim.brain.stats();
     console.log(`round ${String(e.round).padStart(3)} | money ${coins(e.bank.supply)} debt ${coins(e.bank.debtTotal)} equity ${coins(e.bank.equity)} | ` +
       GOODS.map((g, i) => `${g} ${coins(e.prices[i])} (${e.volumes[i]})`).join('  ') +
-      ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} idle ${acts.idle ?? 0}` +
+      ` | fish ${acts.gather_food ?? 0} wood ${acts.gather_wood ?? 0} craft ${acts.craft_net ?? 0} smoke ${acts.smoke_fish ?? 0} build ${acts.build_house ?? 0} idle ${acts.idle ?? 0}` +
       ` | hungry ${W.agents.filter(a => a.hunger > 0).length} cold ${W.agents.filter(a => a.cold >= 2).length}` +
       ` | real gdp ${coins(e.metrics.realGdp)} houses ${e.metrics.homeowners}+${e.metrics.building}` +
       (e.decide ? ` | decide p50 ${(e.decide.p50 ?? e.decide.median) / 1000 | 0}.${String(Math.round(((e.decide.p50 ?? e.decide.median) % 1000) / 100))}s` +
@@ -88,12 +100,12 @@ function setAgents(n) {
   return CFG.AGENTS;
 }
 
-// { brain, agents } from the dashboard; whatever is left out is what .env says, or the last run's.
-async function start({ brain: choice, agents } = {}) {
+// { provider, model, agents } from the dashboard; whatever is left out is what .env says, or the last run's.
+async function start({ provider: choice, model, agents } = {}) {
   if (sim) return 'already running';
   if (agents != null) setAgents(agents);
   const myGen = ++gen;
-  const brain = await makeBrain(BRAINS.includes(choice) ? choice : CFG.BRAIN);
+  const brain = makeBrain(providerNames().includes(choice) ? choice : CFG.PROVIDER, model);
   const chain = await connectChain();
   // The bank's terms, fixed on-chain for the life of the ledger. Interest is
   // BANK.RATE_PER_ROUND per ROUND held. Terms are chosen in rounds, whose length the chain
@@ -133,18 +145,19 @@ async function start({ brain: choice, agents } = {}) {
   const dir = path.join(ROOT, 'runs', new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19));
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({
-    startedAt: new Date().toISOString(), brain: brain.name,
+    startedAt: new Date().toISOString(), provider: brain.name,
     program: PROGRAM_ID.toBase58(), ledger: chain.ledger.publicKey.toBase58(),
     keeper: chain.keeper.publicKey.toBase58(),
     mint: chain.mint.toBase58(), vault: chain.vault.toBase58(),
     config: { ...CFG, RPC: undefined },
+    dials: BIRTH_DIALS,             // DIALS=… : what was moved off the defaults before the village was born
     agents: W.agents.map(a => ({ id: a.id, name: a.name, skills: a.skills, traits: a.traits })),
   }, null, 2));
   sim = { W, chain, brain, gen: myGen, startedAt: Date.now(), dir, sigs: new Map(), agentLog: new Map(),
           paused: false, pausing: false, resumeClock: null,
           log: fs.createWriteStream(path.join(dir, 'events.jsonl')) };
   console.log(`logging to ${path.relative(ROOT, dir)}/`);
-  console.log(`\nstarted   brain=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
+  console.log(`\nstarted   provider=${brain.name}   agents=${CFG.AGENTS}   ledger ${chain.ledger.publicKey.toBase58()}`);
   console.log(`SETTLERS  ${chain.mint.toBase58()}   (mint authority: itself — no key for it exists)`);
 
   const alive = () => sim && sim.gen === myGen && !sim.stopping;
@@ -159,6 +172,9 @@ async function start({ brain: choice, agents } = {}) {
     const t0 = Date.now(), tools = makeTools(W, a), ac = new AbortController();
     tools.signal = ac.signal;
     W.beginDecision(a);
+    // what each job was worth to this villager as its turn began: the numbers behind the
+    // "what one shift of yours is worth" lines in `saw`, so nobody has to parse them back out
+    const jobValues = W.jobValues(a).map(j => ({ task: j.task, raw: Math.round(j.raw), sure: Math.round(j.sure), can: j.can }));
     let timer;
     const outcome = await Promise.race([
       Promise.resolve().then(() => brain.decide(a, tools)).then(() => 'ok', e => { W.emit('error', { agent: a.id, message: e.message }); return 'error'; }),
@@ -187,7 +203,10 @@ async function start({ brain: choice, agents } = {}) {
                          kept: !!a.activity?.kept, thought: a.thought, activity: a.activity?.task,
                          place: a.activity?.place ?? null,
                          orders: a.orders.map(o => ({ side: o.side, good: GOODS[o.good], qty: o.qty, limit: o.limit, seq: o.seq })),
-                         saw: tools.log.saw, actions: tools.log.actions });
+                         ...(a.model ? { model: a.model } : {}),
+                         jobValues, saw: tools.log.saw, actions: tools.log.actions,
+                         // the model's own reasoning text, when the provider returns any (trace.mjs)
+                         ...(tools.log.reasoning ? { reasoning: tools.log.reasoning } : {}) });
     return { ms, timedOut: outcome === 'timeout', straggler, ok };
   }
   // The decision phase's barrier. `reached` resolves the moment `need` villagers have
@@ -215,10 +234,20 @@ async function start({ brain: choice, agents } = {}) {
       if (sim) sim.resumeClock = null;
     }
   }
+  // The standing instructions and tool descriptions every villager is given, written to the
+  // run log once and again whenever a dial rewrites them — so a decision's `saw` can always be
+  // read beside the exact prompt that was in force (backend/scripts/trace.mjs --prompt).
+  let promptRev = null;
+  const logPrompt = () => {
+    if (promptRev === REV) return;
+    promptRev = REV;
+    W.emit('prompt', { round: W.round + 1, system: systemPrompt(), tools: toolDefs() });
+  };
   async function clock() {
     while (alive()) {
       await waitIfPaused();
       if (!alive()) return;
+      logPrompt();
       const t0 = Date.now();
       const quorum = makeQuorum(W.agents.length);
       const res = await Promise.all(W.agents.map(a => decideOne(a, quorum)));
@@ -284,15 +313,15 @@ async function stop() {
 
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
-  if (!sim) return { running: false, brains: BRAINS, maxAgents: MAX_AGENTS,
-                     config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, brain: CFG.BRAIN, model: CFG.MODEL, decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM }, policy: [] };
+  if (!sim) return { running: false, providers: providerNames(), maxAgents: MAX_AGENTS,
+                     config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, provider: CFG.PROVIDER, model: modelFor(CFG.PROVIDER), decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, paused: sim.paused, pausing: sim.pausing, brain: brain.name, brains: BRAINS,
-    config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, brain: CFG.BRAIN, model: CFG.MODEL, decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM },
+    running: true, paused: sim.paused, pausing: sim.pausing, provider: brain.name, providers: providerNames(),
+    config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, provider: CFG.PROVIDER, model: modelFor(CFG.PROVIDER), decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM },
     round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
     // last round's wall-clock, phase by phase (ms): sim, settle, loans, read, keeper,
@@ -310,7 +339,7 @@ function state() {
             overdue: W.overdue,
             keeper: chain.keeper.publicKey.toBase58() },
     totals: { money: sum(a => a.cash) / 100, food: sum(a => a.goods[0]), wood: sum(a => a.goods[1]),
-              nets: sum(a => a.goods[2]), houses: sum(a => W.houses(a)), homeowners: W.agents.filter(a => W.hasHouse(a)).length,
+              nets: sum(a => a.goods[2]), smoked: sum(a => a.goods[3]), houses: sum(a => W.houses(a)), homeowners: W.agents.filter(a => W.hasHouse(a)).length,
               building: W.agents.filter(a => a.building).length, housesBuilt: W.housesBuilt, hungry: W.agents.filter(a => a.hunger > 0).length,
               cold: W.agents.filter(a => a.cold >= 2).length },
     doing,
@@ -322,14 +351,14 @@ function state() {
     llm: brain.stats(),
     agents: W.agents.map(a => ({
       id: a.id, name: a.name, skills: Object.fromEntries(Object.entries(a.skills).map(([k, v]) => [k, +v.toFixed(2)])), cash: a.cash / 100,
-      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], houses: W.houses(a), house: W.hasHouse(a),
+      food: a.goods[0], wood: a.goods[1], nets: a.goods[2], smoked: a.goods[3], houses: W.houses(a), house: W.hasHouse(a),
       // a build in progress: shifts worked, out of what it takes this agent (crafting skill sets that)
       building: a.building?.shifts ?? null, buildShifts: (a.building?.shifts ?? 0) + W.buildShiftsLeft(a),
       locked: a.locked, hunger: a.hunger, cold: a.cold,
       debt: W.debtNow(a) / 100, dueIn: W.roundsUntilDue(a), wellbeing: a.wellbeing, wealth: W.wealth(a) / 100,
       orders: a.orders.map(o => `${o.side} ${o.qty} ${GOODS[o.good]} @ ${coins(o.limit)}`),
       activity: a.activity?.task ?? 'deciding', thought: a.thought, memory: a.memory,
-      model: a.model ?? null,                     // the model this villager thinks with (baseten draws one per agent)
+      model: a.model ?? null,                     // the model this villager thinks with
     })),
     // every dial pulled this run, with the round it landed on: the charts mark those rounds,
     // so a kink in a price line can be read straight off against the lever that caused it
@@ -456,7 +485,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
     if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
-    // { brain: "baseten", agents: 30 } sets up the run; no body means what .env says
+    // { provider: "deepinfra", agents: 30 } sets up the run; no body means what .env says
     if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start(await readBody(req)) });
     if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
     if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
@@ -489,7 +518,7 @@ function listen(port = CFG.PORT) {
     cleanup();
     const url = `http://localhost:${port}`;
     console.log(`island: ${url}   dashboard: ${url}/dashboard`);
-    if (!CFG.RUN_SECONDS && process.env.OPEN_BROWSER !== '0') {
+    if (!CFG.RUN_SECONDS && !CFG.RUN_ROUNDS && process.env.OPEN_BROWSER !== '0') {
       const command = process.platform === 'darwin' ? ['open', [url]]
         : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
           : ['xdg-open', [url]];
@@ -504,10 +533,16 @@ function listen(port = CFG.PORT) {
 }
 listen();
 
-// ---- headless mode: RUN_SECONDS=45 starts immediately, prints a summary, exits ---
-if (CFG.RUN_SECONDS) {
+// ---- headless mode: RUN_SECONDS=45 or RUN_ROUNDS=100 starts immediately, prints a summary, exits ---
+// A round cap is what makes two runs comparable: by the clock, a slower model plays fewer rounds.
+if (CFG.RUN_SECONDS || CFG.RUN_ROUNDS) {
   await start();
-  await sleep(CFG.RUN_SECONDS * 1000);
+  const until = CFG.RUN_SECONDS ? Date.now() + CFG.RUN_SECONDS * 1000 : Infinity;
+  while (Date.now() < until && !(CFG.RUN_ROUNDS && sim.W.round >= CFG.RUN_ROUNDS)) {
+    // a scheduled dial lands once the round before it has settled, exactly as the panel's would
+    while (SCHEDULE.length && sim.W.round >= SCHEDULE[0].round - 1) setTunables({ changes: SCHEDULE.shift().changes });
+    await sleep(200);
+  }
   const { W, chain, brain, dir } = sim;
   await stop();
   console.log(`analyze with: node backend/scripts/analyze.mjs ${path.relative(ROOT, dir)}`);

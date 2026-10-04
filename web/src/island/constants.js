@@ -14,9 +14,10 @@ const LOCS = [
     blurb: "Where goods are traded, loans are taken, and villagers rest.", ground: "linear-gradient(180deg,#f0e0b6 0%,#ddc894 100%)", sky: "linear-gradient(180deg,#cdefff 0%,#f3f6dd 62%,#f3f6dd 100%)" }
 ];
 // Any activity without its own place (trade, bank, rest) buckets into the market.
-const bucketOf = act => LOCS.find(l => l.act === act) || LOCS.find(l => l.id === "market");
+// smoking is workshop work: it has no place of its own on the island
+const bucketOf = act => LOCS.find(l => l.act === (act === "smoke_fish" ? "craft_net" : act)) || LOCS.find(l => l.id === "market");
 
-const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", trade: "At the market", build_house: "Building", bank: "At the bank", rest: "Resting" };
+const ACT_LABEL = { gather_food: "Fishing", gather_wood: "Chopping wood", craft_net: "Crafting nets", smoke_fish: "Smoking fish", trade: "At the market", build_house: "Building", bank: "At the bank", rest: "Resting" };
 const SHORT = { settle_auction: "auction", post_order: "order", mint_loan: "mint", burn_repay: "burn", transfer_goods: "goods", accrue_interest: "interest" };
 const SKIN = ["#f6d3b8", "#efc09b", "#e0a87c", "#c98a5e", "#a9683f", "#8a5232"];
 const HAIR = ["#3a2b22", "#5d3b23", "#8a5a2b", "#c98b3a", "#2b2b33", "#7a4a55", "#d9b26a"];
@@ -27,9 +28,9 @@ const KINDS = [
   { k: "transfer_goods", c: "#b9a6ff" }, { k: "accrue_interest", c: "#9fe0c4" }
 ];
 const EMPTY_SIM = {
-  agents: [], prices: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
-  pricePrev: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
-  vols: { food: 0, wood: 0, nets: 0, boats: 0, houses: 0 },
+  agents: [], prices: { food: 0, wood: 0, nets: 0, "smoked fish": 0, houses: 0 },
+  pricePrev: { food: 0, wood: 0, nets: 0, "smoked fish": 0, houses: 0 },
+  vols: { food: 0, wood: 0, nets: 0, "smoked fish": 0, houses: 0 },
   books: {}, feed: [], round: 0, tick: 0, seconds: 0, gdp: 0, gdpPrev: 0, wbRound: 0, wbRoundPrev: 0,
   supply: 0, debt: 0, minted: 0, burned: 0, txTotal: 0, lastRoundTxs: 0,
   roundMs: 0, agentTarget: 0, brain: "Loading…", program: "-", ledger: "-", explorer: "#"

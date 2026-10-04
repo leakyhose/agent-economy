@@ -1,7 +1,7 @@
-// The decision loop every OpenAI-protocol brain shares. Baseten's Model APIs speak the same
-// wire format as OpenAI's chat completions — same tools, same tool_calls, same usage block —
-// so the two brains differ only in which client they hold, what a model costs, and which
-// model an agent thinks with. Everything that decides how a villager decides lives here.
+// The decision loop every provider shares (providers.mjs). They all speak OpenAI's
+// chat-completions wire format — same tools, same tool_calls, same usage block — so they
+// differ only in which client they hold, what a model costs, and which model an agent
+// thinks with. Everything that decides how a villager decides lives here.
 import OpenAI from 'openai';
 import { CFG } from '../config.mjs';
 import { systemPrompt } from './prompt.mjs';
@@ -24,6 +24,43 @@ function retryAfterMs(h, attempt) {
   return Math.min(2400, asked) + Math.random() * 300;
 }
 
+// The two wire formats a provider can be spoken to in. Chat Completions is the one every
+// OpenAI-compatible host understands. OpenAI's own Responses API is the only way its gpt-6
+// models will reason AND call tools in the same request, so it is used for exactly that.
+// Each turns the conversation so far into a request, and a reply into the same four things:
+// token counts, any text, any reasoning, and the tool calls.
+const WIRES = {
+  chat: {
+    start: (system, user) => ({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+    send: (client, st, { model, defs, maxTokens, tokenParam, extra, signal }) => client.chat.completions.create({
+      model, messages: st.messages, [tokenParam]: maxTokens, ...extra,
+      tools: defs.map(d => ({ type: 'function', function: { name: d.name, description: d.description, parameters: d.input_schema } })),
+    }, { signal }).withResponse(),
+    read(r) {
+      const msg = r.choices[0].message;
+      return { inTok: r.usage?.prompt_tokens ?? 0, cachedTok: r.usage?.prompt_tokens_details?.cached_tokens ?? 0, outTok: r.usage?.completion_tokens ?? 0,
+               text: msg.content, reasoning: msg.reasoning_content ?? msg.reasoning,     // the field has two names in the wild
+               calls: (msg.tool_calls ?? []).map(c => ({ id: c.id, name: c.function.name, args: c.function.arguments })), keep: [msg] };
+    },
+    reply: (st, got, results) => st.messages.push(...got.keep, ...results.map(x => ({ role: 'tool', tool_call_id: x.id, content: x.content }))),
+  },
+  responses: {
+    start: (system, user) => ({ instructions: system, input: [{ role: 'user', content: user }] }),
+    send: (client, st, { model, defs, maxTokens, extra, signal }) => client.responses.create({
+      model, instructions: st.instructions, input: st.input, max_output_tokens: maxTokens, ...extra,
+      tools: defs.map(d => ({ type: 'function', name: d.name, description: d.description, parameters: d.input_schema, strict: false })),
+    }, { signal }).withResponse(),
+    read(r) {
+      const out = r.output ?? [], texts = kind => out.filter(o => o.type === kind);
+      return { inTok: r.usage?.input_tokens ?? 0, cachedTok: r.usage?.input_tokens_details?.cached_tokens ?? 0, outTok: r.usage?.output_tokens ?? 0,
+               text: texts('message').flatMap(m => m.content ?? []).map(c => c.text ?? '').join('\n'),
+               reasoning: texts('reasoning').flatMap(m => m.summary ?? []).map(c => c.text ?? '').join('\n'),
+               calls: texts('function_call').map(c => ({ id: c.call_id, name: c.name, args: c.arguments })), keep: out };
+    },
+    reply: (st, got, results) => st.input.push(...got.keep, ...results.map(x => ({ type: 'function_call_output', call_id: x.id, output: x.content }))),
+  },
+};
+
 export function semaphore(n) {
   let active = 0; const q = [];
   return async fn => {
@@ -33,19 +70,23 @@ export function semaphore(n) {
   };
 }
 
-// label     what the dashboard calls this brain
+// label     what the dashboard calls this run's provider and model
 // client    an OpenAI-SDK client, pointed at whichever endpoint
-// pickModel (agent) => slug. One fixed model for OpenAI; one drawn per agent for Baseten,
-//           which is why this takes the agent and not just a name.
-// price     (slug) => $ per 1M tokens [input, output]; [0, 0] for a model we have no price
+// pickModel (agent) => slug. It takes the agent, not just a name, so a village can be
+//           dealt several models; today every provider runs one.
+// price     (slug) => $ per 1M tokens [input, output, cached input?]; [0, 0] for a model we have no price
 //           for, which then counts tokens and no cost.
 // params    (slug) => anything else the request needs.
 // maxTokens what one reply may spend. A reply cut off here reads as a villager who never
 //           answered, so it is a budget for the tool calls, not for thinking out loud.
 // cachedRate what an input token read from the provider's prompt cache costs, as a share of
 //           the input price. 1 (no discount) for a provider whose cache price we don't know.
+// tokenParam what the endpoint calls that budget: max_tokens nearly everywhere,
+//           max_completion_tokens for OpenAI's gpt-5 family.
+// api       'chat' (Chat Completions, the default) or 'responses' (see WIRES).
 export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000,
-                            concurrency = () => 0, cachedRate = 1 }) {
+                            concurrency = () => 0, cachedRate = 1, tokenParam = 'max_tokens', api = 'chat' }) {
+  const wire = WIRES[api];
   // Every villager calls at once: there is no global gate. The only gate is per model:
   // providers meter each model separately, and one model's ceiling is no reason to hold up
   // a villager thinking with another. Zero means no gate at all.
@@ -70,8 +111,9 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
     return m;
   };
   const costOf = m => {
-    const [pin, pout] = price(m.slug);
-    return (m.inTok - m.cachedTok) / 1e6 * pin + m.cachedTok / 1e6 * pin * cachedRate + m.outTok / 1e6 * pout;
+    // a third figure is that model's own cached-input price; without one, cachedRate stands in
+    const [pin, pout, pcached = pin * cachedRate] = price(m.slug);
+    return (m.inTok - m.cachedTok) / 1e6 * pin + m.cachedTok / 1e6 * pcached + m.outTok / 1e6 * pout;
   };
 
   return {
@@ -96,10 +138,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
       m.agents.add(a.id);
       const bump = (k, n = 1) => { s[k] += n; m[k] += n; };
 
-      const tools = t.defs.map(d => ({
-        type: 'function', function: { name: d.name, description: d.description, parameters: d.input_schema },
-      }));
-      const messages = [{ role: 'system', content: systemPrompt() }, { role: 'user', content: t.observe() }];
+      const talk = wire.start(systemPrompt(), t.observe());
 
       for (let turn = 0; turn < 3; turn++) {
         let r;
@@ -110,9 +149,8 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         for (let attempt = 0; ; attempt++) {
           try {
             const t1 = Date.now();
-            const out = await run(model, () => client.chat.completions.create({
-              model, messages, tools, max_completion_tokens: maxTokens, ...params(model),
-            }, { signal: t.signal }).withResponse());
+            const out = await run(model, () => wire.send(client, talk,
+              { model, defs: t.defs, maxTokens, tokenParam, extra: params(model), signal: t.signal }));
             r = out.data;
             bump('apiMs', Date.now() - t1);
             if (!s.limits || !(s.calls & 31)) s.limits = readLimits(out.response.headers);
@@ -131,10 +169,11 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
             return;
           }
         }
+        const got = wire.read(r);
         bump('calls');
-        bump('inTok', r.usage?.prompt_tokens ?? 0);
-        bump('cachedTok', r.usage?.prompt_tokens_details?.cached_tokens ?? 0);
-        bump('outTok', r.usage?.completion_tokens ?? 0);
+        bump('inTok', got.inTok);
+        bump('cachedTok', got.cachedTok);
+        bump('outTok', got.outTok);
         // The round closed while this call was in flight — it timed out, or the quorum went
         // on without it. Its tokens were spent and are counted, but nothing it says may land:
         // the tools already refuse every action, and `a.thought` is written here rather than
@@ -142,9 +181,12 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         if (t.signal?.aborted) { bump('timedOut'); return; }
 
         t.acted.answered = true;
-        const msg = r.choices[0].message;
-        if (msg.content) a.thought = msg.content.trim().slice(0, 240);
-        const calls = msg.tool_calls ?? [];
+        if (got.text) a.thought = got.text.trim().slice(0, 240);
+        // A reasoning model's thinking, where the provider hands it back. Kept for the run
+        // log only: no villager is ever shown it.
+        const why = got.reasoning;
+        if (typeof why === 'string' && why.trim() && t.log) (t.log.reasoning ??= []).push(why.trim());
+        const calls = got.calls;
         if (!calls.length) return;
 
         t.acted.failed = false;
@@ -152,12 +194,12 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         // are never run with defaults: the model is told, and gets another turn.
         const results = calls.map(c => {
           let args;
-          try { args = JSON.parse(c.function.arguments || '{}'); } catch (e) {
-            return { role: 'tool', tool_call_id: c.id, content: t.badCall(c.function.name, c.function.arguments, `invalid JSON: ${e.message}`) };
+          try { args = JSON.parse(c.args || '{}'); } catch (e) {
+            return { id: c.id, content: t.badCall(c.name, c.args, `invalid JSON: ${e.message}`) };
           }
           if (!args || typeof args !== 'object' || Array.isArray(args))
-            return { role: 'tool', tool_call_id: c.id, content: t.badCall(c.function.name, c.function.arguments, 'arguments must be a JSON object') };
-          return { role: 'tool', tool_call_id: c.id, content: t.exec(c.function.name, args) };
+            return { id: c.id, content: t.badCall(c.name, c.args, 'arguments must be a JSON object') };
+          return { id: c.id, content: t.exec(c.name, args) };
         });
         // Done once a shift is chosen and nothing was refused — unless the shift was the ONLY
         // thing in the first reply. Orders used to register only if the model happened to send
@@ -165,7 +207,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         // a time, 79% of turns ended before an order could be posted and the market died. A
         // lone shift now gets one follow-up turn (tools.mjs says so in the shift's result).
         if (t.acted.activity && !t.acted.failed && (turn > 0 || calls.length > 1)) return;
-        messages.push(msg, ...results);
+        wire.reply(talk, got, results);
       }
     },
   };

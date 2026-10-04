@@ -13,9 +13,11 @@ const ev = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split(
 
 const coins = c => (c / 100).toFixed(2);
 const rounds = ev.filter(e => e.type === 'round');
-// older runs had 3 or 4 goods (no boats, no houses), a bank without equity, no metrics; read what the run has
-const GOODS = ['food', 'wood', 'nets', 'boats', 'houses'].slice(0, rounds[0]?.prices.length ?? final?.chain.lastPrice.length ?? 3);
-const G = GOODS.map((_, g) => g);                       // every slot, incl. the dead boat slot (index order = the chain's)
+// older runs had 3 or 4 goods (no boats, no houses), a bank without equity, no metrics; read what the run has.
+// Slot 3 is smoked fish in a run whose config has the smoke_fish job; before that it was "boats", a dead slot.
+const SMOKES = !!meta.config?.TASKS?.smoke_fish;
+const GOODS = ['food', 'wood', 'nets', SMOKES ? 'smoked fish' : 'boats', 'houses'].slice(0, rounds[0]?.prices.length ?? final?.chain.lastPrice.length ?? 3);
+const G = GOODS.map((_, g) => g);                       // every slot, incl. an old run's dead boat slot (index order = the chain's)
 const SHOWN = G.filter(g => GOODS[g] !== 'boats');      // boats are never made or shown; old runs logged zeros for them
 const perGood = f => SHOWN.map(g => f(GOODS[g], g)).join('  ');
 const decisions = ev.filter(e => e.type === 'decision');
@@ -28,7 +30,7 @@ const giniOf = xs => { const v = [...xs].sort((a, b) => a - b), n = v.length, su
 const turns = !!meta.config.BANK?.TERM_ROUNDS;
 const hr = t => console.log(`\n── ${t} ${'─'.repeat(Math.max(0, 60 - t.length))}`);
 
-console.log(`run ${path.basename(dir)}   brain ${meta.brain}   ${meta.agents.length} agents   ${rounds.length} rounds   ${decisions.length} decisions`);
+console.log(`run ${path.basename(dir)}   provider ${meta.provider ?? meta.brain}   ${meta.agents.length} agents   ${rounds.length} rounds   ${decisions.length} decisions`);
 
 hr('market: did agents try to trade, and did it work?');
 for (const g of SHOWN) {
@@ -154,7 +156,7 @@ if (rejected.length) {
   for (const o of rejected) { const k = o.result.split(':')[0].slice(0, 50); why[k] = (why[k] ?? 0) + 1; }
   console.log('  rejections: ' + Object.entries(why).map(([k, v]) => `"${k}" x${v}`).join('; '));
 }
-const noAct = decisions.filter(d => !d.actions.some(x => ['gather_food', 'gather_wood', 'craft_net', 'build_house', 'rest'].includes(x.tool)));   // rest: old runs
+const noAct = decisions.filter(d => !d.actions.some(x => ['gather_food', 'gather_wood', 'craft_net', 'smoke_fish', 'build_house', 'rest'].includes(x.tool)));   // rest: old runs
 if (noAct.length) { const n = decisions.length, acts = decisions.map(d => (d.actions ?? []).length);
   console.log(`actions per decision: avg ${(acts.reduce((s, x) => s + x, 0) / Math.max(1, n)).toFixed(2)}   a lone shift and nothing else: ${pct(acts.filter(x => x === 1).length, n)} of decisions   (the market died at 79%: orders need room in the turn)`); }
 console.log(`decisions that never chose a shift (sat idle): ${noAct.length} (${pct(noAct.length, decisions.length)})`);
@@ -318,9 +320,9 @@ if (meta.agents[0]?.skills) {
   const endCash = final?.chain.slots.map(s => s.cash) ?? last.map(a => a.cash);
   const rows = meta.agents.map(a => {
     const mine = decisions.filter(d => d.agent === a.id);
-    // a builder's craft is nets and houses alike
+    // a crafter's trade is nets, houses and smoked fish alike
     const own = mine, best = bestAt(a.id);
-    const at = d => d.activity === best || (best === 'craft_net' && d.activity === 'build_house');
+    const at = d => d.activity === best || (best === 'craft_net' && (d.activity === 'build_house' || d.activity === 'smoke_fish'));
     return { a, best, share: own.filter(at).length / Math.max(1, own.length), cash: endCash[a.id] ?? 0 };
   });
   const avgCash = xs => avg(xs.map(r => r.cash));
@@ -339,7 +341,7 @@ for (const s of standing) {
   const main = Object.entries(top).sort((a, b) => b[1] - a[1])[0];
   const sk = meta.agents[s.i]?.skills;
   const end = last[s.i];
-  console.log(`${name(s.i).padEnd(9)} ${sk ? `f${sk.gather_food} w${sk.gather_wood} n${sk.craft_net}  ` : ''}cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}` +
+  console.log(`${name(s.i).padEnd(9)} ${sk ? `f${sk.gather_food} w${sk.gather_wood} n${sk.craft_net}  ` : ''}cash ${coins(s.cash).padStart(7)}  food ${String(s.goods[0]).padStart(3)}  wood ${String(s.goods[1]).padStart(3)}  nets ${s.goods[2]}${SMOKES ? `  smoked ${s.goods[3]}` : ''}` +
     `${s.goods.length > 4 ? `  houses ${s.goods[4] + (s.locked?.[4] ?? 0)}${end?.building != null ? ' (1 unfinished)' : ''}` : ''}` +
     `${end?.wellbeing !== undefined ? `  wellbeing ${end.wellbeing.toFixed(1)}` : ''}${end?.wealth !== undefined ? `  net worth ${coins(end.wealth)}` : ''}   ` +
     `mostly ${main ? `${main[0]} (${main[1]}/${mine.length})` : '—'}`);
@@ -361,7 +363,7 @@ if (rounds.at(-1)?.metrics) {
   const gdp = sum(ms, m => m.gdp), sales = sum(ms, m => m.sales);
   const pi = ms.map(m => m.priceIndex);
   const rows = meta.agents.map(a => { const own = decisions.filter(d => d.agent === a.id), b = bestAt(a.id);
-    return own.filter(d => d.activity === b || (b === 'craft_net' && d.activity === 'build_house')).length / Math.max(1, own.length); });
+    return own.filter(d => d.activity === b || (b === 'craft_net' && (d.activity === 'build_house' || d.activity === 'smoke_fish'))).length / Math.max(1, own.length); });
   const loans = rounds.flatMap(r => r.bank?.loans ?? []).filter(l => l.kind === 'borrow' && l.ok);
   const real = r => r.metrics.made.reduce((t, q, g) => t + q * (meta.config.START_PRICES[g] ?? 0), 0);   // output at start prices
   const q = Math.max(1, Math.floor(rounds.length / 4)), realFirst = avg(rounds.slice(0, q).map(real)), realLast = avg(rounds.slice(-q).map(real));

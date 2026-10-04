@@ -33,9 +33,11 @@ export function stubBrain() {
       if (want !== v.lifestyle) t.exec('set_lifestyle', { level: want, reason: want > v.lifestyle ? 'I can afford to eat better' : 'food is getting tight' });
 
       // keep a few rounds of food and firewood; sell the rest, buy what's short
-      const keepFood = MEAL * want * 4;
+      // a crafter also keeps a smoking shift's food and wood, so there is something to smoke
+      const S = CFG.TASKS.smoke_fish;
+      const keepFood = MEAL * want * 4 + (crafter ? S.food : 0);
       const project = crafter && build >= craft ? v.trancheWood : crafter ? v.netWood : 0;
-      const keepWood = CFG.FIRE_WOOD * 2 + CFG.HOUSE_UPKEEP * v.homes * 4 + project;
+      const keepWood = CFG.FIRE_WOOD * 2 + CFG.HOUSE_UPKEEP * v.homes * 4 + project + (crafter ? S.wood : 0);
       // STUB_PLANS=1: leave food and wood to the stall and the shopping list, as the LLM agents mostly do
       const plans = process.env.STUB_PLANS === '1';
       if (!plans && v.food > keepFood) order('sell', 'food', v.food - keepFood, p.food * jitter * 0.95);
@@ -72,6 +74,10 @@ export function stubBrain() {
         else if (build >= craft && g.wood >= v.trancheWood) act = 'build_house';
         else if (g.wood >= v.netWood && craft > 0) act = 'craft_net';
       } else if (g.building !== null && g.wood >= v.trancheWood) act = 'build_house';
+      // smoked fish: a crafter smokes when that is the job it can count on most (world.mjs `sure`)
+      // and the round's meal is left after the inputs. The stall and the list do the trading.
+      const smoke = g.jobs.find(j => j.task === 'smoke_fish');
+      if (crafter && smoke.can && smoke.sure >= Math.max(...g.jobs.filter(j => j.can).map(j => j.sure)) && g.food - S.food >= MEAL * want) act = 'smoke_fish';
       if (v.hunger && v.food < MEAL) act = 'gather_food';
       else if (v.cold && v.wood < CFG.FIRE_WOOD) act = 'gather_wood';
       t.exec(act, { reason: `[stub] ${act.replace('_', ' ')}` });

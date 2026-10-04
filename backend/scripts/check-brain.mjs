@@ -1,72 +1,24 @@
-// Checks a brain without a chain, a world or a validator: build it, hand a few pretend
+// Checks a provider without a chain, a world or a validator: build it, hand a few pretend
 // villagers a pretend situation, and see what comes back. It answers the questions that
-// actually break — does the key work, does this model call tools, which model did each
-// agent draw, what did the round cost — for a fraction of a cent.
+// actually break — does the key work, does this model call tools, how long does it take,
+// what did the round cost — for a fraction of a cent.
 //
-//   node backend/scripts/check-brain.mjs --pool          who draws what (no key, no calls)
-//   node backend/scripts/check-brain.mjs --list          the live Baseten catalog
-//   node backend/scripts/check-brain.mjs                 one decision each, BRAIN from .env
-//   BRAIN=openai AGENTS=3 node backend/scripts/check-brain.mjs
+//   node backend/scripts/check-brain.mjs                 one decision each, PROVIDER from .env
+//   PROVIDER=deepinfra AGENTS=3 node backend/scripts/check-brain.mjs
+//   PROVIDER=openai MODEL=gpt-5-nano node backend/scripts/check-brain.mjs
 import { CFG } from '../src/config.mjs';
-import { basetenPool, modelFor, livePrices, DEFAULT_POOL } from '../src/brains/baseten.mjs';
+import { providerBrain, missing } from '../src/brains/providers.mjs';
 
-const has = f => process.argv.includes(f);
-// --pool costs nothing, so it shows the whole village; a real decision costs a call each,
-// so that path is capped however big AGENTS is.
-const BRAIN = CFG.BRAIN, N = has('--pool') ? (+CFG.AGENTS || 10) : Math.min(+CFG.AGENTS || 6, 12);
-const KEYS = { openai: 'OPENAI_API_KEY', baseten: 'BASETEN_API_KEY' };
+// A real decision costs a call each, so the check is capped however big AGENTS is.
+const PROVIDER = CFG.PROVIDER, N = Math.min(+CFG.AGENTS || 6, 12);
 
 // The same names the village uses, so a run and a check talk about the same villagers.
 const S1 = ['Ada', 'Bo', 'Cy', 'Dee', 'Eli', 'Fen', 'Gus', 'Hana', 'Ivo', 'Jo', 'Kit', 'Lu', 'Mara', 'Nils', 'Ora', 'Pim'];
 const agents = Array.from({ length: N }, (_, i) => ({ id: i, name: `${S1[i % 16]}-${i}`, thought: '' }));
 
-// ---- who draws what -------------------------------------------------------------
-if (has('--pool')) {
-  const pool = basetenPool();
-  console.log(`pool (${pool.length}): ${pool.join(', ')}`);
-  console.log(pool === DEFAULT_POOL || !CFG.BASETEN_MODELS ? '(the brain default)' : '(from BASETEN_MODELS)');
-  console.log(`\nseed ${CFG.SEED} — the same seed always draws the same line-up:`);
-  const tally = {};
-  for (const a of agents) {
-    const m = modelFor(a.id, pool);
-    tally[m] = (tally[m] ?? 0) + 1;
-    console.log(`  ${a.name.padEnd(8)} ${m}`);
-  }
-  console.log('\n' + Object.entries(tally).map(([m, n]) => `${n}x ${m.split('/').pop()}`).join('  '));
-  process.exit(0);
-}
-
-// ---- what Baseten actually serves today, and what it costs -----------------------
-// Priced against the OpenAI brain's model on a real villager's decision: about 1,400 tokens
-// of observation in, 200 out. Input is most of the bill, so a model dear on input is dear.
-if (has('--list')) {
-  const key = process.env.BASETEN_API_KEY;
-  if (!key) { console.error('no BASETEN_API_KEY in the repo-root .env'); process.exit(1); }
-  const IN = 1400, OUT = 200;
-  const LUNA = [0.20, 1.20];                        // gpt-5.6-luna, what the openai brain runs
-  const per = ([pin, pout]) => IN * pin / 1e6 + OUT * pout / 1e6;
-  const priced = await livePrices(key);
-  const live = Object.keys(priced);
-  if (!live.length) { console.error('could not read the catalogue'); process.exit(1); }
-  const pool = basetenPool();
-  const row = (id, p) => `${(pool.includes(id) ? '* ' : '  ') + id.padEnd(42)}${p[0].toFixed(2).padStart(6)}${p[1].toFixed(2).padStart(7)}` +
-    `${(per(p) / per(LUNA)).toFixed(2).padStart(9)}x`;
-  console.log(`  ${'model'.padEnd(42)}${'$/1M in'.padStart(6)}${'  out'.padStart(7)}${'vs luna'.padStart(10)}`);
-  console.log(row('gpt-5.6-luna (openai)', LUNA).replace('*', ' '));
-  console.log('  ' + '-'.repeat(63));
-  for (const id of live.sort((a, b) => per(priced[a]) - per(priced[b]))) console.log(row(id, priced[id]));
-  const cheaper = live.filter(id => per(priced[id]) < per(LUNA));
-  console.log(`\n  * = in the pool. ${cheaper.length} of ${live.length} models cost less than gpt-5.6-luna a decision:`);
-  for (const id of cheaper) console.log(`      ${id}`);
-  const missing = pool.filter(m => !live.includes(m));
-  console.log(missing.length ? `\n  ! not in the catalogue: ${missing.join(', ')}` : '\n  every model in the pool is served');
-  process.exit(missing.length ? 1 : 0);
-}
-
-// ---- one real decision each ------------------------------------------------------
-const need = KEYS[BRAIN];
-if (need && !process.env[need]) {
-  console.error(`BRAIN=${BRAIN} needs ${need} in the repo-root .env (a run would fall back to the stub)`);
+const why = PROVIDER === 'stub' ? null : missing(PROVIDER);
+if (why) {
+  console.error(`PROVIDER=${PROVIDER}: ${why} (a run would fall back to the stub)`);
   process.exit(1);
 }
 
@@ -112,18 +64,16 @@ function fakeTools() {
   };
 }
 
-const brain = BRAIN === 'openai' ? (await import('../src/brains/openai.mjs')).openaiBrain()
-  : BRAIN === 'baseten' ? await (await import('../src/brains/baseten.mjs')).basetenBrain()
-    : (await import('../src/brains/stub.mjs')).stubBrain();
+const brain = PROVIDER === 'stub' ? (await import('../src/brains/stub.mjs')).stubBrain() : providerBrain(PROVIDER);
 
-console.log(`brain: ${brain.name}   ${N} villagers, one decision each\n`);
+console.log(`provider: ${brain.name}   ${N} villagers, one decision each\n`);
 const t0 = Date.now();
 await Promise.all(agents.map(async a => {
   const t = fakeTools(), started = Date.now();
   try { await brain.decide(a, t); } catch (e) { t.did.push(`threw: ${e.message}`); }
   const ms = Date.now() - started;
   const ok = t.acted.activity && !t.acted.failed;
-  console.log(`${ok ? 'ok  ' : '!   '}${a.name.padEnd(8)} ${String(a.model ?? CFG.MODEL).padEnd(36)} ${String(ms + 'ms').padStart(7)}  ${t.did.join(' | ') || 'no tool call'}`);
+  console.log(`${ok ? 'ok  ' : '!   '}${a.name.padEnd(8)} ${String(a.model ?? '').padEnd(36)} ${String(ms + 'ms').padStart(7)}  ${t.did.join(' | ') || 'no tool call'}`);
   if (a.thought) console.log(`      thought: ${a.thought.slice(0, 120)}`);
 }));
 

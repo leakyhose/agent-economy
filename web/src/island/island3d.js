@@ -22,7 +22,7 @@ import { rand, FACE_CELL, FACE_LOOKS, FACE_COLS, HAPPY, GRIN, NEUTRAL, WORRIED, 
   const AREAS = [
     { id: "docks",    name: "Docks", color: "#1f9fb5", x: -70, z: 38,  tasks: ["gather_food"] },
     { id: "forest",   name: "Forest", color: "#3f9450", x: 40,  z: -48, tasks: ["gather_wood"] },
-    { id: "workshop", name: "Workshop", color: "#d98c2b", x: 60,  z: 8,   tasks: ["craft_net"] },
+    { id: "workshop", name: "Workshop", color: "#d98c2b", x: 60,  z: 8,   tasks: ["craft_net", "smoke_fish"] },
     { id: "site",     name: "Building site", color: "#cf6046", x: -16, z: -50, tasks: ["build_house"] },
     { id: "market",   name: "Market",                   color: "#8a8f98", x: 18,  z: 56,  tasks: ["idle"] },
   ];

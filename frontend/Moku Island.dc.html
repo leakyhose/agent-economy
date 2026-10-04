@@ -429,7 +429,7 @@ class Component extends DCLogic {
       lastRoundTxs: snapshot.chain?.lastRound?.txs || 0,
       roundMs: snapshot.roundMs || 0,
       agentTarget: snapshot.config?.agents || agents.length,
-      brain: snapshot.brain || [snapshot.config?.brain, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
+      brain: snapshot.provider || [snapshot.config?.provider, snapshot.config?.model].filter(Boolean).join(" · ") || "not started",
       program: snapshot.chain?.program || "-", ledger: snapshot.chain?.ledger || "-",
       explorer: snapshot.chain?.explorer || "#"
     };

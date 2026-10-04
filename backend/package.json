@@ -4,8 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "stub": "BRAIN=stub node src/server.mjs",
-    "baseten": "BRAIN=baseten node src/server.mjs",
+    "stub": "PROVIDER=stub node src/server.mjs",
     "check-brain": "node scripts/check-brain.mjs"
   },
   "dependencies": {
