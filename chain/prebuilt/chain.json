@@ -1,0 +1,1538 @@
+{
+  "address": "4ruVnoc2xFy5YJ8MAUA85mLn6ALCD4CeWsssr4JmCCWY",
+  "metadata": {
+    "name": "chain",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "borrow",
+      "docs": [
+        "Borrow newly minted coins against wood, nets, boats and houses.",
+        "",
+        "The collateral is locked out of the agent's goods (locked goods don't rot). The",
+        "debt may be at most `ltv_bps` of the locked goods' value at the last clearing",
+        "prices. Food can't be pledged: it rots. With `ltv_bps = 0` the bank lends nothing.",
+        "",
+        "No interest is added up front: it accrues on the principal for as long as the",
+        "loan is held, `rate_bps` per `rate_period_slots` (see `accrue`).",
+        "",
+        "A new loan is due `term_slots` from now, and the borrower picks the term: it",
+        "must be 1 to `max_term_units` whole units of `term_unit_slots` (e.g. 1, 2 or 3",
+        "minutes). Borrowing more on an open loan ignores `term_slots` and keeps its due slot;",
+        "an overdue loan can't be topped up.",
+        "",
+        "The bank's lending is capped by its capital: all loans together, this one",
+        "included, may not exceed `equity × 10_000 / kappa_bps`."
+      ],
+      "discriminator": [
+        228,
+        253,
+        131,
+        202,
+        207,
+        116,
+        89,
+        18
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "term_slots",
+          "type": "u64"
+        },
+        {
+          "name": "collateral",
+          "type": {
+            "array": [
+              "u32",
+              5
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "clear_auction",
+      "docs": [
+        "Clear one good's market with a uniform-price batch auction.",
+        "",
+        "`bids` must arrive sorted by limit DESCENDING, `asks` ASCENDING. The program",
+        "verifies the ordering in one O(n) pass (sorting on-chain would blow the compute",
+        "budget; verifying is cheap and still a real invariant), walks the two ladders",
+        "inward until they stop crossing, and settles every fill at one price.",
+        "",
+        "The bank may sell seized goods (as agent `BANK`), never buy. A sale takes the",
+        "goods off its books at their average book value (`sold_book`); the proceeds",
+        "(`recovered`) go to its cash, paying down any `bad_debt` first."
+      ],
+      "discriminator": [
+        134,
+        224,
+        172,
+        82,
+        51,
+        143,
+        234,
+        32
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "optional": true
+        }
+      ],
+      "args": [
+        {
+          "name": "good",
+          "type": "u8"
+        },
+        {
+          "name": "bids",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "Order"
+              }
+            }
+          }
+        },
+        {
+          "name": "asks",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "Order"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "collect",
+      "docs": [
+        "Collect a loan that has come due, or foreclose it. The bank does this: it is the",
+        "lender, and the only party with a claim on the debtor. Like every other write, it",
+        "is signed by the ledger's authority.",
+        "",
+        "Interest is accrued to now first. Then it is allowed when the loan is overdue",
+        "(the chain's clock is past the due slot), or on a margin call: when the debt is",
+        "more than `margin_bps` of the collateral's value at the last clearing prices,",
+        "i.e. `debt × 10_000 > locked value × margin_bps`. A fire sale that drops a price",
+        "can push other loans under that line.",
+        "",
+        "Overdue, with the cash to cover it, the loan is simply repaid — a direct debit at",
+        "the loan's own terms: the whole debt (principal plus interest to now) comes out of",
+        "the debtor's cash, interest to the bank's equity, principal burned, no penalty,",
+        "and every pledged good is released. That rule holds whenever `now > due_slot` and",
+        "`cash ≥ debt`, even if the loan is also under its margin.",
+        "",
+        "Otherwise — overdue and short of cash, or a margin call before the due slot — it",
+        "is a foreclosure. A penalty of `penalty_bps` of the debt is added, and the bank",
+        "takes the debt plus penalty — never more:",
+        "1. The debtor's cash is collected first: interest and penalty to the bank's",
+        "equity, the rest burned as principal.",
+        "2. If that falls short, the bank seizes collateral valued at fire-sale price",
+        "(`FIRE_SALE_BPS` of the last price): whole units of the priciest goods that",
+        "fit under the shortfall, then one unit of the cheapest good left to cover the",
+        "rest. That last unit overshoots by less than its own value; the bank refunds",
+        "the excess to the debtor in cash. If the bank's cash can't pay that refund, it",
+        "leaves that unit with the debtor instead and takes the shortfall as a loss.",
+        "Everything not seized is given back.",
+        "3. The principal the debtor's cash didn't cover is written off against the",
+        "bank's cash at once (a loss bigger than its cash is `bad_debt`), and the",
+        "seized goods go on the bank's books at their fire-sale value (`bank_book`,",
+        "`seized_value`). Selling them at that value later is neither profit nor loss."
+      ],
+      "discriminator": [
+        208,
+        47,
+        194,
+        155,
+        17,
+        98,
+        82,
+        236
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "init_purses",
+      "docs": [
+        "Apply what happened in the world since the last round: catches, wood cut,",
+        "meals eaten, nets, boats and houses built, things worn out. Signed deltas;",
+        "nothing may go negative.",
+        "Give a batch of agents a purse: an SPL token account of their own, at",
+        "`[\"purse\", ledger, agent]`, owning itself. Call it once per ledger, in chunks,",
+        "after `initialize`. Re-running it over a purse that already exists is a no-op,",
+        "so a partly-finished pass can simply be run again.",
+        "",
+        "The purses come in as remaining accounts, one per entry in `agents`, in order.",
+        "`bumps` are checked, not trusted: a wrong bump derives a different address and",
+        "fails against the account that was actually passed."
+      ],
+      "discriminator": [
+        255,
+        57,
+        24,
+        244,
+        180,
+        107,
+        218,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "agents",
+          "type": {
+            "vec": "u16"
+          }
+        },
+        {
+          "name": "bumps",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "initialize",
+      "docs": [
+        "Create the village ledger and give every agent a starting purse and pantry.",
+        "Also sets the opening price of each good, seeds the bank's equity, and fixes",
+        "the bank's rules for the life of the ledger. `ltv_bps = 0` is a village with",
+        "no credit: every `borrow` fails."
+      ],
+      "discriminator": [
+        175,
+        175,
+        109,
+        31,
+        13,
+        152,
+        155,
+        237
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "ledger",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "num_agents",
+          "type": "u32"
+        },
+        {
+          "name": "start_cash",
+          "type": "u64"
+        },
+        {
+          "name": "start_food",
+          "type": "u32"
+        },
+        {
+          "name": "start_wood",
+          "type": "u32"
+        },
+        {
+          "name": "start_prices",
+          "type": {
+            "array": [
+              "u64",
+              5
+            ]
+          }
+        },
+        {
+          "name": "bank_seed",
+          "type": "u64"
+        },
+        {
+          "name": "terms",
+          "type": {
+            "defined": {
+              "name": "BankTerms"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pay_dividend",
+      "docs": [
+        "Pay part of the bank's surplus out to every agent equally. PERMISSIONLESS.",
+        "",
+        "The bank must keep `kappa × debt_total` plus `equity_floor` as capital (the",
+        "floor is the seed plus a buffer). Half the equity above that",
+        "(`DIVIDEND_SHARE_BPS`) is paid out, never more than the bank's cash, rounded",
+        "down to an equal share each. With no surplus this does nothing."
+      ],
+      "discriminator": [
+        83,
+        88,
+        75,
+        60,
+        118,
+        104,
+        51,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "caller",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "repay",
+      "docs": [
+        "Pay down a loan. Interest accrued to now is paid first and goes to the bank's",
+        "equity; the rest pays off principal, and those coins are burned. If less than",
+        "one coin (`FORGIVE_BELOW` cents) is left owing, the loan closes: the unpaid",
+        "principal is written off against the bank's equity (the unpaid interest was",
+        "never income), and the whole remainder is counted in `forgiven`. Paid off, the",
+        "collateral unlocks. With less than a coin owing, a repay of 0 closes the loan too."
+      ],
+      "discriminator": [
+        234,
+        103,
+        67,
+        82,
+        208,
+        234,
+        219,
+        166
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "agent",
+          "type": "u16"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "settle",
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "deltas",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "Delta"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "settle_cash",
+      "docs": [
+        "Move real SETTLERS between agents until every purse holds what the ledger says",
+        "that agent has.",
+        "",
+        "`settle_money` reconciles the *total* — how many coins exist. This reconciles the",
+        "*distribution* — who holds them — and in the same spirit: the client says only",
+        "which agents to look at, and the program derives every transfer from the gap",
+        "between a purse's balance and its slot's `cash`. Nothing about a transfer is",
+        "taken on the caller's word.",
+        "",
+        "Agents who owe coins are paired against agents who are owed them, so an auction",
+        "settles as direct transfers between the villagers who traded. A chunk that",
+        "doesn't net to zero settles the remainder against the vault, which is what lets",
+        "the caller chunk purely by size and never produce a wrong state.",
+        "",
+        "It ends by proving itself: every purse it touched must equal its slot's cash."
+      ],
+      "discriminator": [
+        115,
+        90,
+        129,
+        70,
+        51,
+        125,
+        236,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "ledger",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "mint",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  101,
+                  116,
+                  116,
+                  108,
+                  101,
+                  114,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "ledger"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "agents",
+          "type": {
+            "vec": "u16"
+          }
+        },
+        {
+          "name": "bumps",
+          "type": "bytes"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Ledger",
+      "discriminator": [
+        43,
+        41,
+        21,
+        213,
+        180,
+        176,
+        95,
+        32
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Borrowed",
+      "discriminator": [
+        225,
+        182,
+        241,
+        78,
+        34,
+        145,
+        253,
+        230
+      ]
+    },
+    {
+      "name": "Cleared",
+      "discriminator": [
+        47,
+        147,
+        107,
+        125,
+        87,
+        47,
+        3,
+        100
+      ]
+    },
+    {
+      "name": "Collected",
+      "discriminator": [
+        67,
+        109,
+        138,
+        167,
+        168,
+        239,
+        2,
+        207
+      ]
+    },
+    {
+      "name": "DividendPaid",
+      "discriminator": [
+        110,
+        105,
+        120,
+        179,
+        70,
+        190,
+        199,
+        35
+      ]
+    },
+    {
+      "name": "Foreclosed",
+      "discriminator": [
+        93,
+        27,
+        188,
+        45,
+        33,
+        68,
+        88,
+        55
+      ]
+    },
+    {
+      "name": "Repaid",
+      "discriminator": [
+        38,
+        248,
+        231,
+        7,
+        150,
+        164,
+        172,
+        23
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "TooManyAgents",
+      "msg": "too many agents for this ledger"
+    },
+    {
+      "code": 6001,
+      "name": "BadAgent",
+      "msg": "agent index out of range"
+    },
+    {
+      "code": 6002,
+      "name": "BadGood",
+      "msg": "good index out of range"
+    },
+    {
+      "code": 6003,
+      "name": "BidsNotSorted",
+      "msg": "bids must be sorted by limit descending"
+    },
+    {
+      "code": 6004,
+      "name": "AsksNotSorted",
+      "msg": "asks must be sorted by limit ascending"
+    },
+    {
+      "code": 6005,
+      "name": "InsufficientCash",
+      "msg": "agent cannot afford this fill"
+    },
+    {
+      "code": 6006,
+      "name": "InsufficientGoods",
+      "msg": "agent does not hold enough of this good"
+    },
+    {
+      "code": 6007,
+      "name": "Unauthorized",
+      "msg": "only the ledger authority may write to it"
+    },
+    {
+      "code": 6008,
+      "name": "BadTerms",
+      "msg": "bad bank terms"
+    },
+    {
+      "code": 6009,
+      "name": "BadAmount",
+      "msg": "amount must be positive"
+    },
+    {
+      "code": 6010,
+      "name": "FoodNotCollateral",
+      "msg": "food rots and cannot be pledged"
+    },
+    {
+      "code": 6011,
+      "name": "DebtCapReached",
+      "msg": "the bank has reached its lending cap"
+    },
+    {
+      "code": 6012,
+      "name": "NotEnoughCollateral",
+      "msg": "collateral is worth too little for this loan"
+    },
+    {
+      "code": 6013,
+      "name": "NoLoan",
+      "msg": "this agent has no open loan"
+    },
+    {
+      "code": 6014,
+      "name": "NotCollectable",
+      "msg": "the loan is neither overdue nor under its margin"
+    },
+    {
+      "code": 6015,
+      "name": "CreditOff",
+      "msg": "the bank is not lending: credit is switched off"
+    },
+    {
+      "code": 6016,
+      "name": "BadTerm",
+      "msg": "loan term must be a whole number of term units, from 1 up to the maximum"
+    },
+    {
+      "code": 6017,
+      "name": "Overdue",
+      "msg": "this loan is overdue: it can't be topped up, only repaid or collected"
+    },
+    {
+      "code": 6018,
+      "name": "Overflow",
+      "msg": "arithmetic overflow"
+    },
+    {
+      "code": 6019,
+      "name": "SupplyMismatch",
+      "msg": "the SETTLERS supply no longer matches the village's books"
+    },
+    {
+      "code": 6020,
+      "name": "MintAccountsRequired",
+      "msg": "this auction sells the bank's collateral: it must carry the mint and its vault"
+    },
+    {
+      "code": 6021,
+      "name": "BadMint",
+      "msg": "not this ledger's SETTLERS mint"
+    },
+    {
+      "code": 6022,
+      "name": "BadPurse",
+      "msg": "not this agent's purse for this ledger"
+    },
+    {
+      "code": 6023,
+      "name": "CashMismatch",
+      "msg": "a purse no longer holds what the village's books say that agent has"
+    }
+  ],
+  "types": [
+    {
+      "name": "AgentSlot",
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "cash",
+            "type": "u64"
+          },
+          {
+            "name": "goods",
+            "type": {
+              "array": [
+                "u32",
+                5
+              ]
+            }
+          },
+          {
+            "name": "locked",
+            "type": {
+              "array": [
+                "u32",
+                5
+              ]
+            }
+          },
+          {
+            "name": "debt",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "name": "due_slot",
+            "type": "u32"
+          },
+          {
+            "name": "accrued_slot",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BankTerms",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "kappa_bps",
+            "type": "u16"
+          },
+          {
+            "name": "margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_term_units",
+            "type": "u16"
+          },
+          {
+            "name": "rate_period_slots",
+            "type": "u64"
+          },
+          {
+            "name": "term_unit_slots",
+            "type": "u64"
+          },
+          {
+            "name": "equity_floor",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Borrowed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "debt",
+            "type": "u64"
+          },
+          {
+            "name": "accrued",
+            "type": "u64"
+          },
+          {
+            "name": "due_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Cleared",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "good",
+            "type": "u8"
+          },
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "volume",
+            "type": "u64"
+          },
+          {
+            "name": "round",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Collected",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          },
+          {
+            "name": "interest",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Delta",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "good",
+            "type": "u8"
+          },
+          {
+            "name": "delta",
+            "type": "i32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DividendPaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "per_agent",
+            "type": "u64"
+          },
+          {
+            "name": "total",
+            "type": "u64"
+          },
+          {
+            "name": "equity_left",
+            "type": "i64"
+          },
+          {
+            "name": "by",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Foreclosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "margin_call",
+            "type": "bool"
+          },
+          {
+            "name": "debt",
+            "type": "u64"
+          },
+          {
+            "name": "penalty",
+            "type": "u64"
+          },
+          {
+            "name": "collected",
+            "type": "u64"
+          },
+          {
+            "name": "burned",
+            "type": "u64"
+          },
+          {
+            "name": "seized",
+            "type": {
+              "array": [
+                "u32",
+                5
+              ]
+            }
+          },
+          {
+            "name": "seized_value",
+            "type": "u64"
+          },
+          {
+            "name": "refund",
+            "type": "u64"
+          },
+          {
+            "name": "returned",
+            "type": {
+              "array": [
+                "u32",
+                5
+              ]
+            }
+          },
+          {
+            "name": "written_off",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Ledger",
+      "docs": [
+        "Byte offsets below are from the start of the struct; the account adds Anchor's",
+        "8-byte discriminator in front. `chain.mjs` decodes this by hand, so keep them in step."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "num_agents",
+            "type": "u32"
+          },
+          {
+            "name": "round",
+            "type": "u32"
+          },
+          {
+            "name": "last_price",
+            "type": {
+              "array": [
+                "u64",
+                5
+              ]
+            }
+          },
+          {
+            "name": "supply",
+            "type": "u64"
+          },
+          {
+            "name": "debt_total",
+            "type": "u64"
+          },
+          {
+            "name": "start_money",
+            "type": "u64"
+          },
+          {
+            "name": "bank_seed",
+            "type": "u64"
+          },
+          {
+            "name": "minted",
+            "type": "u64"
+          },
+          {
+            "name": "principal_repaid",
+            "type": "u64"
+          },
+          {
+            "name": "interest_income",
+            "type": "u64"
+          },
+          {
+            "name": "penalties",
+            "type": "u64"
+          },
+          {
+            "name": "recovered",
+            "type": "u64"
+          },
+          {
+            "name": "written_off",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt",
+            "type": "u64"
+          },
+          {
+            "name": "dividends_paid",
+            "type": "u64"
+          },
+          {
+            "name": "seized_value",
+            "type": "u64"
+          },
+          {
+            "name": "sold_book",
+            "type": "u64"
+          },
+          {
+            "name": "refunds",
+            "type": "u64"
+          },
+          {
+            "name": "forgiven",
+            "type": "u64"
+          },
+          {
+            "name": "bank_book",
+            "type": {
+              "array": [
+                "u64",
+                5
+              ]
+            }
+          },
+          {
+            "name": "equity_floor",
+            "type": "u64"
+          },
+          {
+            "name": "rate_period_slots",
+            "type": "u64"
+          },
+          {
+            "name": "term_unit_slots",
+            "type": "u64"
+          },
+          {
+            "name": "ltv_bps",
+            "type": "u16"
+          },
+          {
+            "name": "rate_bps",
+            "type": "u16"
+          },
+          {
+            "name": "penalty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "kappa_bps",
+            "type": "u16"
+          },
+          {
+            "name": "margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_term_units",
+            "type": "u16"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u16",
+                2
+              ]
+            }
+          },
+          {
+            "name": "bank",
+            "type": {
+              "defined": {
+                "name": "AgentSlot"
+              }
+            }
+          },
+          {
+            "name": "slots",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "AgentSlot"
+                  }
+                },
+                137
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Order",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "qty",
+            "type": "u32"
+          },
+          {
+            "name": "limit",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Repaid",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "u16"
+          },
+          {
+            "name": "paid",
+            "type": "u64"
+          },
+          {
+            "name": "interest",
+            "type": "u64"
+          },
+          {
+            "name": "principal",
+            "type": "u64"
+          },
+          {
+            "name": "forgiven",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ]
+}

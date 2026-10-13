@@ -7,13 +7,13 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { CFG, GOODS, ROOT, HOUSES } from './config.mjs';
 import { connectChain, explorer, PROGRAM_ID, lockedValue, MAX_AGENTS } from './chain.mjs';
 import { createWorld } from './world.mjs';
 import { makeTools, toolDefs } from './tools.mjs';
 import { stubBrain } from './brains/stub.mjs';
-import { providerNames, providerBrain, modelFor, missing } from './brains/providers.mjs';
+import { providerNames, providerBrain, modelFor, missing, setRuntimeKey, clearRuntimeKeys, hasEnvKey, checkKey } from './brains/providers.mjs';
 import { systemPrompt } from './brains/prompt.mjs';
 import { snapshot as tunableSnapshot, apply as applyTunables, preset as presetChanges, REV } from './tunables.mjs';
 
@@ -47,6 +47,55 @@ function makeBrain(choice = CFG.PROVIDER, model) {
   if (!why) return providerBrain(choice, model);
   console.warn(`\n  provider=${choice}: ${why}. Using the stub.\n`);
   return stubBrain();
+}
+
+// ---- the hosted site ------------------------------------------------------------
+// One container, one link (Dockerfile). Three things differ from a desk:
+//   HOSTED=1             the server may hold no API key; a visitor pastes one for their own run
+//   MANAGED_VALIDATOR=1  the validator is this process's child: started with a run, stopped with
+//                        it. It burns a core and ~90 MB of ledger a minute, so it never idles.
+//   MAX_ROUNDS=120       a run stops by itself, so a forgotten tab can't spend a stranger's key
+const HOSTED = process.env.HOSTED === '1', MANAGED = process.env.MANAGED_VALIDATOR === '1';
+const MAX_ROUNDS = +process.env.MAX_ROUNDS || 0;
+const KEEP_RUNS = Math.floor(+process.env.KEEP_RUNS) || 0;        // 0 = never delete a saved run
+const LEDGER_TMP = path.join(process.env.TMPDIR || '/tmp', 'village-validator');
+// What the hosted site offers: the scripted village and Luna. The other providers stay in the
+// code (and at a desk) but are not a choice a visitor is given.
+const offered = () => HOSTED ? providerNames().filter(n => n === 'stub' || n === 'openai') : providerNames();
+let validator = null;
+async function startValidator() {
+  stopValidator();
+  fs.mkdirSync(LEDGER_TMP, { recursive: true });
+  const child = spawn('bash', [path.join(ROOT, 'backend/scripts/validator.sh')],
+    { env: { ...process.env, TMPDIR: LEDGER_TMP }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  validator = child;
+  let out = '';
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`the validator did not come up in 120s: ${out.slice(-300)}`)), 120_000);
+    const on = d => { out += d; if (/validator on /.test(out)) { clearTimeout(timer); resolve(); } };
+    child.stdout.on('data', on); child.stderr.on('data', on);
+    child.on('exit', code => { clearTimeout(timer); console.error(`validator.sh said:\n${out}`); reject(new Error(`the validator exited (${code}): ${out.slice(-300)} ${validatorLog()}`)); });
+  });
+  console.log('validator up');
+}
+// the validator's own log (it runs --quiet): the last lines, for an error that says why
+function validatorLog() {
+  try {
+    const dirs = fs.readdirSync(LEDGER_TMP).map(d => path.join(LEDGER_TMP, d, 'validator.log')).filter(f => fs.existsSync(f));
+    const text = dirs.length ? fs.readFileSync(dirs.at(-1), 'utf8') : '';
+    const bad = text.split('\n').filter(l => /ERROR|WARN|panick|error|Unable|failed/i.test(l));
+    console.error(`validator.log (${text.length} bytes):\n${(bad.length ? bad : text.split('\n')).slice(-25).join('\n')}`);
+    return `| log: ${(bad.at(-1) ?? text.split('\n').filter(Boolean).at(-1) ?? 'empty').slice(0, 300)}`;
+  } catch (e) { return `| no validator log (${e.message})`; }
+}
+function stopValidator() {
+  if (validator) { try { process.kill(-validator.pid, 'SIGTERM'); } catch { /* already gone */ } validator = null; }
+  fs.rmSync(LEDGER_TMP, { recursive: true, force: true });       // the ledger: gigabytes after a long run
+}
+process.on('SIGTERM', () => { stopValidator(); process.exit(0); });
+if (MANAGED) {                       // what the container can give a validator, said once at boot
+  const sh = c => { try { return String(spawnSync('bash', ['-lc', c], { encoding: 'utf8' }).stdout).trim(); } catch (e) { return e.message; } };
+  console.log(`validator host: ${sh('solana-test-validator --version 2>&1 | head -1')} · files ${sh('ulimit -n')} (hard ${sh('ulimit -Hn')}) · ${sh('nproc')} cpu · ${sh("free -m | awk 'NR==2{print $2}'")} MB · avx ${sh("grep -c -m1 avx /proc/cpuinfo")}`);
 }
 
 // ---- one simulation at a time --------------------------------------------------
@@ -105,12 +154,41 @@ function setAgents(n) {
 }
 
 // { provider, model, agents } from the dashboard; whatever is left out is what .env says, or the last run's.
-async function start({ provider: choice, model, agents } = {}) {
-  if (sim) return 'already running';
-  if (agents != null) setAgents(agents);
+let starting = false, openChain = null;
+async function start(opts = {}) {
+  if (sim || starting) return 'already running';
+  starting = true;
+  try { return await begin(opts); }
+  catch (e) { console.error(`start failed: ${e.message ?? e}`); clearRuntimeKeys(); if (MANAGED) { openChain?.close(); stopValidator(); } return { error: String(e.message ?? e).slice(0, 300) }; }
+  finally { starting = false; }
+}
+async function begin({ provider: choice, model, agents, apiKey } = {}) {
+  if (HOSTED && choice && !offered().includes(choice)) return { error: 'That provider is not offered here.' };
+  const pick = offered().includes(choice) ? choice : CFG.PROVIDER;
+  // A pasted key: held in memory for this run (providers.mjs), checked with the provider
+  // before anything is built on it.
+  if (apiKey != null && pick !== 'stub') {
+    const key = String(apiKey).trim();
+    if (!/^[\x21-\x7e]{20,400}$/.test(key)) return { error: 'That does not look like an API key.' };
+    setRuntimeKey(pick, key);
+    const refused = await checkKey(pick, model);
+    if (refused) { clearRuntimeKeys(); return { error: `The provider refused that key: ${refused}` }; }
+  }
+  // At a desk a provider without a key falls back to the stub and says so on the console;
+  // nobody on the hosted site reads that console, so there it is an answer.
+  if (HOSTED && pick !== 'stub' && missing(pick, model)) return { error: 'That provider needs an API key.' };
+  if (agents != null) setAgents(HOSTED ? Math.min(+agents || CFG.AGENTS, 40) : agents);
+  if (MANAGED) await startValidator();
+  // The container's disk is small, so it keeps only its last few runs — and ONLY where KEEP_RUNS
+  // says so (the Dockerfile). Tied to HOSTED alone, a rehearsal at a desk deleted every saved run.
+  if (KEEP_RUNS > 0) {
+    const runs = path.join(ROOT, 'runs');
+    for (const d of (fs.existsSync(runs) ? fs.readdirSync(runs).sort() : []).slice(0, -KEEP_RUNS)) fs.rmSync(path.join(runs, d), { recursive: true, force: true });
+  }
   const myGen = ++gen;
-  const brain = makeBrain(providerNames().includes(choice) ? choice : CFG.PROVIDER, model);
+  const brain = makeBrain(pick, model);
   const chain = await connectChain();
+  openChain = chain;                 // so a start that fails after this can hang up (start's catch)
   // The bank's terms, fixed on-chain for the life of the ledger. Interest is
   // BANK.RATE_PER_ROUND per ROUND held. Terms are chosen in rounds, whose length the chain
   // can't know, so the chain accepts any whole number of slots (unit 1) and the sim sends
@@ -312,19 +390,22 @@ async function stop() {
   s.log.end();
   console.log(`saved ${path.relative(ROOT, s.dir)}/`);
   console.log(`stopped after ${s.W.round} rounds, ${s.chain.txCount()} transactions`);
+  clearRuntimeKeys();                 // a visitor's key lives exactly as long as their run
+  if (MANAGED) { s.chain.close(); stopValidator(); }
   return 'stopped';
 }
 
 // ---- snapshot for the dashboard ------------------------------------------------
 function state() {
-  if (!sim) return { running: false, providers: providerNames(), maxAgents: MAX_AGENTS,
+  if (!sim) return { running: false, providers: offered(), maxAgents: MAX_AGENTS, hosted: HOSTED, starting, maxRounds: MAX_ROUNDS, keys: Object.fromEntries(providerNames().filter(n => n !== 'stub').map(n => [n, hasEnvKey(n)])),
                      config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, provider: CFG.PROVIDER, model: modelFor(CFG.PROVIDER), decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM }, policy: [] };
   const { W, chain, brain } = sim;
   const sum = f => W.agents.reduce((s, a) => s + f(a), 0);
   const doing = {};
   for (const a of W.agents) { const k = a.activity?.task ?? 'deciding'; doing[k] = (doing[k] ?? 0) + 1; }
   return {
-    running: true, paused: sim.paused, pausing: sim.pausing, provider: brain.name, providers: providerNames(),
+    running: true, paused: sim.paused, pausing: sim.pausing, provider: brain.name, providers: offered(),
+    hosted: HOSTED, starting, maxRounds: MAX_ROUNDS, keys: Object.fromEntries(providerNames().filter(n => n !== 'stub').map(n => [n, hasEnvKey(n)])),
     config: { agents: CFG.AGENTS, maxAgents: MAX_AGENTS, provider: CFG.PROVIDER, model: modelFor(CFG.PROVIDER), decideTimeoutMs: CFG.DECIDE_TIMEOUT_MS, decideQuorum: CFG.DECIDE_QUORUM },
     round: W.round, roundMs: Math.round(W.roundMs),
     decide: W.lastRound?.decide ?? null,
@@ -490,7 +571,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/tunables' && req.method === 'GET')  return json(res, tunableSnapshot());
     if (pathname === '/tunables' && req.method === 'POST') return json(res, setTunables(await readBody(req)));
     // { provider: "deepinfra", agents: 30 } sets up the run; no body means what .env says
-    if (pathname === '/start'  && req.method === 'POST') return json(res, { result: await start(await readBody(req)) });
+    if (pathname === '/start'  && req.method === 'POST') {
+      const r = await start(await readBody(req));
+      return r?.error ? json(res, r, 400) : json(res, { result: r });
+    }
     if (pathname === '/stop'   && req.method === 'POST') return json(res, { result: await stop() });
     if (pathname === '/pause'  && req.method === 'POST') return json(res, { result: pause() });
     if (pathname === '/resume' && req.method === 'POST') return json(res, { result: resume() });
@@ -536,6 +620,8 @@ function listen(port = CFG.PORT) {
   server.listen(port);
 }
 listen();
+// the hosted cap: a run that reaches MAX_ROUNDS stops itself
+if (MAX_ROUNDS) setInterval(() => { if (sim && !sim.stopping && sim.W.round >= MAX_ROUNDS) stop().catch(e => console.error(`auto-stop: ${e.message}`)); }, 1000).unref();
 
 // ---- headless mode: RUN_SECONDS=45 or RUN_ROUNDS=100 starts immediately, prints a summary, exits ---
 // A round cap is what makes two runs comparable: by the clock, a slower model plays fewer rounds.

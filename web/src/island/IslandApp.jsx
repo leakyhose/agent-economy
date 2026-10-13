@@ -632,9 +632,12 @@ export default class IslandApp extends React.Component {
           {/* The stats stand still: a row to be read, not chased. Each keeps its ticker mark,
               the change since the round before. The round and the way into the dashboard
               close the row. */}
-          <div style={S("display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 0 20px; min-width: 0; width: 100%; padding: 1px 4px 0; white-space: nowrap;")}>
+          {/* The ends keep their own width and the stats give way between them (clipped, never
+              wrapped). When the ends could shrink to nothing, a narrower window slid the
+              Dashboard button over the last of the stats. */}
+          <div style={S("display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr); align-items: center; gap: 0 20px; min-width: 0; width: 100%; padding: 1px 4px 0; white-space: nowrap;")}>
             <span style={S("justify-self: start; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #a3a8ad;")}>round {v.round} · {v.clock}</span>
-            <div style={S("display: flex; align-items: baseline; justify-content: center; gap: 0 26px; min-width: 0; overflow: hidden;")}>
+            <div style={S("display: flex; align-items: baseline; justify-content: safe center; gap: 0 26px; min-width: 0; overflow: hidden;")}>
               {v.tape.map((t, i) => (
                 <span key={i} style={S("display: inline-flex; align-items: baseline; gap: 7px; white-space: nowrap;")}>
                   <span style={S("font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #a3a8ad;")}>{t.name}</span>

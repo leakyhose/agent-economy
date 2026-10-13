@@ -2,7 +2,7 @@
 // Instructions are hand-encoded: Anchor's JS coder caps instruction data at 1000
 // bytes, which a full village order book overflows.
 import {
-  Connection, Keypair, PublicKey, SystemProgram, Transaction,
+  ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, Transaction,
   TransactionInstruction, sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import fs from 'node:fs';
@@ -34,6 +34,7 @@ const MAX_DELTAS_PER_TX = 120;
 // account keys and at most 20 transfer CPIs: inside both the 1232-byte legacy
 // transaction and the default 200,000 compute units, so neither needs raising.
 const MAX_PURSES_PER_TX = 20;
+const PURSE_UNITS = 1_000_000;        // compute budget for a purse transaction (see send)
 
 // The SPL Token program, and the SETTLERS mint's decimals. Cash is held in cents and the
 // mint has 2 decimals, so one token base unit is one cent: no conversion, anywhere.
@@ -105,9 +106,16 @@ export async function connectChain() {
     } catch { return CFG.SLOT_MS; }
   }
 
-  async function send(ix, extraSigners = [], signers = [authority, ...extraSigners]) {
+  // `units`: a compute budget above the default 200,000, for the calls that make one SPL Token
+  // CPI per purse. On the validator this was written against the token program is p-token and
+  // twenty purses fit easily; the classic token program an older validator ships (the hosted
+  // site runs one: Dockerfile) costs ~4,500 units a call, and init_purses ran out on some
+  // ledgers and not others, by how long its PDA bumps took to find.
+  async function send(ix, extraSigners = [], signers = [authority, ...extraSigners], units = 0) {
     freshenBlockhash();
-    const tx = new Transaction().add(ix);
+    const tx = new Transaction();
+    if (units) tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units }));
+    tx.add(ix);
     try {
       const sig = await sendAndConfirmTransaction(conn, tx, signers, { commitment: 'confirmed' });
       txCount++;
@@ -208,7 +216,7 @@ export async function connectChain() {
     const groups = [];
     for (let i = 0; i < n; i += MAX_PURSES_PER_TX)
       groups.push(Array.from({ length: Math.min(MAX_PURSES_PER_TX, n - i) }, (_, k) => i + k));
-    return Promise.all(groups.map(g => send(purseCall(DISC.init_purses, g, keys))));
+    return Promise.all(groups.map(g => send(purseCall(DISC.init_purses, g, keys), [], undefined, PURSE_UNITS)));
   }
 
   // Move real SETTLERS between the agents named, until every purse holds what the ledger
@@ -232,7 +240,7 @@ export async function connectChain() {
       { pubkey: vault, isSigner: false, isWritable: true },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     ];
-    const chunk = c => send(purseCall(DISC.settle_cash, c, keys));
+    const chunk = c => send(purseCall(DISC.settle_cash, c, keys), [], undefined, PURSE_UNITS);
     const cut = xs => { const out = []; for (let i = 0; i < xs.length; i += MAX_PURSES_PER_TX) out.push(xs.slice(i, i + MAX_PURSES_PER_TX)); return out; };
     if (!cashOf || list.length <= MAX_PURSES_PER_TX) {
       const out = []; for (const c of cut(list)) out.push(await chunk(c)); return out;
@@ -431,6 +439,9 @@ export async function connectChain() {
   }
 
   return {
+    // Hang up for good. web3.js keeps redialling a validator that has gone, an error a
+    // second for ever; a managed validator (server.mjs) is stopped after every run.
+    close() { const ws = conn._rpcWebSocket; try { ws.reconnect = false; clearTimeout(ws.reconnect_timer_id); ws.close(); } catch { /* never opened */ } },
     conn, authority, ledger, keeper, initialize, settle, clear, fetch, borrow, repay, collect, payDividend,
     fundKeeper, initPurses, settleCash, purseBalance, transfersIn, measureSlotMs,
     purseOf: agent => purseOf(agent).pubkey,

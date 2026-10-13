@@ -1,0 +1,26 @@
+/* The front door (KeyGate.js): one card over the island, in the island's own faces. */
+#keygate { position: fixed; inset: 0; z-index: 4000; display: grid; place-items: center; padding: 20px;
+  background: rgba(12, 24, 34, .62); backdrop-filter: blur(3px); overflow-y: auto; }
+#keygate[hidden] { display: none; }
+#keygate .kg-card { width: min(420px, 100%); background: #fbf7ee; color: #1d2a33; border-radius: 14px; padding: 26px 28px 22px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .35); font: 15px/1.5 Nunito, system-ui, sans-serif; }
+#keygate h1 { margin: 0 0 6px; font-size: 26px; line-height: 1.15; letter-spacing: -.01em; }
+#keygate .kg-lede { margin: 0 0 14px; color: #3c4a54; }
+#keygate fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+#keygate .kg-opt { display: grid; grid-template-columns: 20px 1fr auto; column-gap: 8px; align-items: baseline; padding: 10px 12px;
+  border: 1.5px solid #d9d2c1; border-radius: 10px; margin-bottom: 8px; cursor: pointer; background: #fffdf8; }
+#keygate .kg-opt.on { border-color: #1f7a8c; background: #eef7f8; }
+#keygate .kg-opt input { margin: 0; accent-color: #1f7a8c; transform: translateY(2px); }
+#keygate .kg-name { font-weight: 800; }
+#keygate .kg-cost { font: 12px/1.4 'IBM Plex Mono', ui-monospace, monospace; color: #55636d; text-align: right; }
+#keygate .kg-key { display: block; width: 100%; box-sizing: border-box; margin: 4px 0 0; padding: 10px 12px; border: 1.5px solid #b9b19f;
+  border-radius: 8px; background: #fff; font: 14px 'IBM Plex Mono', ui-monospace, monospace; color: #1d2a33; }
+#keygate .kg-fine { display: block; margin: 6px 0 0; color: #5d6a73; font-size: 12.5px; font-weight: 400; }
+#keygate .kg-error { margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; background: #fde9e4; color: #8f1d0a; font-size: 13.5px; }
+#keygate .kg-actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 16px; }
+#keygate button { font: inherit; cursor: pointer; }
+#keygate .kg-go { border: 0; border-radius: 10px; padding: 11px 20px; background: #1f7a8c; color: #fff; font-weight: 800; }
+#keygate .kg-skip { border: 0; background: none; padding: 0; color: #1f5f6d; text-decoration: underline; }
+#keygate fieldset:disabled .kg-go { opacity: .7; cursor: wait; }
+#keygate :focus-visible { outline: 2px solid #124c58; outline-offset: 2px; }
+@media (max-width: 480px) { #keygate .kg-card { padding: 20px 18px 18px; } #keygate .kg-opt { grid-template-columns: 20px 1fr; } #keygate .kg-cost { grid-column: 2; text-align: left; } }

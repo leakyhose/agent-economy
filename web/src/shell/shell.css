@@ -52,7 +52,10 @@ body.cctv-still #island-stage { transition: opacity .18s ease; }
 body.cctv-abs #island-stage { position: absolute; }
 /* In the admin view the DOCUMENT scrolls, not a box inside it: that is what lets the inset
    be part of the page. (100vw is wider than the page once there is a scrollbar.) */
-body.view-admin { overflow-x: hidden; overflow-y: auto; height: auto; min-height: 100%; }
+body.view-admin { overflow-x: hidden; overflow-y: auto; height: auto; min-height: 100%; background: #fff; }
+/* the admin page is white paper to its edges: without this the dark page showed below the
+   panel, past its last row and on an overscroll */
+html:has(body.view-admin) { background: #fff; }
 
 /* in the inset the page furniture is gone, so the 3D scene fills the whole stage and the
    inset is the whole picture at the window's own shape */

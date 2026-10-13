@@ -23,7 +23,7 @@
 # validator (Ctrl-C) when you are done. A full disk kills every validator on the machine.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+export PATH="${SOLANA_BIN:-$HOME/.local/share/solana/install/active_release/bin}:$PATH"   # SOLANA_BIN: another release, without switching the installed one
 
 RPC_PORT=${RPC_PORT:-8899}
 TICKS_PER_SLOT=${TICKS_PER_SLOT:-16}
@@ -35,8 +35,9 @@ trap cleanup EXIT
 # The program is loaded at genesis at its declared address (an initial deploy would put it
 # at chain-keypair.json's address instead, and a closed program can never be redeployed).
 PROGRAM_ID=$(python3 -c "import json;print(json.load(open('chain/target/idl/chain.json'))['address'])")
-solana-test-validator --reset --quiet --limit-ledger-size 10000 \
-  --bpf-program "$PROGRAM_ID" chain/target/deploy/chain.so \
+# VALIDATOR_VERBOSE=1 prints the validator's own log instead of running quiet: for a host where it won't start
+solana-test-validator --reset $([ -n "${VALIDATOR_VERBOSE:-}" ] && echo --log || echo --quiet) --limit-ledger-size 10000 \
+  --bpf-program "$PROGRAM_ID" "${PROGRAM_SO:-chain/target/deploy/chain.so}" \
   --ledger "$LEDGER_DIR" --rpc-port "$RPC_PORT" --bind-address 127.0.0.1 \
   ${TICKS_PER_SLOT:+--ticks-per-slot "$TICKS_PER_SLOT"} \
   $([ "$RPC_PORT" = 8899 ] || echo "--faucet-port 9901 --gossip-port 9950 --dynamic-port-range 9910-9940") &

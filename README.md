@@ -118,6 +118,7 @@ Pick a provider in `.env`:
 |---|---|---|
 | `stub` | nothing | free heuristic villagers — run the whole thing with no API key |
 | `openai` | `OPENAI_API_KEY` | Chat Completions tool-calling, default `gpt-6-luna` |
+| `anthropic` | `ANTHROPIC_API_KEY` | native Messages API with prompt caching, default `claude-haiku-5-5` |
 | `deepinfra` | `DEEPINFRA_API_KEY` | open models over the same protocol, default `openai/gpt-oss-120b` |
 
 `.env` is gitignored, and its API keys deliberately override anything exported in your shell.
@@ -157,6 +158,22 @@ BACKEND=http://127.0.0.1:8811 npm run web:dev     # ...against a different backe
 
 If `web/dist` hasn't been built, the backend falls back to the older standalone pages
 (`frontend/Moku Island.dc.html`, `backend/public/index.html`), so the village runs either way.
+
+### Hosted
+
+The `Dockerfile` is the whole site in one container: it serves the island and the dashboard,
+runs the village, and starts a validator of its own for each run. It holds no API key. A
+visitor either plays the free scripted village or pastes their own OpenAI or Anthropic key,
+which is kept in memory for that one run and dropped when it stops. One village runs at a
+time; everyone else watches it. A run stops by itself after `MAX_ROUNDS`.
+
+```bash
+railway up            # or: docker build -t settlers . && docker run -p 8787:8787 settlers
+```
+
+Hosts like Railway do not allow containers io_uring, which Agave 3 and later require, so the
+image runs the 2.2 validator and a copy of the program compiled for it (`chain/prebuilt`).
+After changing `lib.rs`, rebuild that copy as the Dockerfile's comment says.
 
 ### Headless
 

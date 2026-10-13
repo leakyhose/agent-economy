@@ -8,7 +8,9 @@ export const ROOT = path.resolve(here, '../..');
 // The project's .env wins over the shell for SECRETS, so a stale key exported in ~/.zshrc
 // can't silently shadow the one meant for this project. Every other dial goes the usual
 // way round, so `PROVIDER=stub node src/server.mjs` beats the PROVIDER in .env.
+// NO_DOTENV=1 leaves .env unread: how a desk rehearses the hosted site, which has none.
 try {
+  if (process.env.NO_DOTENV === '1') throw 0;
   for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
     if (m && (/_API_KEY$/.test(m[1]) || process.env[m[1]] === undefined)) process.env[m[1]] = m[2];

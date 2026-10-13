@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+**/node_modules
+web/dist
+runs
+chain/target
+chain/test-ledger
+.claude
+CONTEXT.md
+FIX_PLAN.md
+FUTURE_PLAN.md
+REDESIGN_PLAN.md
+DEVPOST.md
+VIDEO_SCRIPT.md
+docs/superpowers

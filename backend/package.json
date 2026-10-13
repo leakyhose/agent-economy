@@ -8,6 +8,7 @@
     "check-brain": "node scripts/check-brain.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
     "@solana/web3.js": "^1.99.0",
     "openai": "^7.19.0"
   }

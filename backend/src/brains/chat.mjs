@@ -10,9 +10,13 @@ import { systemPrompt } from './prompt.mjs';
 const head = (h, k) => (typeof h?.get === 'function' ? h.get(k) : h?.[k]) ?? null;
 function readLimits(h) {
   const n = k => head(h, k);
-  return { requests: n('x-ratelimit-limit-requests'), requestsLeft: n('x-ratelimit-remaining-requests'),
-           tokens: n('x-ratelimit-limit-tokens'), tokensLeft: n('x-ratelimit-remaining-tokens'),
-           resetTokens: n('x-ratelimit-reset-tokens'), resetRequests: n('x-ratelimit-reset-requests') };
+  // OpenAI's names, or Anthropic's (whose token limit that matters is the INPUT one: cache reads don't count toward it)
+  return { requests: n('x-ratelimit-limit-requests') ?? n('anthropic-ratelimit-requests-limit'),
+           requestsLeft: n('x-ratelimit-remaining-requests') ?? n('anthropic-ratelimit-requests-remaining'),
+           tokens: n('x-ratelimit-limit-tokens') ?? n('anthropic-ratelimit-input-tokens-limit'),
+           tokensLeft: n('x-ratelimit-remaining-tokens') ?? n('anthropic-ratelimit-input-tokens-remaining'),
+           resetTokens: n('x-ratelimit-reset-tokens') ?? n('anthropic-ratelimit-input-tokens-reset'),
+           resetRequests: n('x-ratelimit-reset-requests') ?? n('anthropic-ratelimit-requests-reset') };
 }
 // "retry-after: 2" (seconds) or "retry-after-ms: 1300": wait as long as the API asks, not a
 // guess. A provider that doesn't say gets 0.3s, 0.6s, 1.2s, 2.4s. Clamped so one 429 can't
@@ -59,6 +63,31 @@ const WIRES = {
     },
     reply: (st, got, results) => st.input.push(...got.keep, ...results.map(x => ({ type: 'function_call_output', call_id: x.id, output: x.content }))),
   },
+  // Anthropic's Messages API, spoken natively: its OpenAI-compatible endpoint has no prompt
+  // caching, and the shared prefix (tools, then the system prompt) is ~3/4 of every request.
+  // One cache breakpoint on the system prompt covers both, for the whole village. `client` is
+  // an Anthropic-SDK client here. Usage counts uncached, cache-read and cache-written input
+  // separately; a write costs more than plain input, so it is carried as `writeTok`.
+  anthropic: {
+    start: (system, user) => ({ system, messages: [{ role: 'user', content: user }] }),
+    send: (client, st, { model, defs, maxTokens, extra, signal }) => client.messages.create({
+      model, max_tokens: maxTokens, ...extra,
+      system: [{ type: 'text', text: st.system, cache_control: { type: 'ephemeral' } }],
+      tools: defs.map(d => ({ name: d.name, description: d.description, input_schema: d.input_schema })),
+      messages: st.messages,
+    }, { signal }).withResponse(),
+    read(r) {
+      const u = r.usage ?? {}, read = u.cache_read_input_tokens ?? 0, write = u.cache_creation_input_tokens ?? 0;
+      const of = type => (r.content ?? []).filter(b => b.type === type);
+      return { inTok: (u.input_tokens ?? 0) + read + write, cachedTok: read, writeTok: write, outTok: u.output_tokens ?? 0,
+               text: of('text').map(b => b.text).join('\n'), reasoning: of('thinking').map(b => b.thinking ?? '').join('\n'),
+               calls: of('tool_use').map(b => ({ id: b.id, name: b.name, args: JSON.stringify(b.input ?? {}) })), keep: r.content };
+    },
+    // the whole assistant turn goes back as it came (thinking blocks included), and every
+    // tool result in ONE user message
+    reply: (st, got, results) => st.messages.push({ role: 'assistant', content: got.keep },
+      { role: 'user', content: results.map(x => ({ type: 'tool_result', tool_use_id: x.id, content: String(x.content ?? '') })) }),
+  },
 };
 
 export function semaphore(n) {
@@ -85,7 +114,7 @@ export function semaphore(n) {
 //           max_completion_tokens for OpenAI's gpt-5 family.
 // api       'chat' (Chat Completions, the default) or 'responses' (see WIRES).
 export function chatBrain({ label, client, pickModel, price = () => [0, 0], params = () => ({}), maxTokens = 1000,
-                            concurrency = () => 0, cachedRate = 1, tokenParam = 'max_tokens', api = 'chat' }) {
+                            concurrency = () => 0, cachedRate = 1, writeRate = 1, tokenParam = 'max_tokens', api = 'chat' }) {
   const wire = WIRES[api];
   // Every villager calls at once: there is no global gate. The only gate is per model:
   // providers meter each model separately, and one model's ceiling is no reason to hold up
@@ -100,20 +129,21 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
   // cachedTok: input tokens the provider served from its prompt cache (the system prompt and
   // the tool schemas are ~78% of every request and never change, so this should be most of it).
   // limits: the rate-limit headers the API last sent back — why the 429s happen, from the source.
-  const s = { calls: 0, inTok: 0, cachedTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0,
+  const s = { calls: 0, inTok: 0, cachedTok: 0, writeTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0,
               apiMs: 0, limits: null };
   // The same tallies again, per model, so a mixed village can be read model by model:
   // who thought with what, how often it answered, what it cost.
   const per = new Map();
   const track = slug => {
     let m = per.get(slug);
-    if (!m) per.set(slug, m = { agents: new Set(), calls: 0, inTok: 0, cachedTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0, apiMs: 0 });
+    if (!m) per.set(slug, m = { agents: new Set(), calls: 0, inTok: 0, cachedTok: 0, writeTok: 0, outTok: 0, errors: 0, rateLimited: 0, timedOut: 0, apiMs: 0 });
     return m;
   };
   const costOf = m => {
     // a third figure is that model's own cached-input price; without one, cachedRate stands in
     const [pin, pout, pcached = pin * cachedRate] = price(m.slug);
-    return (m.inTok - m.cachedTok) / 1e6 * pin + m.cachedTok / 1e6 * pcached + m.outTok / 1e6 * pout;
+    // writeRate: what an input token WRITTEN to the cache costs, as a multiple of the input price (Anthropic: 1.25)
+    return (m.inTok - m.cachedTok - m.writeTok) / 1e6 * pin + m.cachedTok / 1e6 * pcached + m.writeTok / 1e6 * pin * writeRate + m.outTok / 1e6 * pout;
   };
 
   return {
@@ -125,7 +155,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
       for (const [slug, m] of per) {
         const c = costOf({ ...m, slug });
         cost += c;
-        byModel[slug] = { agents: m.agents.size, calls: m.calls, inTok: m.inTok, cachedTok: m.cachedTok, outTok: m.outTok,
+        byModel[slug] = { agents: m.agents.size, calls: m.calls, inTok: m.inTok, cachedTok: m.cachedTok, writeTok: m.writeTok, outTok: m.outTok,
                           errors: m.errors, rateLimited: m.rateLimited, timedOut: m.timedOut, apiMs: m.apiMs, cost: c };
       }
       return { ...s, cost, byModel };
@@ -158,7 +188,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
           } catch (e) {
             if (t.signal?.aborted) { bump('timedOut'); return; }   // the round stopped waiting
 
-            if (e instanceof OpenAI.RateLimitError && attempt < 4) {
+            if ((e instanceof OpenAI.RateLimitError || e?.status === 429 || e?.status === 529) && attempt < 4) {   // 529: Anthropic overloaded
               bump('rateLimited');
               if (!s.limits) s.limits = readLimits(e.headers);
               await new Promise(r => setTimeout(r, retryAfterMs(e.headers, attempt)));
@@ -173,6 +203,7 @@ export function chatBrain({ label, client, pickModel, price = () => [0, 0], para
         bump('calls');
         bump('inTok', got.inTok);
         bump('cachedTok', got.cachedTok);
+        bump('writeTok', got.writeTok ?? 0);
         bump('outTok', got.outTok);
         // The round closed while this call was in flight — it timed out, or the quorum went
         // on without it. Its tokens were spent and are counted, but nothing it says may land:

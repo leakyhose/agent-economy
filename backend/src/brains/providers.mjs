@@ -18,6 +18,7 @@
 //   params     (slug, api) => anything else the request needs
 //   api        () => 'responses' to speak OpenAI's Responses API instead of Chat Completions
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { CFG } from '../config.mjs';
 import { chatBrain } from './chat.mjs';
 
@@ -49,6 +50,21 @@ export const PROVIDERS = {
       ...(api === 'responses' ? { reasoning: { effort: effort(), summary: 'auto' }, store: false, include: ['reasoning.encrypted_content'] }
         : /^gpt-[56]/.test(model) ? { reasoning_effort: 'none' } : {}),
     }),
+  },
+  anthropic: {
+    key: 'ANTHROPIC_API_KEY',
+    model: 'claude-haiku-5-5',
+    // checked 2026-10-07, prompts up to 100K tokens (ours are a few thousand): [input, output, cache read]
+    prices: { 'claude-haiku-5-5': [0.10, 0.50, 0.01] },
+    writeRate: 1.25,                     // a 5-minute cache write, as a multiple of the input price
+    api: () => 'anthropic',
+    // Thinking is off unless REASONING_EFFORT asks for it (low | medium | high). Measured on
+    // 2026-10-08 over 30 rounds: at `low` a decision took 3.9s against 2.0s, the run cost about
+    // 30% more, and the village built fewer houses and still took no loans. With thinking on,
+    // it is billed as output and counts toward max_tokens, hence the roomier budget.
+    maxTokens: 2500,
+    params: () => !CFG.REASONING_EFFORT || CFG.REASONING_EFFORT === 'none' ? { thinking: { type: 'disabled' } }
+      : { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: CFG.REASONING_EFFORT } },
   },
   deepinfra: {
     baseURL: 'https://api.deepinfra.com/v1/openai',
@@ -82,6 +98,30 @@ function fromEnv(name) {
 }
 const lookup = name => PROVIDERS[name] ?? fromEnv(name);
 
+// A key a visitor pasted for the run in hand — the hosted site, where the server holds none of
+// its own. Memory only: never written to .env, the run log or the console, and dropped when
+// the run stops (server.mjs). A pasted key wins over the environment's for that run.
+const runtimeKeys = new Map();
+export const setRuntimeKey = (name, key) => { if (key) runtimeKeys.set(name, key); else runtimeKeys.delete(name); };
+export const clearRuntimeKeys = () => runtimeKeys.clear();
+const keyOf = (name, p) => runtimeKeys.get(name) ?? process.env[p.key];
+// Does the SERVER have a key of its own for this provider? (What the key screen asks.)
+export const hasEnvKey = name => !!process.env[lookup(name)?.key];
+// a personal Anthropic key spans workspaces and must name one (ANTHROPIC_WORKSPACE_ID)
+const clientFor = (name, p) => (typeof p.api === 'function' ? p.api() : p.api) === 'anthropic'
+  ? new Anthropic({ apiKey: keyOf(name, p), maxRetries: 0,
+      ...(process.env.ANTHROPIC_WORKSPACE_ID ? { defaultHeaders: { 'anthropic-workspace-id': process.env.ANTHROPIC_WORKSPACE_ID } } : {}) })
+  : new OpenAI({ apiKey: keyOf(name, p), ...(p.baseURL ? { baseURL: p.baseURL } : {}) });
+// One cheap request before a village is built on a key: does the provider accept it, and does
+// it know the model? Returns why not, or null. A village on a dead key runs silently on
+// nobody's decisions, which is worse than saying so.
+export async function checkKey(name, model) {
+  const p = lookup(name);
+  if (!p || !PROVIDERS[name] || name === 'deepinfra') return null;
+  try { await clientFor(name, p).models.retrieve(modelFor(name, model)); return null; }
+  catch (e) { return String(e?.error?.error?.message ?? e?.error?.message ?? e?.message ?? e).slice(0, 240); }
+}
+
 // What the dashboard offers: the free stub, everything above, and .env's own if it is neither.
 export const providerNames = () => [...new Set(['stub', ...Object.keys(PROVIDERS),
   ...(lookup(CFG.PROVIDER) ? [CFG.PROVIDER] : [])])];
@@ -96,7 +136,7 @@ export const modelFor = (name, model) =>
 export function missing(name, model) {
   const p = lookup(name);
   if (!p) return `no provider called "${name}" (add it to brains/providers.mjs, or set ${name.toUpperCase()}_BASE_URL)`;
-  if (!process.env[p.key]) return `${p.key} is not set in the repo-root .env`;
+  if (!keyOf(name, p)) return `${p.key} is not set in the repo-root .env`;
   if (!modelFor(name, model)) return 'MODEL is not set, and this provider has no default';
   return null;
 }
@@ -107,11 +147,12 @@ export function providerBrain(name, model) {
   const tags = [CFG.REASONING_EFFORT && `reasoning ${CFG.REASONING_EFFORT}`, CFG.SERVICE_TIER].filter(Boolean);
   return chatBrain({
     label: `${name} (${[slug, ...tags].join(', ')})`,
-    client: new OpenAI({ apiKey: process.env[p.key], ...(p.baseURL ? { baseURL: p.baseURL } : {}) }),
+    client: clientFor(name, p),
     pickModel: () => slug,
     price: m => p.prices?.[m] ?? p.prices?.['*'] ?? [0, 0],
     params: p.params && (m => p.params(m, api)),
     cachedRate: p.cachedRate,
+    writeRate: p.writeRate,
     tokenParam: p.tokenParam,
     maxTokens: val(p.maxTokens),
     api,

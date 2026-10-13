@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import './shell/shell.css';
 import IslandApp from './island/IslandApp.jsx';
 import { mountAdmin, setAdminVisible } from './admin/AdminPanel.js';
+import { mountKeyGate } from './KeyGate.js';
 
 const ADMIN_PATH = '/dashboard';
 const viewFor = p => (p === ADMIN_PATH || p === ADMIN_PATH + '/' ? 'admin' : 'island');
@@ -120,6 +121,7 @@ frame.addEventListener('click', () => go('island'));
 
 // ---- mount ------------------------------------------------------------------------
 mountAdmin(adminRoot);
+mountKeyGate(document.body);         // the front door, where the server holds no API key
 createRoot(document.getElementById('island-root')).render(
   <IslandApp ref={islandRef} onAdmin={() => go('admin')} />,
 );
